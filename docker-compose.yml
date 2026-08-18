@@ -1,0 +1,100 @@
+services:
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: security_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - security_network
+
+  backend:
+    build:
+      context: ./backend
+    container_name: security_backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_started
+    networks:
+      - security_network
+
+  worker:
+    build:
+      context: ./worker
+    container_name: security_worker
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_started
+    networks:
+      - security_network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: security_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: security_saas
+      POSTGRES_USER: security
+      POSTGRES_PASSWORD: security_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U security -d security_saas"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - security_network
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: security_rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - security_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: security_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - security_network
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  redis_data:
+
+networks:
+  security_network:
+    driver: bridge
