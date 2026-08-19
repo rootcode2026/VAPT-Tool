@@ -30,6 +30,8 @@ services:
         condition: service_started
     networks:
       - security_network
+    volumes:
+      - ./backend:/app
 
   worker:
     build:

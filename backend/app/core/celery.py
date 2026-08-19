@@ -4,7 +4,7 @@ from celery import Celery
 
 
 celery_app = Celery(
-    "security_worker",
+    "security_api",
     broker=os.getenv(
         "CELERY_BROKER_URL",
         "amqp://guest:guest@rabbitmq:5672//",
@@ -14,13 +14,3 @@ celery_app = Celery(
         "redis://redis:6379/0",
     ),
 )
-
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="UTC",
-    enable_utc=True,
-)
-
-celery_app.autodiscover_tasks(["app"])
