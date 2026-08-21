@@ -64,7 +64,11 @@ def create_scan(
 
     celery_app.send_task(
         "app.tasks.execute_scan",
-        args=[scan.id], 
+        args=[
+              scan.id,
+              target.value,
+              scan.profile,
+              ], 
     )
 
     return scan

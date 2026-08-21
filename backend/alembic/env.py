@@ -15,6 +15,7 @@ from app.models import (
     Project,
     Target,
     Scan,
+    ScanResult,
 )
 
 config = context.config
