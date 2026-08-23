@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import ForeignKey, String, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -32,4 +32,19 @@ class Scan(Base):
         nullable=False,
         default="created",
         index=True,
+    )
+
+    risk_score: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    risk_grade: Mapped[str | None] = mapped_column(
+        String(1),
+        nullable=True,
+    )
+
+    risk_level: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
     )

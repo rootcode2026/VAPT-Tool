@@ -9,6 +9,7 @@ from .celery_app import celery_app
 from .scanner.manager import ScannerManager
 from .scanner.parsers.nmap_parser import NmapParser
 from .finding_engine.engine import FindingEngine
+from .risk_engine.engine import RiskAssessmentEngine
 
 
 DATABASE_URL = os.getenv(
@@ -69,6 +70,13 @@ def execute_scan(
         )
 
         print(f"Findings detected: {len(findings)}")
+        
+        risk_engine = RiskAssessmentEngine()
+        risk_assessment = risk_engine.calculate(
+            findings
+        )
+        print("Risk assessment:")
+        print(risk_assessment)
 
         for finding in findings:
             print(
@@ -187,8 +195,28 @@ def execute_scan(
                 },
             )
 
+        
+        db.execute(
+            text(
+                """
+                UPDATE scans
+                SET
+                    risk_score = :risk_score,
+                    risk_grade = :risk_grade,
+                    risk_level = :risk_level
+                WHERE id = :scan_id
+                """
+            ),
+            {
+                "risk_score": risk_assessment["score"],
+                "risk_grade": risk_assessment["grade"],
+                "risk_level": risk_assessment["risk_level"],
+                "scan_id": scan_id,
+            },
+        )
+        
         db.commit()
-
+        
         print(f"Scan completed: {scan_id}")
         print(f"Nmap result saved to database.")
         print(f"Findings saved: {len(findings)}")
@@ -199,7 +227,12 @@ def execute_scan(
             "profile": profile,
             "status": "completed",
             "findings_count": len(findings),
+            "risk_score": risk_assessment["score"],
+            "risk_grade": risk_assessment["grade"],
+            "risk_level": risk_assessment["risk_level"],
         }
+        
+        
 
     except Exception as exc:
         db.rollback()
