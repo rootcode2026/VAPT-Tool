@@ -23,6 +23,7 @@ SessionLocal = sessionmaker(bind=engine)
 @celery_app.task
 def execute_scan(
     scan_id: str,
+    target_id: str,
     target: str,
     profile: str,
 ):
@@ -126,26 +127,6 @@ def execute_scan(
         # 6. Save findings
         # ---------------------------------------------------------
 
-        target_row = db.execute(
-            text(
-                """
-                SELECT id
-                FROM targets
-                WHERE value = :target
-                LIMIT 1
-                """
-            ),
-            {
-                "target": target,
-            },
-        ).fetchone()
-
-        if target_row is None:
-            raise RuntimeError(
-                f"Target not found in database: {target}"
-            )
-
-        target_id = target_row[0]
 
         for finding in findings:
 

@@ -66,6 +66,7 @@ def create_scan(
         "app.tasks.execute_scan",
         args=[
               scan.id,
+              target.id,
               target.value,
               scan.profile,
               ], 
