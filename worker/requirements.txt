@@ -2,3 +2,5 @@ celery
 redis
 psycopg2-binary
 docker
+SQLAlchemy
+psycopg2-binary

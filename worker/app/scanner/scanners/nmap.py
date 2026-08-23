@@ -10,6 +10,8 @@ class NmapScanner:
     def scan(self, target: str) -> str:
         command = [
             "-sV",
+            "-oX",
+            "-",
             target,
         ]
 
