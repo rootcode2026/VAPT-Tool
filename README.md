@@ -598,130 +598,76 @@ Do not use this software to scan or attack systems without authorization.
 
 ---
 
-🛣️ Roadmap
 
-Phase 1 — Core Scanning
-
-[x] Docker environment
-
-[x] FastAPI backend
-
-[x] PostgreSQL database
-
-[x] Alembic migrations
-
-[x] Celery worker
-
-[x] RabbitMQ integration
-
-[x] Redis integration
-
-[x] Scanner abstraction
-
-[x] Docker scanner runner
-
-[x] Nmap integration
-
-[x] Nmap XML parser
-
-[x] Finding Engine
-
-[x] Findings persistence
-
-[x] Risk Assessment Engine
-
-[x] Risk score persistence
-
-
-Phase 2 — API Layer
-
-[ ] Scan findings API
-
-[ ] Scan results API
-
-[ ] Risk assessment API
-
-[ ] Scan history API
-
-[ ] Project-level scan summaries
-
-[ ] Finding filtering
-
-[ ] Finding severity filtering
-
-
-Phase 3 — Additional Security Tools
-
-[ ] Nuclei
-
-[ ] Web application scanning
-
-[ ] Additional reconnaissance tools
-
-[ ] Tool-specific parsers
-
-[ ] Unified scanner result format
-
-
-Phase 4 — Frontend
-
-[ ] Authentication UI
-
-[ ] Dashboard
-
-[ ] Project management
-
-[ ] Target management
-
-[ ] Scan management
-
-[ ] Scan progress
-
-[ ] Findings dashboard
-
-[ ] Risk dashboard
-
-[ ] Scan history
-
-[ ] Finding details
-
-
-Phase 5 — Reporting
-
-[ ] PDF security reports
-
-[ ] Executive summary
-
-[ ] Technical findings
-
-[ ] Risk scoring
-
-[ ] Remediation recommendations
-
-[ ] Report downloads
-
-
-Phase 6 — SaaS Features
-
-[ ] Multi-tenant architecture
-
-[ ] Organization management
-
-[ ] Role-based access control
-
-[ ] User management
-
-[ ] Scan scheduling
-
-[ ] Notifications
-
-[ ] Audit logging
-
-[ ] Usage limits
-
-[ ] Subscription plans
-
-
+# 🛣️ Roadmap
+
+## Core Platform
+
+- [x] Docker environment
+- [x] FastAPI backend
+- [x] PostgreSQL database
+- [x] Alembic migrations
+- [x] Celery worker
+- [x] RabbitMQ integration
+- [x] Redis integration
+- [x] Scanner abstraction
+- [x] Docker scanner runner
+- [x] Nmap integration
+- [x] Nmap XML parser
+- [x] Finding Engine
+- [x] Findings persistence
+- [x] Risk Assessment Engine
+- [x] Risk score persistence
+
+## Backend API
+
+- [ ] Scan findings API
+- [ ] Scan results API
+- [ ] Risk assessment API
+- [ ] Scan history API
+- [ ] Project-level scan summaries
+- [ ] Finding filtering
+- [ ] Finding severity filtering
+
+## Security Scanner Integrations
+
+- [ ] Nuclei
+- [ ] Web application scanning
+- [ ] Additional reconnaissance tools
+- [ ] Additional vulnerability scanners
+- [ ] Tool-specific parsers
+- [ ] Unified scanner result format
+
+## Frontend
+
+- [ ] Authentication
+- [ ] Dashboard
+- [ ] Project management
+- [ ] Target management
+- [ ] Scan management
+- [ ] Scan progress
+- [ ] Findings dashboard
+- [ ] Risk dashboard
+- [ ] Scan history
+- [ ] Finding details
+
+## Reporting
+
+- [ ] PDF security reports
+- [ ] Executive summary
+- [ ] Technical findings
+- [ ] Risk scoring
+- [ ] Remediation recommendations
+- [ ] Report downloads
+
+## Advanced Platform Features
+
+- [ ] Multi-tenant architecture
+- [ ] Role-based access control
+- [ ] Scan scheduling
+- [ ] Notifications
+- [ ] Audit logging
+- [ ] Usage management
 
 ---
 
