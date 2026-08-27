@@ -4,9 +4,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
+
 from app.models.scan import Scan
 from app.models.target import Target
-from app.schemas.scan import ScanCreate, ScanResponse
+from app.models.finding import Finding
+
+from app.schemas.scan import (
+    ScanCreate,
+    ScanResponse,
+    ScanDetailsResponse,
+)
+
 from app.core.celery import celery_app
 
 
@@ -15,6 +23,10 @@ router = APIRouter(
     tags=["Scans"],
 )
 
+
+# ---------------------------------------------------------
+# CREATE SCAN
+# ---------------------------------------------------------
 
 @router.post(
     "",
@@ -52,10 +64,10 @@ def create_scan(
         )
 
     scan = Scan(
-    id=str(uuid.uuid4()),
-    target_id=data.target_id,
-    profile=data.profile,
-    status="queued",
+        id=str(uuid.uuid4()),
+        target_id=data.target_id,
+        profile=data.profile,
+        status="queued",
     )
 
     db.add(scan)
@@ -65,15 +77,19 @@ def create_scan(
     celery_app.send_task(
         "app.tasks.execute_scan",
         args=[
-              scan.id,
-              target.id,
-              target.value,
-              scan.profile,
-              ], 
+            scan.id,
+            target.id,
+            target.value,
+            scan.profile,
+        ],
     )
 
     return scan
 
+
+# ---------------------------------------------------------
+# GET ALL SCANS
+# ---------------------------------------------------------
 
 @router.get(
     "",
@@ -82,8 +98,53 @@ def create_scan(
 def get_scans(
     db: Session = Depends(get_db),
 ):
-    return db.query(Scan).all()
+    return (
+        db.query(Scan)
+        .order_by(Scan.id.desc())
+        .all()
+    )
 
+
+# ---------------------------------------------------------
+# GET SCAN DETAILS
+# ---------------------------------------------------------
+
+@router.get(
+    "/{scan_id}/details",
+    response_model=ScanDetailsResponse,
+)
+def get_scan_details(
+    scan_id: str,
+    db: Session = Depends(get_db),
+):
+    scan = (
+        db.query(Scan)
+        .filter(Scan.id == scan_id)
+        .first()
+    )
+
+    if not scan:
+        raise HTTPException(
+            status_code=404,
+            detail="Scan not found",
+        )
+
+    findings = (
+        db.query(Finding)
+        .filter(Finding.scan_id == scan_id)
+        .order_by(Finding.created_at.desc())
+        .all()
+    )
+
+    return {
+        "scan": scan,
+        "findings": findings,
+    }
+
+
+# ---------------------------------------------------------
+# GET SINGLE SCAN
+# ---------------------------------------------------------
 
 @router.get(
     "/{scan_id}",

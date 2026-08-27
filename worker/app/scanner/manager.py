@@ -1,22 +1,13 @@
-from app.scanner.scanners.nmap import NmapScanner
+from app.scanner.registry import ScannerRegistry
 
 
 class ScannerManager:
-
     def __init__(self):
-        self.scanners = {
-            "nmap": NmapScanner(),
-        }
+        self.registry = ScannerRegistry()
 
-    def run(
-        self,
-        scanner: str,
-        target: str,
-    ) -> str:
+    def run(self, scanner: str, target: str) -> str:
+        scanner_instance = self.registry.get(scanner)
+        return scanner_instance.scan(target)
 
-        if scanner not in self.scanners:
-            raise ValueError(
-                f"Unsupported scanner: {scanner}"
-            )
-
-        return self.scanners[scanner].scan(target)
+    def available_scanners(self):
+        return self.registry.list()

@@ -7,98 +7,72 @@ class RiskAssessmentEngine:
         "D": 0,
     }
 
+    # Info findings don't reduce the score.
     SEVERITY_WEIGHTS = {
-        "critical": 60,
-        "high": 30,
-        "medium": 15,
-        "low": 5,
+        "critical": 35,
+        "high": 20,
+        "medium": 10,
+        "low": 3,
+        "info": 0,
     }
 
     def calculate(self, findings: list[dict]) -> dict:
 
         if not findings:
-            return {
-                "score": 100,
-                "grade": "A",
-                "risk_level": "excellent",
-                "total_findings": 0,
+            return self._result(100, {
                 "critical": 0,
                 "high": 0,
                 "medium": 0,
                 "low": 0,
-            }
+                "info": 0,
+            })
 
         counts = {
             "critical": 0,
             "high": 0,
             "medium": 0,
             "low": 0,
+            "info": 0,
         }
 
-        risk_points = 0
+        deductions = 0
 
         for finding in findings:
-            severity = finding.get(
-                "severity",
-                "low",
-            ).lower()
+            severity = finding.get("severity", "info").lower()
 
             if severity not in counts:
-                severity = "low"
+                severity = "info"
 
             counts[severity] += 1
+            deductions += self.SEVERITY_WEIGHTS[severity]
 
-            risk_points += self.SEVERITY_WEIGHTS[
-                severity
-            ]
+        score = max(0, 100 - deductions)
 
-        score = max(
-            0,
-            100 - risk_points,
-        )
+        return self._result(score, counts)
 
-        grade = self._calculate_grade(score)
-
-        risk_level = self._calculate_risk_level(
-            score
-        )
-
+    def _result(self, score: int, counts: dict) -> dict:
         return {
             "score": score,
-            "grade": grade,
-            "risk_level": risk_level,
-            "total_findings": len(findings),
+            "grade": self._grade(score),
+            "risk_level": self._level(score),
+            "total_findings": sum(counts.values()),
             **counts,
         }
 
-    def _calculate_grade(
-        self,
-        score: int,
-    ) -> str:
-
+    def _grade(self, score: int) -> str:
         if score >= 90:
             return "A"
-
         if score >= 75:
             return "B"
-
         if score >= 50:
             return "C"
-
         return "D"
 
-    def _calculate_risk_level(
-        self,
-        score: int,
-    ) -> str:
-
+    def _level(self, score: int) -> str:
         if score >= 90:
             return "excellent"
-
         if score >= 75:
             return "good"
-
         if score >= 50:
             return "needs_attention"
-
         return "critical"

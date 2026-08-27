@@ -12,5 +12,14 @@ class ScanResponse(BaseModel):
     profile: str
     status: str
 
+    risk_score: int | None = None
+    risk_grade: str | None = None
+    risk_level: str | None = None
+
     class Config:
         from_attributes = True
+
+
+class ScanDetailsResponse(BaseModel):
+    scan: ScanResponse
+    findings: list

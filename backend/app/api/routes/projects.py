@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.project import Project
+from app.models.target import Target
 from app.schemas.project import (
     ProjectCreate,
     ProjectResponse,
@@ -16,6 +17,10 @@ router = APIRouter(
     tags=["Projects"],
 )
 
+
+# ---------------------------------------------------------
+# CREATE PROJECT
+# ---------------------------------------------------------
 
 @router.post(
     "",
@@ -39,6 +44,10 @@ def create_project(
     return project
 
 
+# ---------------------------------------------------------
+# GET ALL PROJECTS
+# ---------------------------------------------------------
+
 @router.get(
     "",
     response_model=list[ProjectResponse],
@@ -46,8 +55,16 @@ def create_project(
 def get_projects(
     db: Session = Depends(get_db),
 ):
-    return db.query(Project).all()
+    return (
+        db.query(Project)
+        .order_by(Project.name.asc())
+        .all()
+    )
 
+
+# ---------------------------------------------------------
+# GET SINGLE PROJECT
+# ---------------------------------------------------------
 
 @router.get(
     "/{project_id}",
@@ -72,7 +89,13 @@ def get_project(
     return project
 
 
-@router.delete("/{project_id}")
+# ---------------------------------------------------------
+# DELETE PROJECT
+# ---------------------------------------------------------
+
+@router.delete(
+    "/{project_id}"
+)
 def delete_project(
     project_id: str,
     db: Session = Depends(get_db),
@@ -88,6 +111,33 @@ def delete_project(
             status_code=404,
             detail="Project not found",
         )
+
+    # -----------------------------------------------------
+    # Check whether project has targets
+    # -----------------------------------------------------
+
+    target_count = (
+        db.query(Target)
+        .filter(
+            Target.project_id == project_id
+        )
+        .count()
+    )
+
+    if target_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot delete project because it has "
+                f"{target_count} target(s). "
+                "Remove the targets before deleting "
+                "the project."
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Delete project
+    # -----------------------------------------------------
 
     db.delete(project)
     db.commit()
