@@ -6,18 +6,25 @@ class NucleiScanner(BaseScanner):
 
     name = "nuclei"
     category = "vulnerability"
-    description = "Template-based vulnerability and security misconfiguration detection"
+    description = (
+        "Template-based vulnerability and "
+        "security misconfiguration detection"
+    )
     target_types = {"url", "domain", "ip"}
 
     IMAGE = "vapt-nuclei:latest"
+    TEMPLATE_PATH = "/root/nuclei-templates"
 
     def __init__(self):
         self.runner = DockerRunner()
 
     def scan(self, target: str) -> str:
+
         command = [
             "-u",
             target,
+            "-t",
+            self.TEMPLATE_PATH,
             "-jsonl",
             "-silent",
         ]

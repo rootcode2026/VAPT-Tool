@@ -33,6 +33,13 @@ class Scan(Base):
         default="created",
         index=True,
     )
+    
+    phase: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="queued",
+        index=True,
+    )
 
     risk_score: Mapped[int | None] = mapped_column(
         Integer,

@@ -34,6 +34,7 @@ def execute_scan(
     print(f"Profile: {profile}")
 
     db = SessionLocal()
+
     started_at = datetime.now(timezone.utc)
 
     try:
@@ -45,22 +46,33 @@ def execute_scan(
             text(
                 """
                 UPDATE scans
-                SET status = 'running'
+                SET
+                    status = :status,
+                    phase = :phase
                 WHERE id = :scan_id
                 """
             ),
             {
+                "status": "running",
+                "phase": "nmap_running",
                 "scan_id": scan_id,
             },
         )
 
         db.commit()
 
+        print("Scan status updated: running")
+        print("Scan phase updated: nmap_running")
+
         # ---------------------------------------------------------
-        # 2. Initialize scanner manager
+        # 2. Initialize components
         # ---------------------------------------------------------
 
         manager = ScannerManager()
+        finding_engine = FindingEngine()
+        risk_engine = RiskAssessmentEngine()
+
+        all_findings = []
 
         # ---------------------------------------------------------
         # 3. Run Nmap
@@ -81,21 +93,19 @@ def execute_scan(
 
         nmap_parser = NmapParser()
 
-        nmap_parsed = nmap_parser.parse(
+        parsed_nmap = nmap_parser.parse(
             nmap_result
         )
 
         print("Parsed Nmap result:")
-        print(nmap_parsed)
+        print(parsed_nmap)
 
         # ---------------------------------------------------------
         # 5. Analyze Nmap
         # ---------------------------------------------------------
 
-        finding_engine = FindingEngine()
-
         nmap_findings = finding_engine.analyze(
-            nmap_parsed
+            parsed_nmap
         )
 
         print(
@@ -103,11 +113,181 @@ def execute_scan(
             f"{len(nmap_findings)}"
         )
 
+        all_findings.extend(
+            nmap_findings
+        )
+
         # ---------------------------------------------------------
-        # 6. Save Nmap raw result
+        # 6. Mark Nmap completed
         # ---------------------------------------------------------
 
+        db.execute(
+            text(
+                """
+                UPDATE scans
+                SET phase = :phase
+                WHERE id = :scan_id
+                """
+            ),
+            {
+                "phase": "nmap_completed",
+                "scan_id": scan_id,
+            },
+        )
+
+        db.commit()
+
+        print("Scan phase updated: nmap_completed")
+
+        # ---------------------------------------------------------
+        # 7. Mark Nuclei running
+        # ---------------------------------------------------------
+
+        db.execute(
+            text(
+                """
+                UPDATE scans
+                SET phase = :phase
+                WHERE id = :scan_id
+                """
+            ),
+            {
+                "phase": "nuclei_running",
+                "scan_id": scan_id,
+            },
+        )
+
+        db.commit()
+
+        print("Scan phase updated: nuclei_running")
+
+        # ---------------------------------------------------------
+        # 8. Run Nuclei
+        # ---------------------------------------------------------
+
+        print("Running Nuclei...")
+
+        nuclei_result = manager.run(
+            scanner="nuclei",
+            target=target,
+        )
+
+        print("Nuclei scan completed.")
+
+        # ---------------------------------------------------------
+        # 9. Parse Nuclei
+        # ---------------------------------------------------------
+
+        nuclei_parser = NucleiParser()
+
+        parsed_nuclei_findings = (
+            nuclei_parser.parse(
+                nuclei_result
+            )
+        )
+
+        print(
+            f"Nuclei findings detected: "
+            f"{len(parsed_nuclei_findings)}"
+        )
+
+        # Nuclei parser already returns
+        # normalized findings.
+
+        nuclei_scan_result = {
+            "scanner": "nuclei",
+            "findings": parsed_nuclei_findings,
+        }
+
+        nuclei_findings = (
+            finding_engine.analyze(
+                nuclei_scan_result
+            )
+        )
+
+        all_findings.extend(
+            nuclei_findings
+        )
+
+        # ---------------------------------------------------------
+        # 10. Mark Nuclei completed
+        # ---------------------------------------------------------
+
+        db.execute(
+            text(
+                """
+                UPDATE scans
+                SET phase = :phase
+                WHERE id = :scan_id
+                """
+            ),
+            {
+                "phase": "nuclei_completed",
+                "scan_id": scan_id,
+            },
+        )
+
+        db.commit()
+
+        print("Scan phase updated: nuclei_completed")
+
+        # ---------------------------------------------------------
+        # 11. Total findings
+        # ---------------------------------------------------------
+
+        print(
+            f"Total findings detected: "
+            f"{len(all_findings)}"
+        )
+
+        # ---------------------------------------------------------
+        # 12. Mark analyzing
+        # ---------------------------------------------------------
+
+        db.execute(
+            text(
+                """
+                UPDATE scans
+                SET phase = :phase
+                WHERE id = :scan_id
+                """
+            ),
+            {
+                "phase": "analyzing",
+                "scan_id": scan_id,
+            },
+        )
+
+        db.commit()
+
+        print("Scan phase updated: analyzing")
+
+        # ---------------------------------------------------------
+        # 13. Risk assessment
+        # ---------------------------------------------------------
+
+        risk_assessment = (
+            risk_engine.calculate(
+                all_findings
+            )
+        )
+
+        print("Risk assessment:")
+        print(risk_assessment)
+
+        for finding in all_findings:
+            print(
+                f"Finding: {finding['title']} "
+                f"| Scanner: {finding['scanner']} "
+                f"| Severity: {finding['severity']} "
+                f"| Score: {finding['score']}"
+            )
+
         completed_at = datetime.now(timezone.utc)
+
+        # ---------------------------------------------------------
+        # 14. Save Nmap raw result
+        # ---------------------------------------------------------
 
         db.execute(
             text(
@@ -146,65 +326,8 @@ def execute_scan(
         )
 
         # ---------------------------------------------------------
-        # 7. Run Nuclei
+        # 15. Save Nuclei raw result
         # ---------------------------------------------------------
-
-        print("Running Nuclei...")
-
-        nuclei_result = manager.run(
-            scanner="nuclei",
-            target=target,
-        )
-
-        print("Nuclei scan completed.")
-
-        # ---------------------------------------------------------
-        # 8. Parse Nuclei
-        # ---------------------------------------------------------
-
-        nuclei_parser = NucleiParser()
-
-        nuclei_findings = nuclei_parser.parse(
-            nuclei_result
-        )
-
-        print(
-            f"Nuclei findings detected: "
-            f"{len(nuclei_findings)}"
-        )
-
-        # ---------------------------------------------------------
-        # 9. Convert Nuclei findings
-        # ---------------------------------------------------------
-
-        nuclei_parsed = {
-            "scanner": "nuclei",
-            "findings": nuclei_findings,
-        }
-
-        nuclei_findings = finding_engine.analyze(
-            nuclei_parsed
-        )
-
-        # ---------------------------------------------------------
-        # 10. Combine findings
-        # ---------------------------------------------------------
-
-        findings = (
-            nmap_findings +
-            nuclei_findings
-        )
-
-        print(
-            f"Total findings detected: "
-            f"{len(findings)}"
-        )
-
-        # ---------------------------------------------------------
-        # 11. Save Nuclei raw result
-        # ---------------------------------------------------------
-
-        completed_at = datetime.now(timezone.utc)
 
         db.execute(
             text(
@@ -243,10 +366,10 @@ def execute_scan(
         )
 
         # ---------------------------------------------------------
-        # 12. Save findings
+        # 16. Save findings
         # ---------------------------------------------------------
 
-        for finding in findings:
+        for finding in all_findings:
 
             db.execute(
                 text(
@@ -306,20 +429,7 @@ def execute_scan(
             )
 
         # ---------------------------------------------------------
-        # 13. Calculate risk
-        # ---------------------------------------------------------
-
-        risk_engine = RiskAssessmentEngine()
-
-        risk_assessment = risk_engine.calculate(
-            findings
-        )
-
-        print("Risk assessment:")
-        print(risk_assessment)
-
-        # ---------------------------------------------------------
-        # 14. Update scan
+        # 17. Update risk + completed status
         # ---------------------------------------------------------
 
         db.execute(
@@ -327,7 +437,8 @@ def execute_scan(
                 """
                 UPDATE scans
                 SET
-                    status = 'completed',
+                    status = :status,
+                    phase = :phase,
                     risk_score = :risk_score,
                     risk_grade = :risk_grade,
                     risk_level = :risk_level
@@ -335,6 +446,8 @@ def execute_scan(
                 """
             ),
             {
+                "status": "completed",
+                "phase": "completed",
                 "risk_score": risk_assessment["score"],
                 "risk_grade": risk_assessment["grade"],
                 "risk_level": risk_assessment["risk_level"],
@@ -343,7 +456,7 @@ def execute_scan(
         )
 
         # ---------------------------------------------------------
-        # 15. Commit everything
+        # 18. Commit everything
         # ---------------------------------------------------------
 
         db.commit()
@@ -353,7 +466,18 @@ def execute_scan(
         )
 
         print(
-            f"Findings saved: {len(findings)}"
+            f"Total findings saved: "
+            f"{len(all_findings)}"
+        )
+
+        print(
+            f"Risk score: "
+            f"{risk_assessment['score']}"
+        )
+
+        print(
+            f"Risk grade: "
+            f"{risk_assessment['grade']}"
         )
 
         return {
@@ -361,7 +485,8 @@ def execute_scan(
             "target": target,
             "profile": profile,
             "status": "completed",
-            "findings_count": len(findings),
+            "phase": "completed",
+            "findings_count": len(all_findings),
             "risk_score": risk_assessment["score"],
             "risk_grade": risk_assessment["grade"],
             "risk_level": risk_assessment["risk_level"],
@@ -371,29 +496,6 @@ def execute_scan(
 
         db.rollback()
 
-        # ---------------------------------------------------------
-        # Mark scan as failed
-        # ---------------------------------------------------------
-
-        try:
-            db.execute(
-                text(
-                    """
-                    UPDATE scans
-                    SET status = 'failed'
-                    WHERE id = :scan_id
-                    """
-                ),
-                {
-                    "scan_id": scan_id,
-                },
-            )
-
-            db.commit()
-
-        except Exception:
-            db.rollback()
-
         print(
             f"Scan failed: {scan_id}"
         )
@@ -401,6 +503,40 @@ def execute_scan(
         print(
             f"Error: {exc}"
         )
+
+        # ---------------------------------------------------------
+        # Mark scan as failed
+        # ---------------------------------------------------------
+
+        try:
+
+            db.execute(
+                text(
+                    """
+                    UPDATE scans
+                    SET
+                        status = :status,
+                        phase = :phase
+                    WHERE id = :scan_id
+                    """
+                ),
+                {
+                    "status": "failed",
+                    "phase": "failed",
+                    "scan_id": scan_id,
+                },
+            )
+
+            db.commit()
+
+        except Exception as status_error:
+
+            db.rollback()
+
+            print(
+                "Failed to update scan status: "
+                f"{status_error}"
+            )
 
         raise
 

@@ -30,20 +30,13 @@ app.add_middleware(
         "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
-    allow_methods=[
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "OPTIONS",
-    ],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
 # ---------------------------------------------------------
-# API Routes
+# API ROUTES
 # ---------------------------------------------------------
 
 app.include_router(targets_router)
@@ -55,7 +48,7 @@ app.include_router(dashboard_router)
 
 
 # ---------------------------------------------------------
-# Root
+# ROOT
 # ---------------------------------------------------------
 
 @app.get("/")
@@ -66,7 +59,7 @@ async def root():
 
 
 # ---------------------------------------------------------
-# Health
+# HEALTH
 # ---------------------------------------------------------
 
 @app.get("/health")
@@ -77,7 +70,7 @@ async def health():
 
 
 # ---------------------------------------------------------
-# Database Health
+# DATABASE HEALTH
 # ---------------------------------------------------------
 
 @app.get("/health/database")
