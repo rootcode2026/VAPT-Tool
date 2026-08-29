@@ -16,7 +16,7 @@ export default function ScanDetailsPage() {
 
   async function loadScanDetails() {
     if (!scanId) {
-      return;
+      return null;
     }
 
     try {
@@ -42,6 +42,8 @@ export default function ScanDetailsPage() {
       const result = await response.json();
 
       setData(result);
+
+      return result;
     } catch (err) {
       console.error(err);
 
@@ -49,13 +51,74 @@ export default function ScanDetailsPage() {
         err.message ||
           "Failed to load scan details"
       );
+
+      return null;
     } finally {
       setLoading(false);
     }
   }
 
+  /*
+   * ---------------------------------------------------------
+   * Load scan + auto-refresh
+   * ---------------------------------------------------------
+   */
+
   useEffect(() => {
-    loadScanDetails();
+    if (!scanId) {
+      return;
+    }
+
+    let intervalId = null;
+    let cancelled = false;
+
+    async function refresh() {
+      if (cancelled) {
+        return;
+      }
+
+      const result = await loadScanDetails();
+
+      if (
+        cancelled ||
+        !result?.scan
+      ) {
+        return;
+      }
+
+      const status =
+        result.scan.status?.toLowerCase();
+
+      /*
+       * Stop polling once the scan reaches
+       * a terminal state.
+       */
+
+      if (
+        status === "completed" ||
+        status === "failed"
+      ) {
+        if (intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+      }
+    }
+
+    refresh();
+
+    intervalId = setInterval(
+      refresh,
+      3000
+    );
+
+    return () => {
+      cancelled = true;
+
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
   }, [scanId]);
 
   /*
@@ -224,6 +287,21 @@ export default function ScanDetailsPage() {
     );
   }
 
+  function formatPhase(phase) {
+    if (!phase) {
+      return "—";
+    }
+
+    return phase
+      .split("_")
+      .map(
+        (word) =>
+          word.charAt(0).toUpperCase() +
+          word.slice(1)
+      )
+      .join(" ");
+  }
+
   /*
    * ---------------------------------------------------------
    * Main
@@ -234,6 +312,7 @@ export default function ScanDetailsPage() {
     <main className="min-h-screen bg-slate-950 text-white">
 
       {/* Header */}
+
       <header className="border-b border-slate-800">
         <div className="mx-auto max-w-7xl px-6 py-6">
 
@@ -283,7 +362,7 @@ export default function ScanDetailsPage() {
             Scan Information
           </h2>
 
-          <div className="mt-6 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mt-6 grid gap-6 sm:grid-cols-2 lg:grid-cols-5">
 
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500">
@@ -325,7 +404,37 @@ export default function ScanDetailsPage() {
               </p>
             </div>
 
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-500">
+                Phase
+              </p>
+
+              <p className="mt-2 text-sm text-slate-300">
+                {formatPhase(scan.phase)}
+              </p>
+            </div>
+
           </div>
+
+          {/* Live scanning indicator */}
+
+          {(scan.status === "queued" ||
+            scan.status === "running") && (
+            <div className="mt-6 rounded-lg border border-blue-900 bg-blue-950/30 px-4 py-3">
+
+              <div className="flex items-center gap-3">
+
+                <div className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+
+                <p className="text-sm text-blue-300">
+                  Scan is currently in progress.
+                  Results are refreshing automatically.
+                </p>
+
+              </div>
+
+            </div>
+          )}
 
         </section>
 
@@ -342,6 +451,7 @@ export default function ScanDetailsPage() {
           <div className="grid gap-4 sm:grid-cols-3">
 
             {/* Score */}
+
             <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
 
               <p className="text-sm text-slate-400">
@@ -349,8 +459,7 @@ export default function ScanDetailsPage() {
               </p>
 
               <p className="mt-2 text-4xl font-bold">
-                {scan.risk_score ??
-                  "—"}
+                {scan.risk_score ?? "—"}
               </p>
 
               <p className="mt-2 text-xs text-slate-500">
@@ -360,6 +469,7 @@ export default function ScanDetailsPage() {
             </div>
 
             {/* Grade */}
+
             <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
 
               <p className="text-sm text-slate-400">
@@ -367,8 +477,7 @@ export default function ScanDetailsPage() {
               </p>
 
               <p className="mt-2 text-4xl font-bold">
-                {scan.risk_grade ??
-                  "—"}
+                {scan.risk_grade ?? "—"}
               </p>
 
               <p className="mt-2 text-xs text-slate-500">
@@ -378,6 +487,7 @@ export default function ScanDetailsPage() {
             </div>
 
             {/* Level */}
+
             <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
 
               <p className="text-sm text-slate-400">
@@ -385,8 +495,7 @@ export default function ScanDetailsPage() {
               </p>
 
               <p className="mt-2 text-2xl font-bold capitalize">
-                {scan.risk_level ??
-                  "—"}
+                {scan.risk_level ?? "—"}
               </p>
 
               <p className="mt-2 text-xs text-slate-500">
@@ -529,6 +638,12 @@ export default function ScanDetailsPage() {
                             {finding.severity}
                           </span>
 
+                          {finding.status && (
+                            <span className="rounded-md bg-slate-800 px-2.5 py-1 text-xs font-medium capitalize text-slate-400">
+                              {finding.status}
+                            </span>
+                          )}
+
                         </div>
 
                         <h3 className="text-lg font-semibold">
@@ -537,10 +652,8 @@ export default function ScanDetailsPage() {
 
                       </div>
 
-                      {finding.score !==
-                        null &&
-                        finding.score !==
-                          undefined && (
+                      {finding.score !== null &&
+                        finding.score !== undefined && (
                           <div className="shrink-0 text-right">
 
                             <p className="text-xs text-slate-500">

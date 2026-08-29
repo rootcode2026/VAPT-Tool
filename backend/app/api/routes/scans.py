@@ -1,6 +1,7 @@
+import math
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -105,11 +106,49 @@ def create_scan(
 
 @router.get(
     "",
-    response_model=list[ScanHistoryResponse],
 )
 def get_scans(
+    page: int = Query(
+        1,
+        ge=1,
+        description="Page number",
+    ),
+    page_size: int = Query(
+        10,
+        ge=1,
+        le=100,
+        description="Number of scans per page",
+    ),
     db: Session = Depends(get_db),
 ):
+    # -----------------------------------------------------
+    # Total scan count
+    # -----------------------------------------------------
+
+    total = (
+        db.query(func.count(Scan.id))
+        .scalar()
+        or 0
+    )
+
+    # -----------------------------------------------------
+    # Pagination calculation
+    # -----------------------------------------------------
+
+    total_pages = (
+        math.ceil(total / page_size)
+        if total > 0
+        else 0
+    )
+
+    # If requested page is beyond the last page,
+    # return an empty result instead of an error.
+    offset = (page - 1) * page_size
+
+    # -----------------------------------------------------
+    # Scan history query
+    # -----------------------------------------------------
+
     rows = (
         db.query(
             Scan.id,
@@ -117,6 +156,8 @@ def get_scans(
             Target.value.label("target"),
             Scan.profile,
             Scan.status,
+            Scan.phase,
+            Scan.created_at,
             Scan.risk_score,
             Scan.risk_grade,
             Scan.risk_level,
@@ -138,23 +179,31 @@ def get_scans(
             Target.value,
             Scan.profile,
             Scan.status,
+            Scan.phase,
+            Scan.created_at,
             Scan.risk_score,
             Scan.risk_grade,
             Scan.risk_level,
         )
+        # Newest scan first
         .order_by(
-            Scan.id.desc()
+            Scan.created_at.desc(),
+            Scan.id.desc(),
         )
+        .offset(offset)
+        .limit(page_size)
         .all()
     )
 
-    return [
+    items = [
         {
             "id": row.id,
             "target_id": row.target_id,
             "target": row.target,
             "profile": row.profile,
             "status": row.status,
+            "phase": row.phase,
+            "created_at": row.created_at,
             "risk_score": row.risk_score,
             "risk_grade": row.risk_grade,
             "risk_level": row.risk_level,
@@ -162,6 +211,14 @@ def get_scans(
         }
         for row in rows
     ]
+
+    return {
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
 
 
 # ---------------------------------------------------------
@@ -231,4 +288,4 @@ def get_scan(
             detail="Scan not found",
         )
 
-    return scanc
+    return scan

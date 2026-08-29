@@ -1,117 +1,133 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 const API_URL = "http://localhost:8000";
-
-const PROFILES = [
-  {
-    value: "quick",
-    name: "Quick Scan",
-    description: "Fast security assessment",
-  },
-  {
-    value: "web",
-    name: "Web Scan",
-    description: "Web vulnerability assessment",
-  },
-  {
-    value: "full",
-    name: "Full Scan",
-    description: "Comprehensive security assessment",
-  },
-];
 
 export default function ScansPage() {
   const [scans, setScans] = useState([]);
   const [targets, setTargets] = useState([]);
 
-  const [selectedTarget, setSelectedTarget] = useState("");
-  const [selectedProfile, setSelectedProfile] = useState("quick");
-
   const [loading, setLoading] = useState(true);
-  const [starting, setStarting] = useState(false);
-  const [error, setError] = useState("");
+  const [targetsLoading, setTargetsLoading] = useState(true);
 
-  // ---------------------------------------------------------
-  // Load targets
-  // ---------------------------------------------------------
+  const [error, setError] = useState("");
+  const [targetsError, setTargetsError] = useState("");
+
+  const [selectedTarget, setSelectedTarget] = useState("");
+  const [selectedProfile, setSelectedProfile] =
+    useState("quick");
+
+  const [starting, setStarting] = useState(false);
+
+  /*
+   * ---------------------------------------------------------
+   * Load targets
+   * ---------------------------------------------------------
+   */
 
   async function loadTargets() {
-    const response = await fetch(
-      `${API_URL}/api/v1/targets`,
-      {
-        cache: "no-store",
+    try {
+      setTargetsError("");
+
+      const response = await fetch(
+        `${API_URL}/api/v1/targets`,
+        {
+          cache: "no-store",
+        }
+      );
+
+      if (!response.ok) {
+        const errorData =
+          await response.json().catch(() => null);
+
+        throw new Error(
+          errorData?.detail ||
+            "Failed to load targets"
+        );
       }
-    );
 
-    if (!response.ok) {
-      throw new Error("Failed to load targets");
-    }
+      const result = await response.json();
 
-    const data = await response.json();
+      setTargets(result);
 
-    setTargets(data);
+      if (
+        result.length > 0 &&
+        !selectedTarget
+      ) {
+        setSelectedTarget(result[0].id);
+      }
+    } catch (err) {
+      console.error(err);
 
-    if (!selectedTarget && data.length > 0) {
-      setSelectedTarget(data[0].id);
+      setTargetsError(
+        err.message ||
+          "Failed to load targets"
+      );
+    } finally {
+      setTargetsLoading(false);
     }
   }
 
-  // ---------------------------------------------------------
-  // Load scans
-  // ---------------------------------------------------------
+  /*
+   * ---------------------------------------------------------
+   * Load scans
+   * ---------------------------------------------------------
+   */
 
   async function loadScans() {
-    const response = await fetch(
-      `${API_URL}/api/v1/scans`,
-      {
-        cache: "no-store",
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error("Failed to load scans");
-    }
-
-    const data = await response.json();
-
-    setScans(data);
-  }
-
-  // ---------------------------------------------------------
-  // Load page data
-  // ---------------------------------------------------------
-
-  async function loadData() {
     try {
-      setLoading(true);
       setError("");
 
-      await Promise.all([
-        loadTargets(),
-        loadScans(),
-      ]);
+      const response = await fetch(
+        `${API_URL}/api/v1/scans`,
+        {
+          cache: "no-store",
+        }
+      );
+
+      if (!response.ok) {
+        const errorData =
+          await response.json().catch(() => null);
+
+        throw new Error(
+          errorData?.detail ||
+            "Failed to load scans"
+        );
+      }
+
+      const result = await response.json();
+
+      setScans(result);
     } catch (err) {
       console.error(err);
 
       setError(
         err.message ||
-          "Failed to load scan information"
+          "Failed to load scans"
       );
     } finally {
       setLoading(false);
     }
   }
 
+  /*
+   * ---------------------------------------------------------
+   * Initial load
+   * ---------------------------------------------------------
+   */
+
   useEffect(() => {
-    loadData();
+    loadTargets();
+    loadScans();
   }, []);
 
-  // ---------------------------------------------------------
-  // Auto refresh
-  // ---------------------------------------------------------
+  /*
+   * ---------------------------------------------------------
+   * Auto refresh active scans
+   * ---------------------------------------------------------
+   */
 
   useEffect(() => {
     const hasActiveScans = scans.some(
@@ -125,20 +141,19 @@ export default function ScansPage() {
     }
 
     const interval = setInterval(() => {
-      loadScans().catch((err) => {
-        console.error(
-          "Failed to refresh scans:",
-          err
-        );
-      });
+      loadScans();
     }, 3000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+    };
   }, [scans]);
 
-  // ---------------------------------------------------------
-  // Start scan
-  // ---------------------------------------------------------
+  /*
+   * ---------------------------------------------------------
+   * Start scan
+   * ---------------------------------------------------------
+   */
 
   async function startScan(event) {
     event.preventDefault();
@@ -173,9 +188,7 @@ export default function ScansPage() {
 
       if (!response.ok) {
         const errorData =
-          await response.json().catch(
-            () => null
-          );
+          await response.json().catch(() => null);
 
         throw new Error(
           errorData?.detail ||
@@ -183,45 +196,9 @@ export default function ScansPage() {
         );
       }
 
-      const newScan = await response.json();
-
-      /*
-       * The create endpoint returns the basic
-       * ScanResponse, so refresh the history
-       * to get target + findings_count.
-       */
+      await response.json();
 
       await loadScans();
-
-      /*
-       * Keep the newly created scan visible
-       * even if the refresh races with the API.
-       */
-
-      setScans((current) => {
-        const exists = current.some(
-          (scan) => scan.id === newScan.id
-        );
-
-        if (exists) {
-          return current;
-        }
-
-        return [
-          {
-            ...newScan,
-            target:
-              targets.find(
-                (target) =>
-                  target.id ===
-                  newScan.target_id
-              )?.value ||
-              "Unknown target",
-            findings_count: 0,
-          },
-          ...current,
-        ];
-      });
     } catch (err) {
       console.error(err);
 
@@ -234,20 +211,76 @@ export default function ScansPage() {
     }
   }
 
-  // ---------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------
+  /*
+   * ---------------------------------------------------------
+   * Target lookup
+   * ---------------------------------------------------------
+   */
 
-  function getStatusClasses(status) {
-    switch (status) {
-      case "completed":
-        return "border border-emerald-800 bg-emerald-950/60 text-emerald-400";
+  const targetMap = useMemo(() => {
+    const map = {};
 
-      case "running":
-        return "border border-blue-800 bg-blue-950/60 text-blue-400";
+    for (const target of targets) {
+      map[target.id] = target;
+    }
 
+    return map;
+  }, [targets]);
+
+  function getTargetValue(targetId) {
+    return (
+      targetMap[targetId]?.value ||
+      targetId
+    );
+  }
+
+  function getTargetType(targetId) {
+    return (
+      targetMap[targetId]?.type ||
+      "unknown"
+    );
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * Phase helpers
+   * ---------------------------------------------------------
+   */
+
+  function getPhaseLabel(phase) {
+    if (!phase) {
+      return "—";
+    }
+
+    return phase
+      .split("_")
+      .map(
+        (word) =>
+          word.charAt(0).toUpperCase() +
+          word.slice(1)
+      )
+      .join(" ");
+  }
+
+  function getPhaseClasses(phase) {
+    switch (phase) {
       case "queued":
         return "border border-yellow-800 bg-yellow-950/60 text-yellow-400";
+
+      case "scanning":
+        return "border border-blue-800 bg-blue-950/60 text-blue-400";
+
+      case "nmap_completed":
+        return "border border-purple-800 bg-purple-950/60 text-purple-400";
+
+      case "nuclei_completed":
+        return "border border-cyan-800 bg-cyan-950/60 text-cyan-400";
+
+      case "analyzing":
+        return "border border-indigo-800 bg-indigo-950/60 text-indigo-400";
+
+      case "completed":
+        return "border border-emerald-800 bg-emerald-950/60 text-emerald-400";
 
       case "failed":
         return "border border-red-800 bg-red-950/60 text-red-400";
@@ -257,530 +290,643 @@ export default function ScansPage() {
     }
   }
 
+  /*
+   * ---------------------------------------------------------
+   * Status helpers
+   * ---------------------------------------------------------
+   */
+
   function getStatusLabel(status) {
-    switch (status) {
+    if (!status) {
+      return "Unknown";
+    }
+
+    return (
+      status.charAt(0).toUpperCase() +
+      status.slice(1)
+    );
+  }
+
+  function getStatusClasses(status) {
+    switch (status?.toLowerCase()) {
       case "completed":
-        return "Completed";
+        return "bg-emerald-950 text-emerald-400";
 
       case "running":
-        return "Running";
+        return "bg-blue-950 text-blue-400";
 
       case "queued":
-        return "Queued";
+        return "bg-yellow-950 text-yellow-400";
 
       case "failed":
-        return "Failed";
+        return "bg-red-950 text-red-400";
 
       default:
-        return status || "Unknown";
+        return "bg-slate-800 text-slate-400";
     }
   }
 
-  function getProfileName(profile) {
-    const item = PROFILES.find(
-      (item) => item.value === profile
+  /*
+   * ---------------------------------------------------------
+   * Risk helpers
+   * ---------------------------------------------------------
+   */
+
+  function getRiskClasses(grade) {
+    switch (grade) {
+      case "A":
+        return "text-emerald-400";
+
+      case "B":
+        return "text-green-400";
+
+      case "C":
+        return "text-yellow-400";
+
+      case "D":
+        return "text-red-400";
+
+      default:
+        return "text-slate-500";
+    }
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * Profile label
+   * ---------------------------------------------------------
+   */
+
+  function getProfileLabel(profile) {
+    if (!profile) {
+      return "Unknown";
+    }
+
+    return (
+      profile.charAt(0).toUpperCase() +
+      profile.slice(1) +
+      " Scan"
     );
-
-    return item?.name || profile;
   }
 
-  function getProfileDescription(profile) {
-    const item = PROFILES.find(
-      (item) => item.value === profile
-    );
+  /*
+   * ---------------------------------------------------------
+   * Summary statistics
+   * ---------------------------------------------------------
+   */
 
-    return item?.description || "";
-  }
+  const summary = useMemo(() => {
+    return {
+      total: scans.length,
 
-  function getRiskClasses(score) {
-    if (score === null || score === undefined) {
-      return "border-slate-700 bg-slate-900 text-slate-400";
-    }
+      completed: scans.filter(
+        (scan) =>
+          scan.status === "completed"
+      ).length,
 
-    if (score >= 90) {
-      return "border-emerald-800 bg-emerald-950/60 text-emerald-400";
-    }
+      running: scans.filter(
+        (scan) =>
+          scan.status === "running"
+      ).length,
 
-    if (score >= 75) {
-      return "border-green-800 bg-green-950/60 text-green-400";
-    }
+      queued: scans.filter(
+        (scan) =>
+          scan.status === "queued"
+      ).length,
 
-    if (score >= 50) {
-      return "border-yellow-800 bg-yellow-950/60 text-yellow-400";
-    }
+      failed: scans.filter(
+        (scan) =>
+          scan.status === "failed"
+      ).length,
+    };
+  }, [scans]);
 
-    if (score >= 25) {
-      return "border-orange-800 bg-orange-950/60 text-orange-400";
-    }
-
-    return "border-red-800 bg-red-950/60 text-red-400";
-  }
-
-  function getTargetType(targetId) {
-    const target = targets.find(
-      (item) => item.id === targetId
-    );
-
-    return target?.target_type || "";
-  }
-
-  // ---------------------------------------------------------
-  // Statistics
-  // ---------------------------------------------------------
-
-  const totalScans = scans.length;
-
-  const runningScans = scans.filter(
-    (scan) =>
-      scan.status === "running"
-  ).length;
-
-  const queuedScans = scans.filter(
-    (scan) =>
-      scan.status === "queued"
-  ).length;
-
-  const completedScans = scans.filter(
-    (scan) =>
-      scan.status === "completed"
-  ).length;
-
-  const failedScans = scans.filter(
-    (scan) =>
-      scan.status === "failed"
-  ).length;
-
-  // ---------------------------------------------------------
-  // Loading
-  // ---------------------------------------------------------
+  /*
+   * ---------------------------------------------------------
+   * Loading
+   * ---------------------------------------------------------
+   */
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
-        <div className="text-center">
-          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-slate-700 border-t-blue-500" />
+      <main className="min-h-screen bg-slate-950 text-white">
 
-          <div className="text-xl font-semibold">
-            Loading scans...
+        <div className="mx-auto max-w-7xl px-6 py-10">
+
+          <div className="flex min-h-[60vh] items-center justify-center">
+
+            <div className="text-center">
+
+              <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-slate-700 border-t-white" />
+
+              <p className="mt-4 text-sm text-slate-400">
+                Loading scans...
+              </p>
+
+            </div>
+
           </div>
 
-          <p className="mt-2 text-sm text-slate-400">
-            Fetching scan information
-          </p>
         </div>
+
       </main>
     );
   }
 
-  // ---------------------------------------------------------
-  // Main UI
-  // ---------------------------------------------------------
+  /*
+   * ---------------------------------------------------------
+   * Main
+   * ---------------------------------------------------------
+   */
 
   return (
     <main className="min-h-screen bg-slate-950 text-white">
-      {/* Header */}
+
+      {/* =====================================================
+          HEADER
+      ====================================================== */}
+
       <header className="border-b border-slate-800">
-        <div className="mx-auto max-w-7xl px-6 py-6">
+
+        <div className="mx-auto max-w-7xl px-6 py-8">
+
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+
             <div>
-              <div className="flex items-center gap-3">
-                <Link
-                  href="/dashboard"
-                  className="text-slate-500 transition hover:text-white"
-                >
-                  ←
-                </Link>
 
-                <h1 className="text-2xl font-bold">
-                  Security Scans
-                </h1>
-              </div>
+              <h1 className="text-2xl font-bold">
+                Scans
+              </h1>
 
-              <p className="mt-2 text-sm text-slate-400">
-                Run and monitor security assessments.
+              <p className="mt-1 text-sm text-slate-400">
+                Run and monitor security assessments
               </p>
+
             </div>
 
             <Link
               href="/dashboard"
-              className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:bg-slate-900 hover:text-white"
+              className="text-sm text-slate-400 hover:text-white"
             >
-              Dashboard
+              ← Dashboard
             </Link>
+
           </div>
+
         </div>
+
       </header>
 
       <div className="mx-auto max-w-7xl px-6 py-8">
-        {/* Error */}
-        {error && (
-          <div className="mb-6 flex items-start justify-between gap-4 rounded-xl border border-red-900 bg-red-950/40 px-4 py-3">
-            <div>
-              <p className="font-medium text-red-400">
-                Something went wrong
-              </p>
 
-              <p className="mt-1 text-sm text-red-300">
-                {error}
-              </p>
-            </div>
+        {/* ===================================================
+            ERROR
+        ==================================================== */}
 
-            <button
-              type="button"
-              onClick={() => setError("")}
-              className="text-red-400 hover:text-red-300"
-            >
-              ×
-            </button>
+        {(error || targetsError) && (
+          <div className="mb-6 rounded-xl border border-red-900 bg-red-950/30 p-4">
+
+            <p className="text-sm text-red-400">
+              {error || targetsError}
+            </p>
+
           </div>
         )}
 
-        {/* Statistics */}
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <StatCard
-            label="Total Scans"
-            value={totalScans}
-          />
+        {/* ===================================================
+            START SCAN
+        ==================================================== */}
 
-          <StatCard
-            label="Running"
-            value={runningScans}
-            valueClass="text-blue-400"
-          />
+        <section className="mb-8 rounded-xl border border-slate-800 bg-slate-900 p-6">
 
-          <StatCard
-            label="Queued"
-            value={queuedScans}
-            valueClass="text-yellow-400"
-          />
-
-          <StatCard
-            label="Completed"
-            value={completedScans}
-            valueClass="text-emerald-400"
-          />
-
-          <StatCard
-            label="Failed"
-            value={failedScans}
-            valueClass="text-red-400"
-          />
-        </section>
-
-        {/* Start Scan */}
-        <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
           <div className="mb-6">
+
             <h2 className="text-lg font-semibold">
               Start New Scan
             </h2>
 
             <p className="mt-1 text-sm text-slate-400">
-              Select a target and scanning profile.
+              Select a target and scan profile.
             </p>
+
           </div>
 
-          {targets.length === 0 ? (
-            <div className="rounded-xl border border-yellow-900 bg-yellow-950/30 p-5">
-              <p className="font-medium text-yellow-400">
-                No targets available
-              </p>
+          <form
+            onSubmit={startScan}
+            className="grid gap-4 lg:grid-cols-[1fr_1fr_auto]"
+          >
 
-              <p className="mt-1 text-sm text-yellow-300/80">
-                Add a target before starting a scan.
-              </p>
+            {/* Target */}
 
-              <Link
-                href="/targets"
-                className="mt-4 inline-block rounded-lg bg-yellow-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-yellow-400"
+            <div>
+
+              <label className="mb-2 block text-sm font-medium text-slate-300">
+                Target
+              </label>
+
+              <select
+                value={selectedTarget}
+                onChange={(event) =>
+                  setSelectedTarget(
+                    event.target.value
+                  )
+                }
+                disabled={targetsLoading}
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-slate-500"
               >
-                Manage Targets
-              </Link>
+
+                <option value="">
+                  {targetsLoading
+                    ? "Loading targets..."
+                    : "Select target"}
+                </option>
+
+                {targets.map((target) => (
+                  <option
+                    key={target.id}
+                    value={target.id}
+                  >
+                    {target.value}
+                  </option>
+                ))}
+
+              </select>
+
             </div>
-          ) : (
-            <form
-              onSubmit={startScan}
-              className="grid gap-5 lg:grid-cols-3"
-            >
-              {/* Target */}
-              <div>
-                <label
-                  htmlFor="target"
-                  className="mb-2 block text-sm font-medium text-slate-300"
-                >
-                  Target
-                </label>
 
-                <select
-                  id="target"
-                  value={selectedTarget}
-                  onChange={(event) =>
-                    setSelectedTarget(
-                      event.target.value
-                    )
-                  }
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none transition focus:border-blue-500"
-                >
-                  {targets.map((target) => (
-                    <option
-                      key={target.id}
-                      value={target.id}
-                    >
-                      {target.value}
-                    </option>
-                  ))}
-                </select>
+            {/* Profile */}
 
-                {selectedTarget && (
-                  <p className="mt-2 text-xs text-slate-500">
-                    Type:{" "}
-                    {getTargetType(
-                      selectedTarget
-                    ) || "unknown"}
-                  </p>
-                )}
-              </div>
+            <div>
 
-              {/* Profile */}
-              <div>
-                <label
-                  htmlFor="profile"
-                  className="mb-2 block text-sm font-medium text-slate-300"
-                >
-                  Scan Profile
-                </label>
+              <label className="mb-2 block text-sm font-medium text-slate-300">
+                Scan Profile
+              </label>
 
-                <select
-                  id="profile"
-                  value={selectedProfile}
-                  onChange={(event) =>
-                    setSelectedProfile(
-                      event.target.value
-                    )
-                  }
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none transition focus:border-blue-500"
-                >
-                  {PROFILES.map((profile) => (
-                    <option
-                      key={profile.value}
-                      value={profile.value}
-                    >
-                      {profile.name}
-                    </option>
-                  ))}
-                </select>
+              <select
+                value={selectedProfile}
+                onChange={(event) =>
+                  setSelectedProfile(
+                    event.target.value
+                  )
+                }
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-slate-500"
+              >
 
-                <p className="mt-2 text-xs text-slate-500">
-                  {getProfileDescription(
-                    selectedProfile
-                  )}
-                </p>
-              </div>
+                <option value="quick">
+                  Quick Scan
+                </option>
 
-              {/* Button */}
-              <div className="flex items-end">
-                <button
-                  type="submit"
-                  disabled={
-                    starting ||
-                    !selectedTarget
-                  }
-                  className="w-full rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {starting
-                    ? "Starting Scan..."
-                    : "Start Scan"}
-                </button>
-              </div>
-            </form>
-          )}
+                <option value="web">
+                  Web Scan
+                </option>
+
+                <option value="full">
+                  Full Scan
+                </option>
+
+              </select>
+
+            </div>
+
+            {/* Button */}
+
+            <div className="flex items-end">
+
+              <button
+                type="submit"
+                disabled={
+                  starting ||
+                  !selectedTarget
+                }
+                className="w-full rounded-lg bg-white px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
+              >
+                {starting
+                  ? "Starting..."
+                  : "Start Scan"}
+              </button>
+
+            </div>
+
+          </form>
+
         </section>
 
-        {/* Scan History */}
-        <section className="mt-8">
-          <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">
-                Scan History
-              </h2>
+        {/* ===================================================
+            SUMMARY
+        ==================================================== */}
 
-              <p className="mt-1 text-sm text-slate-400">
-                View previous and active security assessments.
-              </p>
-            </div>
+        <section className="mb-8">
 
-            {(runningScans > 0 ||
-              queuedScans > 0) && (
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
-                Updating automatically
-              </div>
-            )}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+
+            <SummaryCard
+              label="Total Scans"
+              value={summary.total}
+            />
+
+            <SummaryCard
+              label="Completed"
+              value={summary.completed}
+            />
+
+            <SummaryCard
+              label="Running"
+              value={summary.running}
+            />
+
+            <SummaryCard
+              label="Queued"
+              value={summary.queued}
+            />
+
+            <SummaryCard
+              label="Failed"
+              value={summary.failed}
+            />
+
+          </div>
+
+        </section>
+
+        {/* ===================================================
+            SCAN HISTORY
+        ==================================================== */}
+
+        <section>
+
+          <div className="mb-5">
+
+            <h2 className="text-lg font-semibold">
+              Scan History
+            </h2>
+
+            <p className="mt-1 text-sm text-slate-400">
+              Monitor previous and active security
+              assessments.
+            </p>
+
           </div>
 
           {scans.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-16 text-center">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-slate-900 text-2xl">
-                ⚡
-              </div>
 
-              <h3 className="mt-4 text-lg font-semibold">
+            <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/50 p-12 text-center">
+
+              <h3 className="text-lg font-semibold">
                 No scans yet
               </h3>
 
-              <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
-                Start your first security scan using
-                the form above.
+              <p className="mt-2 text-sm text-slate-400">
+                Start your first security scan above.
               </p>
+
             </div>
+
           ) : (
-            <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50">
-              {/* Desktop table */}
-              <div className="hidden overflow-x-auto lg:block">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-slate-800 bg-slate-900">
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Target
-                      </th>
 
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Profile
-                      </th>
+            <>
 
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Status
-                      </th>
+              {/* =================================================
+                  DESKTOP TABLE
+              ================================================== */}
 
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Risk
-                      </th>
+              <div className="hidden overflow-hidden rounded-xl border border-slate-800 bg-slate-900 lg:block">
 
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Findings
-                      </th>
+                <div className="overflow-x-auto">
 
-                      <th className="px-5 py-4 text-right text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Action
-                      </th>
-                    </tr>
-                  </thead>
+                  <table className="w-full">
 
-                  <tbody className="divide-y divide-slate-800">
-                    {scans.map((scan) => (
-                      <tr
-                        key={scan.id}
-                        className="transition hover:bg-slate-900"
-                      >
-                        {/* Target */}
-                        <td className="px-5 py-5">
-                          <div className="font-medium text-white">
-                            {scan.target ||
-                              "Unknown target"}
-                          </div>
+                    <thead className="border-b border-slate-800 bg-slate-950/50">
 
-                          <div className="mt-1 max-w-xs truncate text-xs text-slate-500">
-                            {scan.id}
-                          </div>
-                        </td>
+                      <tr>
 
-                        {/* Profile */}
-                        <td className="px-5 py-5">
-                          <div className="text-sm text-slate-200">
-                            {getProfileName(
-                              scan.profile
-                            )}
-                          </div>
+                        <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          Target
+                        </th>
 
-                          <div className="mt-1 text-xs text-slate-500">
-                            {scan.profile}
-                          </div>
-                        </td>
+                        <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          Profile
+                        </th>
 
-                        {/* Status */}
-                        <td className="px-5 py-5">
-                          <span
-                            className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${getStatusClasses(
-                              scan.status
-                            )}`}
+                        <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          Status
+                        </th>
+
+                        <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          Phase
+                        </th>
+
+                        <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          Risk
+                        </th>
+
+                        <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          Findings
+                        </th>
+
+                        <th className="px-5 py-4 text-right text-xs font-medium uppercase tracking-wider text-slate-500">
+                          Action
+                        </th>
+
+                      </tr>
+
+                    </thead>
+
+                    <tbody className="divide-y divide-slate-800">
+
+                      {scans.map((scan) => {
+
+                        const targetValue =
+                          getTargetValue(
+                            scan.target_id
+                          );
+
+                        return (
+                          <tr
+                            key={scan.id}
+                            className="transition hover:bg-slate-800/40"
                           >
-                            {getStatusLabel(
-                              scan.status
-                            )}
-                          </span>
-                        </td>
 
-                        {/* Risk */}
-                        <td className="px-5 py-5">
-                          {scan.risk_score !==
-                            null &&
-                          scan.risk_score !==
-                            undefined ? (
-                            <div className="flex items-center gap-2">
+                            {/* Target */}
+
+                            <td className="px-5 py-5">
+
+                              <div>
+
+                                <p className="font-medium text-white">
+                                  {targetValue}
+                                </p>
+
+                                <p className="mt-1 text-xs text-slate-500">
+                                  {getTargetType(
+                                    scan.target_id
+                                  )}
+                                </p>
+
+                              </div>
+
+                            </td>
+
+                            {/* Profile */}
+
+                            <td className="px-5 py-5">
+
+                              <span className="text-sm text-slate-300">
+                                {getProfileLabel(
+                                  scan.profile
+                                )}
+                              </span>
+
+                            </td>
+
+                            {/* Status */}
+
+                            <td className="px-5 py-5">
+
                               <span
-                                className={`inline-flex min-w-9 items-center justify-center rounded-lg border px-2 py-1 text-xs font-semibold ${getRiskClasses(
-                                  scan.risk_score
+                                className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${getStatusClasses(
+                                  scan.status
                                 )}`}
                               >
-                                {scan.risk_score}
+                                {getStatusLabel(
+                                  scan.status
+                                )}
                               </span>
 
-                              <span className="text-sm font-medium text-slate-300">
-                                {scan.risk_grade ||
-                                  "—"}
+                            </td>
+
+                            {/* Phase */}
+
+                            <td className="px-5 py-5">
+
+                              <span
+                                className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${getPhaseClasses(
+                                  scan.phase
+                                )}`}
+                              >
+
+                                {(scan.status ===
+                                  "queued" ||
+                                  scan.status ===
+                                    "running") && (
+                                  <span className="mr-2 h-1.5 w-1.5 self-center animate-pulse rounded-full bg-current" />
+                                )}
+
+                                {getPhaseLabel(
+                                  scan.phase
+                                )}
+
                               </span>
-                            </div>
-                          ) : (
-                            <span className="text-sm text-slate-600">
-                              —
-                            </span>
-                          )}
-                        </td>
 
-                        {/* Findings */}
-                        <td className="px-5 py-5">
-                          <span className="text-sm font-medium text-slate-200">
-                            {scan.findings_count ??
-                              0}
-                          </span>
+                            </td>
 
-                          <span className="ml-1 text-xs text-slate-500">
-                            findings
-                          </span>
-                        </td>
+                            {/* Risk */}
 
-                        {/* Action */}
-                        <td className="px-5 py-5 text-right">
-                          <Link
-                            href={`/scans/${scan.id}`}
-                            className="inline-flex rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:bg-slate-800 hover:text-white"
-                          >
-                            View Details
-                          </Link>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                            <td className="px-5 py-5">
+
+                              {scan.risk_score !==
+                              null &&
+                              scan.risk_score !==
+                                undefined ? (
+
+                                <div>
+
+                                  <p
+                                    className={`text-lg font-bold ${getRiskClasses(
+                                      scan.risk_grade
+                                    )}`}
+                                  >
+                                    {scan.risk_score}
+                                  </p>
+
+                                  <p className="text-xs text-slate-500">
+                                    Grade{" "}
+                                    {scan.risk_grade ||
+                                      "—"}
+                                  </p>
+
+                                </div>
+
+                              ) : (
+
+                                <span className="text-sm text-slate-600">
+                                  —
+                                </span>
+
+                              )}
+
+                            </td>
+
+                            {/* Findings */}
+
+                            <td className="px-5 py-5">
+
+                              <span className="text-sm text-slate-300">
+                                {scan.findings_count ??
+                                  0}
+                              </span>
+
+                            </td>
+
+                            {/* Action */}
+
+                            <td className="px-5 py-5 text-right">
+
+                              <Link
+                                href={`/scans/${scan.id}`}
+                                className="inline-flex rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+                              >
+                                View Details
+                              </Link>
+
+                            </td>
+
+                          </tr>
+                        );
+                      })}
+
+                    </tbody>
+
+                  </table>
+
+                </div>
+
               </div>
 
-              {/* Mobile / tablet cards */}
-              <div className="divide-y divide-slate-800 lg:hidden">
-                {scans.map((scan) => (
-                  <div
-                    key={scan.id}
-                    className="p-5"
-                  >
-                    <div className="flex flex-col gap-4">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <h3 className="truncate font-medium text-white">
-                            {scan.target ||
-                              "Unknown target"}
-                          </h3>
+              {/* =================================================
+                  MOBILE CARDS
+              ================================================== */}
 
-                          <p className="mt-1 truncate text-xs text-slate-500">
-                            {scan.id}
+              <div className="space-y-4 lg:hidden">
+
+                {scans.map((scan) => {
+
+                  const targetValue =
+                    getTargetValue(
+                      scan.target_id
+                    );
+
+                  return (
+                    <article
+                      key={scan.id}
+                      className="rounded-xl border border-slate-800 bg-slate-900 p-5"
+                    >
+
+                      {/* Header */}
+
+                      <div className="flex items-start justify-between gap-4">
+
+                        <div className="min-w-0">
+
+                          <p className="break-all font-medium text-white">
+                            {targetValue}
                           </p>
+
+                          <p className="mt-1 text-xs text-slate-500">
+                            {getTargetType(
+                              scan.target_id
+                            )}
+                          </p>
+
                         </div>
 
                         <span
@@ -792,96 +938,151 @@ export default function ScansPage() {
                             scan.status
                           )}
                         </span>
+
                       </div>
 
-                      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                      {/* Details */}
+
+                      <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-5">
+
                         <div>
+
                           <p className="text-xs text-slate-500">
                             Profile
                           </p>
 
-                          <p className="mt-1 text-sm text-slate-200">
-                            {getProfileName(
+                          <p className="mt-1 text-sm text-slate-300">
+                            {getProfileLabel(
                               scan.profile
                             )}
                           </p>
+
                         </div>
 
                         <div>
+
+                          <p className="text-xs text-slate-500">
+                            Phase
+                          </p>
+
+                          <span
+                            className={`mt-1 inline-flex rounded-full px-2 py-1 text-xs font-medium ${getPhaseClasses(
+                              scan.phase
+                            )}`}
+                          >
+
+                            {(scan.status ===
+                              "queued" ||
+                              scan.status ===
+                                "running") && (
+                              <span className="mr-1.5 h-1.5 w-1.5 self-center animate-pulse rounded-full bg-current" />
+                            )}
+
+                            {getPhaseLabel(
+                              scan.phase
+                            )}
+
+                          </span>
+
+                        </div>
+
+                        <div>
+
                           <p className="text-xs text-slate-500">
                             Risk
                           </p>
 
-                          <div className="mt-1 flex items-center gap-2">
-                            <span className="text-sm font-semibold text-slate-200">
-                              {scan.risk_score ??
-                                "—"}
-                            </span>
+                          {scan.risk_score !==
+                            null &&
+                          scan.risk_score !==
+                            undefined ? (
 
-                            {scan.risk_grade && (
-                              <span className="text-xs text-slate-500">
-                                Grade{" "}
-                                {
-                                  scan.risk_grade
-                                }
+                            <p
+                              className={`mt-1 text-lg font-bold ${getRiskClasses(
+                                scan.risk_grade
+                              )}`}
+                            >
+                              {scan.risk_score}
+                              <span className="ml-1 text-xs font-medium">
+                                {scan.risk_grade}
                               </span>
-                            )}
-                          </div>
+                            </p>
+
+                          ) : (
+
+                            <p className="mt-1 text-sm text-slate-600">
+                              —
+                            </p>
+
+                          )}
+
                         </div>
 
                         <div>
+
                           <p className="text-xs text-slate-500">
                             Findings
                           </p>
 
-                          <p className="mt-1 text-sm text-slate-200">
+                          <p className="mt-1 text-sm text-slate-300">
                             {scan.findings_count ??
                               0}
                           </p>
+
                         </div>
 
                         <div className="flex items-end">
+
                           <Link
                             href={`/scans/${scan.id}`}
-                            className="w-full rounded-lg border border-slate-700 px-3 py-2 text-center text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:bg-slate-800 hover:text-white"
+                            className="w-full rounded-lg border border-slate-700 px-3 py-2 text-center text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
                           >
                             View Details
                           </Link>
+
                         </div>
+
                       </div>
-                    </div>
-                  </div>
-                ))}
+
+                    </article>
+                  );
+                })}
+
               </div>
-            </div>
+
+            </>
+
           )}
+
         </section>
+
       </div>
+
     </main>
   );
 }
 
+/*
+ * =========================================================
+ * Summary Card
+ * =========================================================
+ */
 
-// ---------------------------------------------------------
-// Stat Card
-// ---------------------------------------------------------
-
-function StatCard({
+function SummaryCard({
   label,
   value,
-  valueClass = "text-white",
 }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-      <p className="text-sm text-slate-500">
+    <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+
+      <p className="text-sm text-slate-400">
         {label}
       </p>
 
-      <p
-        className={`mt-2 text-3xl font-bold ${valueClass}`}
-      >
+      <p className="mt-2 text-3xl font-bold text-white">
         {value}
       </p>
+
     </div>
   );
 }

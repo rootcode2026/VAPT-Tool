@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import ForeignKey, String, Integer
+from sqlalchemy import ForeignKey, String, Integer, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -33,7 +34,7 @@ class Scan(Base):
         default="created",
         index=True,
     )
-    
+
     phase: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
@@ -54,4 +55,11 @@ class Scan(Base):
     risk_level: Mapped[str | None] = mapped_column(
         String(30),
         nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
     )

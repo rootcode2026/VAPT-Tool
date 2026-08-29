@@ -1,8 +1,20 @@
-from app.scanner.registry import ScannerRegistry
+from app.scanner.manager import ScannerManager
 
-registry = ScannerRegistry()
 
-print("Available scanners:\n")
+def main():
 
-for scanner in registry.list():
-    print(scanner)
+    manager = ScannerManager()
+
+    print("Available scanners:")
+    print("-" * 60)
+
+    for scanner in manager.available_scanners():
+        print(f"Name: {scanner['name']}")
+        print(f"Category: {scanner['category']}")
+        print(f"Description: {scanner['description']}")
+        print(f"Target types: {scanner['target_types']}")
+        print("-" * 60)
+
+
+if __name__ == "__main__":
+    main()
