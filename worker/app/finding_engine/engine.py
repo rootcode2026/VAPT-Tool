@@ -5,149 +5,118 @@ class FindingEngine:
         Analyze normalized scanner output and return
         standardized security findings.
 
-        Supported scanners:
-        - Nmap
-        - Nuclei
+        Expected normalized structure:
+
+        {
+            "scanner": "nmap",
+            "assets": [...],
+            "findings": [...]
+        }
+
+        Every parser is responsible for converting
+        scanner-specific output into this structure.
         """
 
         scanner = scan_result.get("scanner")
 
-        if scanner == "nmap":
-            return self._analyze_nmap(scan_result)
+        if not scanner:
+            raise ValueError(
+                "Scanner name is missing from scan result."
+            )
 
-        if scanner == "nuclei":
-            return self._analyze_nuclei(scan_result)
-
-        raise ValueError(
-            f"Unsupported scanner result: {scanner}"
+        normalized_findings = scan_result.get(
+            "findings",
+            [],
         )
 
-    # ---------------------------------------------------------
-    # NMAP
-    # ---------------------------------------------------------
-
-    def _analyze_nmap(
-        self,
-        scan_result: dict,
-    ) -> list[dict]:
-
         findings = []
 
-        for host in scan_result.get("hosts", []):
+        for finding in normalized_findings:
 
-            for port in host.get("ports", []):
+            if not isinstance(finding, dict):
+                continue
 
-                if port.get("state") != "open":
-                    continue
-
-                port_number = port.get("port")
-                service = port.get("service")
-
-                # HTTP exposed
-                if port_number == 80:
-
-                    findings.append({
-                        "scanner": "nmap",
-                        "title": "HTTP service exposed",
-                        "description": (
-                            "An HTTP service is accessible over "
-                            "unencrypted HTTP."
-                        ),
-                        "severity": "low",
-                        "score": 25,
-                        "status": "open",
-                        "evidence": (
-                            f"TCP port {port_number} is open "
-                            f"and identified as {service}."
-                        ),
-                        "remediation": (
-                            "Use HTTPS and redirect HTTP traffic "
-                            "to the secure HTTPS endpoint."
-                        ),
-                        "cve": None,
-                        "cwe": "CWE-319",
-                    })
-
-                # Common development/admin port
-                if port_number == 8080:
-
-                    findings.append({
-                        "scanner": "nmap",
-                        "title": "Service exposed on port 8080",
-                        "description": (
-                            "A service is exposed on TCP port 8080. "
-                            "This port is commonly used by development, "
-                            "proxy, and administrative applications."
-                        ),
-                        "severity": "medium",
-                        "score": 45,
-                        "status": "open",
-                        "evidence": (
-                            f"TCP port {port_number} is open "
-                            f"and identified as {service}."
-                        ),
-                        "remediation": (
-                            "Verify whether the service must be "
-                            "internet-accessible. Restrict access "
-                            "with firewall rules or authentication "
-                            "if it is administrative or internal."
-                        ),
-                        "cve": None,
-                        "cwe": None,
-                    })
+            findings.append(
+                self._standardize_finding(
+                    scanner=scanner,
+                    finding=finding,
+                )
+            )
 
         return findings
 
     # ---------------------------------------------------------
-    # NUCLEI
+    # STANDARDIZE FINDING
     # ---------------------------------------------------------
 
-    def _analyze_nuclei(
+    def _standardize_finding(
         self,
-        scan_result: dict,
-    ) -> list[dict]:
+        scanner: str,
+        finding: dict,
+    ) -> dict:
 
-        findings = []
+        severity = str(
+            finding.get(
+                "severity",
+                "info",
+            )
+        ).lower()
 
-        # NucleiParser already returns normalized findings.
-        for finding in scan_result.get("findings", []):
+        score = finding.get(
+            "score",
+            self._severity_score(severity),
+        )
 
-            findings.append({
-                "scanner": "nuclei",
-                "title": finding.get(
-                    "title",
-                    "Nuclei finding",
-                ),
-                "description": finding.get(
-                    "description",
-                    "",
-                ),
-                "severity": finding.get(
-                    "severity",
-                    "info",
-                ),
-                "score": finding.get(
-                    "score",
-                    5,
-                ),
-                "status": finding.get(
-                    "status",
-                    "open",
-                ),
-                "evidence": finding.get(
-                    "evidence",
-                    "",
-                ),
-                "remediation": finding.get(
-                    "remediation",
-                    "",
-                ),
-                "cve": finding.get(
-                    "cve"
-                ),
-                "cwe": finding.get(
-                    "cwe"
-                ),
-            })
+        return {
+            "scanner": scanner,
+            "title": finding.get(
+                "title",
+                f"{scanner} finding",
+            ),
+            "description": finding.get(
+                "description",
+                "",
+            ),
+            "severity": severity,
+            "score": score,
+            "status": finding.get(
+                "status",
+                "open",
+            ),
+            "evidence": finding.get(
+                "evidence",
+                "",
+            ),
+            "remediation": finding.get(
+                "remediation",
+                "",
+            ),
+            "cve": finding.get(
+                "cve"
+            ),
+            "cwe": finding.get(
+                "cwe"
+            ),
+        }
 
-        return findings
+    # ---------------------------------------------------------
+    # DEFAULT SEVERITY SCORE
+    # ---------------------------------------------------------
+
+    def _severity_score(
+        self,
+        severity: str,
+    ) -> int:
+
+        scores = {
+            "critical": 90,
+            "high": 75,
+            "medium": 50,
+            "low": 25,
+            "info": 5,
+        }
+
+        return scores.get(
+            severity,
+            5,
+        )

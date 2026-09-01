@@ -7,7 +7,13 @@ class NmapScanner(BaseScanner):
     name = "nmap"
     category = "recon"
     description = "Network and service discovery"
-    target_types = {"domain", "ip"}
+
+    target_types = {
+        "domain",
+        "ip",
+    }
+
+    timeout = 300
 
     IMAGE = "vapt-nmap:latest"
 
@@ -15,6 +21,7 @@ class NmapScanner(BaseScanner):
         self.runner = DockerRunner()
 
     def scan(self, target: str) -> str:
+
         command = [
             "-sV",
             "-oX",
@@ -25,5 +32,5 @@ class NmapScanner(BaseScanner):
         return self.runner.run(
             image=self.IMAGE,
             command=command,
-            timeout=300,
+            timeout=self.timeout,
         )

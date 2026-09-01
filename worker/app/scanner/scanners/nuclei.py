@@ -5,14 +5,24 @@ from app.scanner.docker_runner import DockerRunner
 class NucleiScanner(BaseScanner):
 
     name = "nuclei"
+
     category = "vulnerability"
+
     description = (
         "Template-based vulnerability and "
         "security misconfiguration detection"
     )
-    target_types = {"url", "domain", "ip"}
+
+    target_types = {
+        "url",
+        "domain",
+        "ip",
+    }
+
+    timeout = 600
 
     IMAGE = "vapt-nuclei:latest"
+
     TEMPLATE_PATH = "/root/nuclei-templates"
 
     def __init__(self):
@@ -32,5 +42,5 @@ class NucleiScanner(BaseScanner):
         return self.runner.run(
             image=self.IMAGE,
             command=command,
-            timeout=600,
+            timeout=self.timeout,
         )

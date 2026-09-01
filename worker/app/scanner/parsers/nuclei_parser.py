@@ -1,9 +1,13 @@
 import json
 
+from app.scanner.parsers.base import BaseParser
 
-class NucleiParser:
 
-    def parse(self, raw_output: str) -> list[dict]:
+class NucleiParser(BaseParser):
+
+    scanner_name = "nuclei"
+
+    def parse(self, raw_output: str) -> dict:
         findings = []
 
         for line in raw_output.splitlines():
@@ -20,34 +24,52 @@ class NucleiParser:
             info = data.get("info", {})
             classification = info.get("classification", {})
 
-            severity = info.get("severity", "info").lower()
+            severity = info.get(
+                "severity",
+                "info",
+            ).lower()
 
             findings.append(
                 {
                     "scanner": "nuclei",
                     "title": info.get(
                         "name",
-                        data.get("template-id", "Nuclei finding"),
+                        data.get(
+                            "template-id",
+                            "Nuclei finding",
+                        ),
                     ),
                     "description": info.get(
                         "description",
                         "",
                     ),
                     "severity": severity,
-                    "score": self._severity_score(severity),
+                    "score": self._severity_score(
+                        severity
+                    ),
                     "status": "open",
-                    "evidence": self._build_evidence(data),
+                    "evidence": self._build_evidence(
+                        data
+                    ),
                     "remediation": (
                         "Review the detected issue and apply "
                         "the recommended security configuration "
                         "or remediation."
                     ),
-                    "cve": self._get_cve(classification),
-                    "cwe": self._get_cwe(classification),
+                    "cve": self._get_cve(
+                        classification
+                    ),
+                    "cwe": self._get_cwe(
+                        classification
+                    ),
                 }
             )
 
-        return findings
+        return {
+            "scanner": "nuclei",
+            "assets": [],
+            "findings": findings,
+        }
 
     def _severity_score(self, severity: str) -> int:
         scores = {
@@ -95,7 +117,8 @@ class NucleiParser:
 
         if extracted_results:
             evidence.append(
-                f"Extracted: {', '.join(map(str, extracted_results))}"
+                f"Extracted: "
+                f"{', '.join(map(str, extracted_results))}"
             )
 
         return " | ".join(evidence)
