@@ -20,16 +20,12 @@ class ScannerPipeline:
         # Step 2: Get parser dynamically
         parser = self.parser_registry.get(scanner)
 
-        # Step 3: Parse scanner output
-        parsed_output = parser.parse(raw_output)
+        # Step 3: Parse raw scanner output
+        # Every parser returns the same normalized structure.
+        parsed_result = parser.parse(raw_output)
 
-        # Step 4: Normalize parser output
-        parsed_result = self._normalize_result(
-            scanner=scanner,
-            parsed_output=parsed_output,
-        )
-
-        # Step 5: Convert parsed result into findings
+        # Step 4: Convert normalized findings into
+        # standardized findings.
         findings = self.finding_engine.analyze(
             parsed_result
         )
@@ -40,25 +36,3 @@ class ScannerPipeline:
             "parsed_result": parsed_result,
             "findings": findings,
         }
-
-    def _normalize_result(
-        self,
-        scanner: str,
-        parsed_output,
-    ) -> dict:
-
-        # Nmap parser already returns a normalized
-        # scanner result.
-        if scanner == "nmap":
-            return parsed_output
-
-        # Nuclei parser returns a list of findings.
-        if scanner == "nuclei":
-            return {
-                "scanner": "nuclei",
-                "findings": parsed_output,
-            }
-
-        raise ValueError(
-            f"Unsupported scanner result format: {scanner}"
-        )
