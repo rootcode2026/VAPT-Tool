@@ -1,0 +1,3 @@
+{"template-id":"tech-detect","info":{"name":"nginx detected","severity":"info","description":"Identified nginx","classification":{"cve-id":null,"cwe-id":["CWE-200"]}},"matched-at":"https://internal.test","matcher-name":"nginx"}
+this line is not json
+{"template-id":"cve-2021-44228","info":{"name":"Log4j RCE","severity":"critical","description":"Remote code execution","classification":{"cve-id":["CVE-2021-44228"],"cwe-id":["CWE-917"]}},"matched-at":"https://internal.test","extracted-results":["jndi"]}

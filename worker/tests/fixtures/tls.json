@@ -1,0 +1,49 @@
+Start 2026-09-02 12:00:00
+A reasonable amount of tests
+
+[
+  {
+    "id": "SSLv3",
+    "ip": "10.0.0.5/internal.test",
+    "port": "443",
+    "severity": "HIGH",
+    "finding": "SSLv3 offered",
+    "cve": "CVE-2014-3566",
+    "cwe": "CWE-310"
+  },
+  {
+    "id": "TLS1",
+    "ip": "10.0.0.5/internal.test",
+    "port": "443",
+    "severity": "LOW",
+    "finding": "TLSv1 offered"
+  },
+  {
+    "id": "cert_expirationStatus",
+    "ip": "10.0.0.5/internal.test",
+    "port": "443",
+    "severity": "CRITICAL",
+    "finding": "certificate expired (2020-01-01)"
+  },
+  {
+    "id": "secure_renego",
+    "ip": "10.0.0.5/internal.test",
+    "port": "443",
+    "severity": "OK",
+    "finding": "supported"
+  },
+  {
+    "id": "HTTP_HEADER",
+    "ip": "10.0.0.5/internal.test",
+    "port": "443",
+    "severity": "INFO",
+    "finding": "X-Frame-Options not present"
+  },
+  {
+    "id": "hsts",
+    "ip": "10.0.0.5/internal.test",
+    "port": "443",
+    "severity": "LOW",
+    "finding": "HSTS not offered"
+  }
+]

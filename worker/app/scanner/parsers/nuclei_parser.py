@@ -62,6 +62,17 @@ class NucleiParser(BaseParser):
                     "cwe": self._get_cwe(
                         classification
                     ),
+                    "metadata": {
+                        "template_id": data.get(
+                            "template-id"
+                        ),
+                        "matched_at": data.get(
+                            "matched-at"
+                        ),
+                        "matcher_name": data.get(
+                            "matcher-name"
+                        ),
+                    },
                 }
             )
 

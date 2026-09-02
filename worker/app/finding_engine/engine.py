@@ -67,6 +67,13 @@ class FindingEngine:
             self._severity_score(severity),
         )
 
+        metadata = finding.get("metadata")
+
+        if not isinstance(metadata, dict):
+            metadata = {}
+        else:
+            metadata = dict(metadata)
+
         return {
             "scanner": scanner,
             "title": finding.get(
@@ -97,6 +104,7 @@ class FindingEngine:
             "cwe": finding.get(
                 "cwe"
             ),
+            "metadata": metadata,
         }
 
     # ---------------------------------------------------------

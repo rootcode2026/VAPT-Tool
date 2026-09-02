@@ -6,3 +6,4 @@ pydantic-settings
 alembic
 celery
 redis
+pytest

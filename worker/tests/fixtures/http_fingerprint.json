@@ -1,0 +1,16 @@
+{
+  "scanner": "http_fingerprint",
+  "target": "https://internal.test",
+  "final_url": "https://internal.test/",
+  "status_code": 200,
+  "history": [],
+  "headers": {
+    "Server": "nginx/1.24.0",
+    "Content-Type": "text/html"
+  },
+  "cookies": [],
+  "tls": {
+    "https": true
+  },
+  "technology": ["nginx"]
+}

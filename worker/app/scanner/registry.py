@@ -1,6 +1,12 @@
 from app.scanner.base import BaseScanner
+from app.scanner.scanners.dns import DNSScanner
+from app.scanner.scanners.http_fingerprint import HTTPFingerprintScanner
+from app.scanner.scanners.nikto import NiktoScanner
 from app.scanner.scanners.nmap import NmapScanner
 from app.scanner.scanners.nuclei import NucleiScanner
+from app.scanner.scanners.subdomain import SubdomainScanner
+from app.scanner.scanners.tls import TLSScanner
+from app.scanner.scanners.zap import ZAPScanner
 
 
 class ScannerRegistry:
@@ -17,6 +23,12 @@ class ScannerRegistry:
     def _register_builtin_scanners(self):
         self.register(NmapScanner())
         self.register(NucleiScanner())
+        self.register(HTTPFingerprintScanner())
+        self.register(ZAPScanner())
+        self.register(NiktoScanner())
+        self.register(TLSScanner())
+        self.register(DNSScanner())
+        self.register(SubdomainScanner())
 
     def register(self, scanner: BaseScanner):
         if not scanner.name:

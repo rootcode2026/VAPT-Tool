@@ -25,6 +25,51 @@ SCANNERS = [
         ),
         "target_types": ["domain", "ip", "url"],
     },
+    {
+        "name": "http_fingerprint",
+        "category": "web_recon",
+        "description": (
+            "HTTP and HTTPS web service fingerprinting "
+            "and security header analysis"
+        ),
+        "target_types": ["domain", "url"],
+    },
+    {
+        "name": "zap",
+        "category": "web_vulnerability",
+        "description": "OWASP ZAP web application vulnerability scanning",
+        "target_types": ["domain", "url"],
+    },
+    {
+        "name": "nikto",
+        "category": "web_vulnerability",
+        "description": (
+            "Web server misconfiguration and known-vulnerability scanning"
+        ),
+        "target_types": ["domain", "url"],
+    },
+    {
+        "name": "tls",
+        "category": "tls",
+        "description": (
+            "TLS/SSL protocol, cipher, and certificate security analysis"
+        ),
+        "target_types": ["domain", "ip", "url"],
+    },
+    {
+        "name": "dns",
+        "category": "asset_discovery",
+        "description": "DNS record discovery for authorized domains",
+        "target_types": ["domain"],
+    },
+    {
+        "name": "subdomain",
+        "category": "asset_discovery",
+        "description": (
+            "Passive subdomain discovery for authorized domains"
+        ),
+        "target_types": ["domain"],
+    },
 ]
 
 

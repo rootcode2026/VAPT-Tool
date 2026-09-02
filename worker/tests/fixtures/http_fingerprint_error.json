@@ -1,0 +1,5 @@
+{
+  "scanner": "http_fingerprint",
+  "target": "https://internal.test",
+  "error": "Connection timed out"
+}

@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<nmaprun scanner="nmap" version="7.94">
+    <host>
+        <status state="up"/>
+        <address addr="10.0.0.8" addrtype="ipv4"/>
+        <hostnames>
+            <hostname name="internal.test"/>
+        </hostnames>
+        <ports>
+            <port protocol="tcp" portid="80">
+                <state state="open"/>
+                <service name="http" product="nginx" version="1.24.0"/>
+            </port>
+            <port protocol="tcp" portid="443">
+                <state state="open"/>
+                <service name="https"/>
+            </port>
+        </ports>
+    </host>
+</nmaprun>

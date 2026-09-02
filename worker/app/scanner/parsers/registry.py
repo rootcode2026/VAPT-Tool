@@ -1,6 +1,12 @@
 from app.scanner.parsers.base import BaseParser
+from app.scanner.parsers.dns_parser import DNSParser
+from app.scanner.parsers.http_fingerprint_parser import HTTPFingerprintParser
+from app.scanner.parsers.nikto_parser import NiktoParser
 from app.scanner.parsers.nmap_parser import NmapParser
 from app.scanner.parsers.nuclei_parser import NucleiParser
+from app.scanner.parsers.subdomain_parser import SubdomainParser
+from app.scanner.parsers.tls_parser import TLSParser
+from app.scanner.parsers.zap_parser import ZAPParser
 
 
 class ParserRegistry:
@@ -9,9 +15,19 @@ class ParserRegistry:
         self._parsers: dict[str, BaseParser] = {}
         self._register_builtin_parsers()
 
+    # ---------------------------------------------------------
+    # Registration
+    # ---------------------------------------------------------
+
     def _register_builtin_parsers(self):
         self.register(NmapParser())
         self.register(NucleiParser())
+        self.register(HTTPFingerprintParser())
+        self.register(ZAPParser())
+        self.register(NiktoParser())
+        self.register(TLSParser())
+        self.register(DNSParser())
+        self.register(SubdomainParser())
 
     def register(self, parser: BaseParser):
         if not parser.scanner_name:
@@ -27,7 +43,12 @@ class ParserRegistry:
 
         self._parsers[parser.scanner_name] = parser
 
+    # ---------------------------------------------------------
+    # Retrieval
+    # ---------------------------------------------------------
+
     def get(self, scanner_name: str) -> BaseParser:
+
         parser = self._parsers.get(scanner_name)
 
         if parser is None:
@@ -38,5 +59,11 @@ class ParserRegistry:
 
         return parser
 
+    # ---------------------------------------------------------
+    # Listing
+    # ---------------------------------------------------------
+
     def list(self) -> list[str]:
-        return sorted(self._parsers.keys())
+        return sorted(
+            self._parsers.keys()
+        )

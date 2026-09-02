@@ -1,0 +1,3 @@
+{"host":"www.internal.test","source":"crtsh","input":"internal.test"}
+{"host":"api.internal.test","source":"alienvault","input":"internal.test","ip":"10.0.0.9"}
+{"host":"mail.internal.test","source":"crtsh","input":"internal.test"}

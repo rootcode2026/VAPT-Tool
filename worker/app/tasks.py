@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 import os
 import uuid
 
@@ -6,6 +7,12 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from .celery_app import celery_app
+from .persistence import (
+    get_project_id,
+    match_asset_id,
+    sanitize_metadata,
+    upsert_assets,
+)
 from .risk_engine.engine import RiskAssessmentEngine
 from .scanner.profiles import get_scanners_for_profile
 from .scanner.pipeline import ScannerPipeline
@@ -86,6 +93,7 @@ def execute_scan(
 
         all_findings = []
         scanner_results = []
+        parsed_assets_by_scanner = []
 
         # ---------------------------------------------------------
         # 4. Run scanners
@@ -127,6 +135,22 @@ def execute_scan(
             findings = pipeline_result.get(
                 "findings",
                 [],
+            )
+
+            parsed_result = pipeline_result.get(
+                "parsed_result",
+                {},
+            )
+
+            parsed_assets_by_scanner.append(
+                {
+                    "scanner": scanner_name,
+                    "assets": parsed_result.get(
+                        "assets",
+                        [],
+                    ),
+                    "findings": findings,
+                }
             )
 
             print(
@@ -265,73 +289,104 @@ def execute_scan(
             )
 
         # ---------------------------------------------------------
-        # 9. Save findings
+        # 9. Save assets and findings
         # ---------------------------------------------------------
 
-        for finding in all_findings:
+        project_id = get_project_id(
+            db,
+            target_id,
+        )
 
-            db.execute(
-                text(
-                    """
-                    INSERT INTO findings
-                    (
-                        id,
-                        scan_id,
-                        target_id,
-                        scanner,
-                        title,
-                        description,
-                        severity,
-                        score,
-                        status,
-                        evidence,
-                        remediation,
-                        cve,
-                        cwe,
-                        created_at
-                    )
-                    VALUES
-                    (
-                        :id,
-                        :scan_id,
-                        :target_id,
-                        :scanner,
-                        :title,
-                        :description,
-                        :severity,
-                        :score,
-                        :status,
-                        :evidence,
-                        :remediation,
-                        :cve,
-                        :cwe,
-                        :created_at
-                    )
-                    """
+        for parsed_bundle in parsed_assets_by_scanner:
+            persisted_assets = upsert_assets(
+                db,
+                project_id=project_id,
+                scan_id=scan_id,
+                assets=parsed_bundle.get(
+                    "assets",
+                    [],
                 ),
-                {
-                    "id": str(uuid.uuid4()),
-                    "scan_id": scan_id,
-                    "target_id": target_id,
-                    "scanner": finding["scanner"],
-                    "title": finding["title"],
-                    "description": finding.get(
-                        "description"
-                    ),
-                    "severity": finding["severity"],
-                    "score": finding.get("score"),
-                    "status": finding["status"],
-                    "evidence": finding.get(
-                        "evidence"
-                    ),
-                    "remediation": finding.get(
-                        "remediation"
-                    ),
-                    "cve": finding.get("cve"),
-                    "cwe": finding.get("cwe"),
-                    "created_at": completed_at,
-                },
             )
+
+            for finding in parsed_bundle.get(
+                "findings",
+                [],
+            ):
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO findings
+                        (
+                            id,
+                            scan_id,
+                            target_id,
+                            asset_id,
+                            scanner,
+                            title,
+                            description,
+                            severity,
+                            score,
+                            status,
+                            evidence,
+                            remediation,
+                            cve,
+                            cwe,
+                            metadata,
+                            created_at
+                        )
+                        VALUES
+                        (
+                            :id,
+                            :scan_id,
+                            :target_id,
+                            :asset_id,
+                            :scanner,
+                            :title,
+                            :description,
+                            :severity,
+                            :score,
+                            :status,
+                            :evidence,
+                            :remediation,
+                            :cve,
+                            :cwe,
+                            CAST(:metadata AS JSONB),
+                            :created_at
+                        )
+                        """
+                    ),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "scan_id": scan_id,
+                        "target_id": target_id,
+                        "asset_id": match_asset_id(
+                            finding,
+                            persisted_assets,
+                        ),
+                        "scanner": finding["scanner"],
+                        "title": finding["title"],
+                        "description": finding.get(
+                            "description"
+                        ),
+                        "severity": finding["severity"],
+                        "score": finding.get("score"),
+                        "status": finding["status"],
+                        "evidence": finding.get(
+                            "evidence"
+                        ),
+                        "remediation": finding.get(
+                            "remediation"
+                        ),
+                        "cve": finding.get("cve"),
+                        "cwe": finding.get("cwe"),
+                        "metadata": json.dumps(
+                            sanitize_metadata(
+                                finding.get("metadata")
+                            )
+                        ),
+                        "created_at": completed_at,
+                    },
+                )
 
         print(
             f"Findings saved: "

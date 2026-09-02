@@ -1,20 +1,31 @@
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class FindingResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     scan_id: str
     target_id: str
     scanner: str
     title: str
-    description: str | None
+    description: str | None = None
     severity: str
-    score: int | None
+    score: int | None = None
     status: str
-    evidence: str | None
-    remediation: str | None
-    cve: str | None
-    cwe: str | None
+    evidence: str | None = None
+    remediation: str | None = None
+    cve: str | None = None
+    cwe: str | None = None
+    asset_id: str | None = None
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        exclude=True,
+    )
 
-    class Config:
-        from_attributes = True
+    @computed_field
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return self.extra_data or {}

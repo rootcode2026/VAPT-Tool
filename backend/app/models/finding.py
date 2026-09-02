@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String, Text, Integer, DateTime
+from sqlalchemy import ForeignKey, String, Text, Integer, DateTime, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -85,6 +86,21 @@ class Finding(Base):
         String(50),
         nullable=True,
         index=True,
+    )
+
+    asset_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("assets.id"),
+        nullable=True,
+        index=True,
+    )
+
+    extra_data: Mapped[dict] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
     )
 
     created_at: Mapped[datetime] = mapped_column(

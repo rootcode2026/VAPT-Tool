@@ -4,6 +4,10 @@ from app.scanner.docker_runner import DockerRunner
 
 class NucleiScanner(BaseScanner):
 
+    # ---------------------------------------------------------
+    # Identity
+    # ---------------------------------------------------------
+
     name = "nuclei"
 
     category = "vulnerability"
@@ -13,11 +17,48 @@ class NucleiScanner(BaseScanner):
         "security misconfiguration detection"
     )
 
+    # ---------------------------------------------------------
+    # Target / Input
+    # ---------------------------------------------------------
+
     target_types = {
         "url",
         "domain",
         "ip",
     }
+
+    input_type = "target"
+
+    # ---------------------------------------------------------
+    # Output
+    # ---------------------------------------------------------
+
+    output_format = "jsonl"
+
+    # ---------------------------------------------------------
+    # Capabilities
+    # ---------------------------------------------------------
+
+    capabilities = {
+        "vulnerability_detection",
+        "misconfiguration_detection",
+        "exposure_detection",
+        "technology_detection",
+    }
+
+    # ---------------------------------------------------------
+    # Requirements
+    # ---------------------------------------------------------
+
+    requirements = [
+        "network_access",
+        "docker",
+        "nuclei_templates",
+    ]
+
+    # ---------------------------------------------------------
+    # Execution
+    # ---------------------------------------------------------
 
     timeout = 600
 

@@ -18,6 +18,8 @@ RUN groupadd -f docker && \
     usermod -aG docker appuser
 
 COPY --chown=appuser:appgroup app ./app
+COPY --chown=appuser:appgroup tests ./tests
+COPY --chown=appuser:appgroup pytest.ini ./pytest.ini
 
 USER appuser
 

@@ -16,6 +16,7 @@ from app.models import (
     Target,
     Scan,
     ScanResult,
+    Asset,
     Finding,
 )
 

@@ -1,0 +1,1 @@
+{"host":"internal.test","ttl":3600,"resolver":"10.0.0.53:53","status_code":"NOERROR","a":["10.0.0.8"],"aaaa":["2001:db8::8"],"cname":["www.internal.test"],"mx":["10 mail.internal.test"],"ns":["ns1.internal.test"],"txt":["v=spf1 -all"],"soa":["ns1.internal.test. hostmaster.internal.test. 2026090201 7200 3600 1209600 3600"]}

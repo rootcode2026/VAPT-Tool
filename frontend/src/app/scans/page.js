@@ -271,10 +271,32 @@ export default function ScansPage() {
         return "border border-blue-800 bg-blue-950/60 text-blue-400";
 
       case "nmap_completed":
+      case "nmap_running":
         return "border border-purple-800 bg-purple-950/60 text-purple-400";
 
       case "nuclei_completed":
+      case "nuclei_running":
         return "border border-cyan-800 bg-cyan-950/60 text-cyan-400";
+
+      case "zap_completed":
+      case "zap_running":
+        return "border border-orange-800 bg-orange-950/60 text-orange-400";
+
+      case "nikto_completed":
+      case "nikto_running":
+        return "border border-rose-800 bg-rose-950/60 text-rose-400";
+
+      case "tls_completed":
+      case "tls_running":
+        return "border border-emerald-800 bg-emerald-950/60 text-emerald-400";
+
+      case "dns_completed":
+      case "dns_running":
+        return "border border-sky-800 bg-sky-950/60 text-sky-400";
+
+      case "subdomain_completed":
+      case "subdomain_running":
+        return "border border-indigo-800 bg-indigo-950/60 text-indigo-400";
 
       case "analyzing":
         return "border border-indigo-800 bg-indigo-950/60 text-indigo-400";

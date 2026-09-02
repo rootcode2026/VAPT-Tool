@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from app.schemas.finding import FindingResponse
+
 
 class ScanCreate(BaseModel):
     target_id: str = Field(min_length=1)
@@ -34,25 +36,6 @@ class ScanHistoryResponse(BaseModel):
     risk_level: str | None = None
 
     findings_count: int
-
-    class Config:
-        from_attributes = True
-
-
-class FindingResponse(BaseModel):
-    id: str
-    scan_id: str
-    target_id: str
-    scanner: str
-    title: str
-    description: str | None = None
-    severity: str
-    score: int | None = None
-    status: str
-    evidence: str | None = None
-    remediation: str | None = None
-    cve: str | None = None
-    cwe: str | None = None
 
     class Config:
         from_attributes = True

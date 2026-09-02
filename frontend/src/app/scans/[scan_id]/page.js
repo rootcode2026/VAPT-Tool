@@ -273,6 +273,26 @@ export default function ScanDetailsPage() {
       return "bg-cyan-950 text-cyan-300";
     }
 
+    if (scanner === "zap") {
+      return "bg-orange-950 text-orange-300";
+    }
+
+    if (scanner === "nikto") {
+      return "bg-rose-950 text-rose-300";
+    }
+
+    if (scanner === "tls") {
+      return "bg-emerald-950 text-emerald-300";
+    }
+
+    if (scanner === "dns") {
+      return "bg-sky-950 text-sky-300";
+    }
+
+    if (scanner === "subdomain") {
+      return "bg-indigo-950 text-indigo-300";
+    }
+
     return "bg-slate-800 text-slate-300";
   }
 
