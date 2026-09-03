@@ -62,6 +62,7 @@ def create_scan(
         "quick",
         "web",
         "full",
+        "sca",
     }
 
     if data.profile not in allowed_profiles:

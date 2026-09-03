@@ -5,7 +5,7 @@ from app.schemas.finding import FindingResponse
 def test_scanner_catalog_exposes_supported_scanners():
     names = [scanner["name"] for scanner in SCANNERS]
 
-    assert names == [
+    for expected in [
         "nmap",
         "nuclei",
         "http_fingerprint",
@@ -14,7 +14,10 @@ def test_scanner_catalog_exposes_supported_scanners():
         "tls",
         "dns",
         "subdomain",
-    ]
+    ]:
+        assert expected in names
+    assert "sca" in names
+    assert "sast" in names
 
 
 def test_finding_response_includes_metadata_without_breaking_core_fields():

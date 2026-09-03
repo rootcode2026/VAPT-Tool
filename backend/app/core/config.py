@@ -163,6 +163,15 @@ class Settings:
     )
 
     # ---------------------------------------------------------
+    # SCA
+    # ---------------------------------------------------------
+
+    SCA_VULNERABILITY_PROVIDER: str = os.getenv(
+        "SCA_VULNERABILITY_PROVIDER",
+        "osv" if os.getenv("ENVIRONMENT", "development").lower() == "production" else "fixture",
+    ).lower()
+
+    # ---------------------------------------------------------
     # AI
     # ---------------------------------------------------------
 

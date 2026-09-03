@@ -40,11 +40,21 @@ ERROR_SCANNER_FAILURE = "scanner_failure"
 ERROR_PARSER_FAILURE = "parser_failure"
 ERROR_PERSISTENCE_FAILURE = "persistence_failure"
 ERROR_UNKNOWN = "unknown"
+ERROR_PROVIDER_TIMEOUT = "provider_timeout"
+ERROR_PROVIDER_TRANSPORT = "provider_transport"
+ERROR_PROVIDER_RATE_LIMIT = "provider_rate_limit"
+ERROR_PROVIDER_ERROR = "provider_error"
+ERROR_MANIFEST_PARSE = "manifest_parse_error"
+ERROR_UNSUPPORTED_MANIFEST = "unsupported_manifest"
 
 RETRYABLE_ERROR_TYPES = {
     ERROR_TIMEOUT,
     ERROR_DOCKER_TRANSPORT,
     ERROR_DOCKER_API,
+    ERROR_PROVIDER_TIMEOUT,
+    ERROR_PROVIDER_TRANSPORT,
+    ERROR_PROVIDER_RATE_LIMIT,
+    ERROR_PROVIDER_ERROR,
 }
 
 TRANSPORT_ERROR_NAMES = {
@@ -331,6 +341,22 @@ def classify_failure(
             original_type,
             original_message,
         )
+
+    # SCA provider errors - retryable for network/rate limit, not for parse
+    msg_lower = original_message.lower()
+    type_lower = original_type.lower()
+    if "provider_error" in type_lower or "osvprovidererror" in type_lower:
+        if "timeout" in msg_lower:
+            return FailureInfo(ERROR_PROVIDER_TIMEOUT, public_message, "execution", True, original_type, original_message)
+        if "rate limited" in msg_lower or "429" in msg_lower:
+            return FailureInfo(ERROR_PROVIDER_RATE_LIMIT, public_message, "execution", True, original_type, original_message)
+        if "connection" in msg_lower or "transport" in msg_lower or "dns" in msg_lower:
+            return FailureInfo(ERROR_PROVIDER_TRANSPORT, public_message, "execution", True, original_type, original_message)
+        return FailureInfo(ERROR_PROVIDER_ERROR, public_message, "execution", True, original_type, original_message)
+    if "manifest" in msg_lower and ("parse" in msg_lower or "invalid" in msg_lower):
+        return FailureInfo(ERROR_MANIFEST_PARSE, public_message, "parsing", False, original_type, original_message)
+    if "unsupported manifest" in msg_lower:
+        return FailureInfo(ERROR_UNSUPPORTED_MANIFEST, public_message, "parsing", False, original_type, original_message)
 
     if isinstance(current, ScannerFailureError):
         return FailureInfo(

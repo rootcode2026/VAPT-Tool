@@ -70,6 +70,18 @@ SCANNERS = [
         ),
         "target_types": ["domain"],
     },
+    {
+        "name": "sca",
+        "category": "application_security",
+        "description": "Software Composition Analysis — dependency vulnerability detection",
+        "target_types": ["repository", "project"],
+    },
+    {
+        "name": "sast",
+        "category": "application_security",
+        "description": "Static Application Security Testing for Python source code",
+        "target_types": ["repository", "project", "directory"],
+    },
 ]
 
 

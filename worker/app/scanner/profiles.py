@@ -22,6 +22,12 @@ SCAN_PROFILES = {
         "dns",
         "subdomain",
     ],
+    "sca": [
+        "sca",
+    ],
+    "sast": [
+        "sast",
+    ],
 }
 
 

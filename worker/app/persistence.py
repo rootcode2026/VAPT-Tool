@@ -305,12 +305,35 @@ def _finding_needles(finding: dict) -> set[str]:
                 host = normalize_hostname(text)
                 if host:
                     needles.add(host)
+            # Reuse canonical utilities for host/IP evidence (project-scoped deterministic matching)
+            try:
+                from app.asset_intel.normalize import normalize_hostname as _nh, normalize_ip as _nip, normalize_url as _nu
+                # bare hostname / domain
+                hn = _nh(text, extract_url=True)
+                if hn and hn != text:
+                    needles.add(hn.lower())
+                # url without scheme but still normalize attempt
+                if "." in text and " " not in text:
+                    # IP canonicalization for IPv4/IPv6
+                    _t, _v = _nip(text)
+                    if _v:
+                        needles.add(_v.lower())
+            except Exception:
+                pass
 
     evidence = str(finding.get("evidence") or "")
     for token in re.split(r"[\s/:]+", evidence):
         cleaned = token.strip().lower()
         if len(cleaned) >= 3 or cleaned.isdigit():
             needles.add(cleaned)
+            # normalize IP tokens for IPv4/IPv6 canonical matching
+            try:
+                from app.asset_intel.normalize import normalize_ip as _nip2
+                _t, _v = _nip2(cleaned)
+                if _v:
+                    needles.add(_v.lower())
+            except Exception:
+                pass
 
     port = metadata.get("port")
     if port not in (None, ""):
@@ -449,47 +472,54 @@ def _load_target_assets_pre_mutation(
         return {}
 
     sorted_identities = sorted(list(set(identities)))
-    results = {}
+    if not sorted_identities:
+        return {}
+    # Single database-side, project-scoped candidate lookup (no loading all assets)
+    # Build a single query with OR clauses to avoid N round-trips
+    clauses = []
+    params: dict = {"project_id": project_id}
+    for idx, (asset_type, val) in enumerate(sorted_identities):
+        t_key = f"t{idx}"
+        v_key = f"v{idx}"
+        clauses.append(f"(asset_type = :{t_key} AND value = :{v_key})")
+        params[t_key] = asset_type
+        params[v_key] = val
 
-    for asset_type, val in sorted_identities:
-        row = db.execute(
-            text(
-                """
+    where = " OR ".join(clauses)
+    rows = db.execute(
+        text(
+            f"""
                 SELECT id, asset_type, value, metadata, first_seen_at, last_seen_at, status
                 FROM assets
                 WHERE project_id = :project_id
-                  AND asset_type = :asset_type
-                  AND value = :value
+                  AND ({where})
                 """
-            ),
-            {
-                "project_id": project_id,
-                "asset_type": asset_type,
-                "value": val,
-            },
-        ).fetchone()
+        ),
+        params,
+    ).fetchall()
 
-        if row is not None:
-            raw_meta = row[3]
-            if isinstance(raw_meta, str):
-                try:
-                    meta = json.loads(raw_meta)
-                except Exception:
-                    meta = {}
-            elif isinstance(raw_meta, dict):
-                meta = raw_meta
-            else:
+    results = {}
+    for row in rows:
+        raw_meta = row[3]
+        if isinstance(raw_meta, str):
+            try:
+                meta = json.loads(raw_meta)
+            except Exception:
                 meta = {}
+        elif isinstance(raw_meta, dict):
+            meta = raw_meta
+        else:
+            meta = {}
 
-            results[(row[1], row[2])] = {
-                "id": row[0],
-                "asset_type": row[1],
-                "value": row[2],
-                "metadata": meta,
-                "first_seen_at": row[4],
-                "last_seen_at": row[5],
-                "status": row[6] if len(row) > 6 else "active",
-            }
+        results[(row[1], row[2])] = {
+            "id": row[0],
+            "asset_type": row[1],
+            "value": row[2],
+            "metadata": meta,
+            "first_seen_at": row[4],
+            "last_seen_at": row[5],
+            "status": row[6] if len(row) > 6 else "active",
+        }
     return results
 
 

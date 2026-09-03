@@ -4,6 +4,8 @@ from app.scanner.parsers.http_fingerprint_parser import HTTPFingerprintParser
 from app.scanner.parsers.nikto_parser import NiktoParser
 from app.scanner.parsers.nmap_parser import NmapParser
 from app.scanner.parsers.nuclei_parser import NucleiParser
+from app.scanner.parsers.sast_parser import SASTParser
+from app.scanner.parsers.sca_parser import SCAParser
 from app.scanner.parsers.subdomain_parser import SubdomainParser
 from app.scanner.parsers.tls_parser import TLSParser
 from app.scanner.parsers.zap_parser import ZAPParser
@@ -28,6 +30,8 @@ class ParserRegistry:
         self.register(TLSParser())
         self.register(DNSParser())
         self.register(SubdomainParser())
+        self.register(SCAParser())
+        self.register(SASTParser())
 
     def register(self, parser: BaseParser):
         if not parser.scanner_name:
