@@ -58,6 +58,14 @@ class Asset(Base):
         index=True,
     )
 
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="active",
+        server_default="active",
+        index=True,
+    )
+
     extra_data: Mapped[dict] = mapped_column(
         "metadata",
         JSONB,

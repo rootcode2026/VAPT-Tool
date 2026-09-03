@@ -45,6 +45,7 @@ class Asset(Base):
     last_seen_scan_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scans.id"), nullable=True)
     asset_type: Mapped[str] = mapped_column(String(50))
     value: Mapped[str] = mapped_column(String(1024))
+    status: Mapped[str] = mapped_column(String(20), default="active")
     extra_data: Mapped[str] = mapped_column("metadata", String, default="{}")
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

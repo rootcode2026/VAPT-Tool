@@ -6,6 +6,7 @@ from app.models.scan import Scan
 from app.models.scan_result import ScanResult
 from app.models.asset import Asset
 from app.models.asset_relationship import AssetRelationship
+from app.models.asset_change_event import AssetChangeEvent
 from app.models.finding import Finding
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "ScanResult",
     "Asset",
     "AssetRelationship",
+    "AssetChangeEvent",
     "Finding",
 ]

@@ -390,18 +390,44 @@ def persist_parsed_bundle(
     findings: list,
     now: datetime | None = None,
 ) -> list[dict]:
+    from app.asset_intel.change_detection import (
+        detect_asset_changes,
+        persist_change_events,
+    )
+
+    observed_at = now or datetime.now(timezone.utc)
     correlated = correlate_parsed_bundle(
         scanner,
         assets,
         findings,
     )
+
+    target_identities = [
+        (infer_asset_type(a), infer_asset_value(a))
+        for a in (correlated.get("assets") or [])
+        if isinstance(a, dict) and infer_asset_value(a)
+    ]
+    previous_map = _load_target_assets_pre_mutation(db, project_id, target_identities)
+
+    change_events = detect_asset_changes(
+        db,
+        project_id=project_id,
+        scan_id=scan_id,
+        scanner=scanner,
+        current_assets=correlated.get("assets") or [],
+        current_relationships=correlated.get("relationships") or [],
+        previous_assets_map=previous_map,
+        observed_at=observed_at,
+    )
+    persist_change_events(db, change_events)
+
     persisted = upsert_assets(
         db,
         project_id=project_id,
         scan_id=scan_id,
         assets=correlated["assets"],
         scanner=scanner,
-        now=now,
+        now=observed_at,
     )
     upsert_relationships(
         db,
@@ -409,9 +435,62 @@ def persist_parsed_bundle(
         relationships=correlated["relationships"],
         persisted_assets=persisted,
         scanner=scanner,
-        now=now,
+        now=observed_at,
     )
     return persisted
+
+
+def _load_target_assets_pre_mutation(
+    db,
+    project_id: str,
+    identities: list[tuple[str, str]],
+) -> dict[tuple[str, str], dict]:
+    if not identities:
+        return {}
+
+    sorted_identities = sorted(list(set(identities)))
+    results = {}
+
+    for asset_type, val in sorted_identities:
+        row = db.execute(
+            text(
+                """
+                SELECT id, asset_type, value, metadata, first_seen_at, last_seen_at, status
+                FROM assets
+                WHERE project_id = :project_id
+                  AND asset_type = :asset_type
+                  AND value = :value
+                """
+            ),
+            {
+                "project_id": project_id,
+                "asset_type": asset_type,
+                "value": val,
+            },
+        ).fetchone()
+
+        if row is not None:
+            raw_meta = row[3]
+            if isinstance(raw_meta, str):
+                try:
+                    meta = json.loads(raw_meta)
+                except Exception:
+                    meta = {}
+            elif isinstance(raw_meta, dict):
+                meta = raw_meta
+            else:
+                meta = {}
+
+            results[(row[1], row[2])] = {
+                "id": row[0],
+                "asset_type": row[1],
+                "value": row[2],
+                "metadata": meta,
+                "first_seen_at": row[4],
+                "last_seen_at": row[5],
+                "status": row[6] if len(row) > 6 else "active",
+            }
+    return results
 
 
 def upsert_assets(
@@ -423,6 +502,8 @@ def upsert_assets(
     scanner: str | None = None,
     now: datetime | None = None,
 ) -> list[dict]:
+    from app.asset_intel.change_detection import compute_asset_lifecycle_status
+
     persisted = []
     observed_at = now or datetime.now(timezone.utc)
 
@@ -440,7 +521,7 @@ def upsert_assets(
         if scanner:
             metadata = merge_metadata(metadata, {}, scanner)
 
-        new_id = str(uuid.uuid4())
+        new_id = asset.get("id") or str(uuid.uuid4())
 
         row = db.execute(
             text(
@@ -452,6 +533,7 @@ def upsert_assets(
                     last_seen_scan_id,
                     asset_type,
                     value,
+                    status,
                     metadata,
                     first_seen_at,
                     last_seen_at,
@@ -465,6 +547,7 @@ def upsert_assets(
                     :scan_id,
                     :asset_type,
                     :value,
+                    :status,
                     :metadata,
                     :observed_at,
                     :observed_at,
@@ -483,6 +566,7 @@ def upsert_assets(
                 "scan_id": scan_id,
                 "asset_type": asset_type,
                 "value": value,
+                "status": "active",
                 "metadata": json.dumps(metadata),
                 "observed_at": observed_at,
             },
@@ -517,6 +601,7 @@ def upsert_assets(
             observed_at,
             scan_id,
         )
+        status = compute_asset_lifecycle_status(final_last_seen, reference_time=observed_at)
 
         db.execute(
             text(
@@ -527,6 +612,7 @@ def upsert_assets(
                     first_seen_at = :first_seen_at,
                     last_seen_at = :last_seen_at,
                     last_seen_scan_id = :last_seen_scan_id,
+                    status = :status,
                     updated_at = :updated_at
                 WHERE id = :id
                 """
@@ -537,6 +623,7 @@ def upsert_assets(
                 "first_seen_at": final_first_seen,
                 "last_seen_at": final_last_seen,
                 "last_seen_scan_id": final_last_scan_id,
+                "status": status,
                 "updated_at": observed_at,
             },
         )
