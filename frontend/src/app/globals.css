@@ -1,8 +1,29 @@
 @import "tailwindcss";
 
+@theme {
+  --color-canvas: #0b1220;
+  --color-surface: #121a2b;
+  --color-surface-hover: #172033;
+  --color-border: #243049;
+  --color-text: #e8eef9;
+  --color-muted: #8b98ae;
+  --color-primary: #3d7ea6;
+  --color-primary-foreground: #f4f8fc;
+  --color-success: #2f9d78;
+  --color-warning: #c4a14b;
+  --color-danger: #c45c5c;
+  --color-info: #5b87b5;
+  --color-critical: #c43d4a;
+  --color-high: #d06a3a;
+  --color-medium: #c4a14b;
+  --color-low: #3d9a78;
+  --font-sans: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
 :root {
-  --background: #020617;
-  --foreground: #f8fafc;
+  --background: var(--color-canvas);
+  --foreground: var(--color-text);
+  --focus-ring: #7eb3d4;
 }
 
 html,
@@ -14,4 +35,40 @@ body {
   margin: 0;
   background: var(--background);
   color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.severity-critical {
+  background: color-mix(in srgb, var(--color-critical) 16%, transparent);
+  color: #f3c4c8;
+  border-color: color-mix(in srgb, var(--color-critical) 45%, transparent);
+}
+
+.severity-high {
+  background: color-mix(in srgb, var(--color-high) 16%, transparent);
+  color: #f3d0c0;
+  border-color: color-mix(in srgb, var(--color-high) 45%, transparent);
+}
+
+.severity-medium {
+  background: color-mix(in srgb, var(--color-medium) 16%, transparent);
+  color: #efe3c0;
+  border-color: color-mix(in srgb, var(--color-medium) 45%, transparent);
+}
+
+.severity-low {
+  background: color-mix(in srgb, var(--color-low) 16%, transparent);
+  color: #c6eadc;
+  border-color: color-mix(in srgb, var(--color-low) 45%, transparent);
+}
+
+.severity-info {
+  background: color-mix(in srgb, var(--color-info) 16%, transparent);
+  color: #c9dced;
+  border-color: color-mix(in srgb, var(--color-info) 45%, transparent);
 }

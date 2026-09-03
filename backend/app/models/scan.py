@@ -63,3 +63,9 @@ class Scan(Base):
         server_default=func.now(),
         index=True,
     )
+
+    progress: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )

@@ -1,55 +1,74 @@
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.db.database import get_db
-
-from app.api.routes.targets import router as targets_router
-from app.api.routes.projects import router as projects_router
-from app.api.routes.scans import router as scans_router
-from app.api.routes.findings import router as findings_router
-from app.api.routes.scanners import router as scanners_router
+from app.api.deps import get_current_user
+from app.api.routes.assets import router as assets_router
+from app.api.routes.auth import router as auth_router
 from app.api.routes.dashboard import router as dashboard_router
+from app.api.routes.findings import router as findings_router
+from app.api.routes.projects import router as projects_router
+from app.api.routes.scanners import router as scanners_router
+from app.api.routes.scans import router as scans_router
+from app.api.routes.targets import router as targets_router
+from app.core.bootstrap import bootstrap_auth_user
+from app.core.config import settings
+from app.db.database import SessionLocal, get_db
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    db = SessionLocal()
+    try:
+        bootstrap_auth_user(db)
+    finally:
+        db.close()
+    yield
 
 
 app = FastAPI(
     title="Security SaaS API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
-# ---------------------------------------------------------
-# CORS
-# ---------------------------------------------------------
+cors_origins = {
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "http://localhost:3002",
+    "http://127.0.0.1:3002",
+    "http://localhost:3003",
+    "http://127.0.0.1:3003",
+}
+if settings.FRONTEND_URL:
+    cors_origins.add(settings.FRONTEND_URL.rstrip("/"))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=sorted(cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ---------------------------------------------------------
-# API ROUTES
-# ---------------------------------------------------------
+protected = [Depends(get_current_user)]
 
-app.include_router(targets_router)
-app.include_router(projects_router)
-app.include_router(scans_router)
-app.include_router(findings_router)
-app.include_router(scanners_router)
-app.include_router(dashboard_router)
+app.include_router(auth_router)
+app.include_router(targets_router, dependencies=protected)
+app.include_router(projects_router, dependencies=protected)
+app.include_router(scans_router, dependencies=protected)
+app.include_router(findings_router, dependencies=protected)
+app.include_router(assets_router, dependencies=protected)
+app.include_router(scanners_router, dependencies=protected)
+app.include_router(dashboard_router, dependencies=protected)
 
-
-# ---------------------------------------------------------
-# ROOT
-# ---------------------------------------------------------
 
 @app.get("/")
 async def root():
@@ -58,20 +77,12 @@ async def root():
     }
 
 
-# ---------------------------------------------------------
-# HEALTH
-# ---------------------------------------------------------
-
 @app.get("/health")
 async def health():
     return {
         "status": "healthy"
     }
 
-
-# ---------------------------------------------------------
-# DATABASE HEALTH
-# ---------------------------------------------------------
 
 @app.get("/health/database")
 async def database_health(

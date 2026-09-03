@@ -2,6 +2,9 @@ import time
 
 import docker
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
+from requests.exceptions import ChunkedEncodingError, ReadTimeout
+from urllib3.exceptions import ProtocolError
+from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
 
 
 class ScannerExecutionError(RuntimeError):
@@ -16,6 +19,11 @@ class ScannerExecutionError(RuntimeError):
         stderr: str = "",
         timed_out: bool = False,
         duration: float | None = None,
+        scanner: str | None = None,
+        target: str | None = None,
+        phase: str | None = None,
+        error_type: str | None = None,
+        original_error: str | None = None,
     ):
         super().__init__(message)
         self.exit_code = exit_code
@@ -23,6 +31,11 @@ class ScannerExecutionError(RuntimeError):
         self.stderr = stderr
         self.timed_out = timed_out
         self.duration = duration
+        self.scanner = scanner
+        self.target = target
+        self.phase = phase
+        self.error_type = error_type
+        self.original_error = original_error
 
 
 class ScannerFailureError(ScannerExecutionError):
@@ -62,6 +75,8 @@ class DockerRunResult:
 
 class DockerRunner:
     DIAGNOSTIC_LIMIT = 4000
+    POLL_INTERVAL = 1.0
+    TERMINAL_STATES = {"exited", "dead", "removing"}
 
     def __init__(self, client=None):
         self.client = client or docker.from_env()
@@ -71,6 +86,8 @@ class DockerRunner:
         image: str,
         command: list[str],
         timeout: int = 300,
+        scanner: str | None = None,
+        target: str | None = None,
     ) -> str:
         """
         Run a scanner container and return stdout for parsers.
@@ -83,6 +100,8 @@ class DockerRunner:
             image=image,
             command=command,
             timeout=timeout,
+            scanner=scanner,
+            target=target,
         ).output
 
     def run_detailed(
@@ -90,9 +109,18 @@ class DockerRunner:
         image: str,
         command: list[str],
         timeout: int = 300,
+        scanner: str | None = None,
+        target: str | None = None,
     ) -> DockerRunResult:
         container = None
         started = time.monotonic()
+        scanner_name = scanner or image
+        target_name = (
+            target
+            if target is not None
+            else " ".join(str(part) for part in command)
+        )
+        phase = "starting"
 
         try:
             try:
@@ -103,53 +131,71 @@ class DockerRunner:
                     remove=False,
                 )
             except ImageNotFound as exc:
-                raise DockerRunnerError(
-                    self._safe_message(
-                        f"Scanner image was not found: {image}"
-                    ),
-                    duration=self._duration(started),
+                raise self._build_error(
+                    DockerRunnerError,
+                    f"Scanner image was not found: {image}",
+                    cause=exc,
+                    started=started,
+                    phase="starting",
+                    scanner=scanner_name,
+                    target=target_name,
                 ) from exc
             except (APIError, DockerException, OSError) as exc:
-                raise DockerRunnerError(
-                    self._safe_message(
-                        f"Failed to start scanner container: {exc}"
-                    ),
-                    duration=self._duration(started),
+                raise self._build_error(
+                    DockerRunnerError,
+                    "Failed to start scanner container",
+                    cause=exc,
+                    started=started,
+                    phase="starting",
+                    scanner=scanner_name,
+                    target=target_name,
                 ) from exc
 
+            phase = "running"
             try:
-                wait_result = container.wait(timeout=timeout)
+                phase = "waiting"
+                wait_result = self._wait_for_exit(
+                    container,
+                    timeout=timeout,
+                    started=started,
+                )
+            except ScannerTimeoutError:
+                raise
             except Exception as exc:
                 duration = self._duration(started)
+                self._stop_container(container)
+                phase = "log collection"
+                stdout, stderr = self._read_logs(container)
 
-                if self._is_timeout(exc):
-                    self._stop_container(container)
-                    stdout, stderr = self._read_logs(container)
-
-                    raise ScannerTimeoutError(
-                        self._safe_message(
-                            "Scanner timed out after "
-                            f"{timeout} seconds."
-                        ),
+                if self._is_timeout(exc) and not self._is_transport_error(exc):
+                    raise self._build_error(
+                        ScannerTimeoutError,
+                        f"Scanner timed out after {timeout} seconds.",
+                        cause=exc,
+                        started=started,
+                        phase="waiting",
+                        scanner=scanner_name,
+                        target=target_name,
                         exit_code=None,
                         stdout=stdout,
                         stderr=stderr,
                         timed_out=True,
-                        duration=duration,
                     ) from exc
 
-                self._stop_container(container)
-                stdout, stderr = self._read_logs(container)
-
-                raise DockerRunnerError(
-                    self._safe_message(
-                        f"Failed while waiting for scanner: {exc}"
-                    ),
+                raise self._build_error(
+                    DockerRunnerError,
+                    "Failed while waiting for scanner",
+                    cause=exc,
+                    started=started,
+                    phase="waiting",
+                    scanner=scanner_name,
+                    target=target_name,
                     stdout=stdout,
                     stderr=stderr,
                     duration=duration,
                 ) from exc
 
+            phase = "log collection"
             duration = self._duration(started)
             stdout, stderr = self._read_logs(container)
             exit_code = 1
@@ -168,23 +214,64 @@ class DockerRunner:
             )
 
             if exit_code != 0:
-                raise ScannerFailureError(
+                raise self._build_error(
+                    ScannerFailureError,
                     self._format_failure(
                         exit_code=exit_code,
                         stdout=stdout,
                         stderr=stderr,
                     ),
+                    cause=None,
+                    started=started,
+                    phase="waiting",
+                    scanner=scanner_name,
+                    target=target_name,
                     exit_code=exit_code,
                     stdout=stdout,
                     stderr=stderr,
                     timed_out=False,
-                    duration=duration,
+                    error_type="ScannerFailureError",
+                    original_error=self._format_failure(
+                        exit_code=exit_code,
+                        stdout=stdout,
+                        stderr=stderr,
+                    ),
                 )
 
             return result
 
         finally:
             self._cleanup_container(container)
+
+    def _wait_for_exit(self, container, timeout: int, started: float) -> dict:
+        """
+        Poll container state instead of streaming container.wait().
+
+        Long HTTP waits through a Docker socket proxy can fail with
+        ChunkedEncodingError / ProtocolError even while the scanner
+        is still running.
+        """
+
+        deadline = started + timeout
+
+        while True:
+            container.reload()
+            state = (getattr(container, "attrs", None) or {}).get("State") or {}
+            status = (container.status or state.get("Status") or "").lower()
+
+            if status in self.TERMINAL_STATES:
+                exit_code = state.get("ExitCode", 1)
+                if exit_code is None:
+                    exit_code = 1
+                return {"StatusCode": int(exit_code)}
+
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Scanner timed out after {timeout} seconds."
+                )
+
+            remaining = deadline - time.monotonic()
+            time.sleep(min(self.POLL_INTERVAL, max(remaining, 0)))
 
     def _read_logs(self, container) -> tuple[str, str]:
         if container is None:
@@ -240,17 +327,134 @@ class DockerRunner:
             pass
 
     def _is_timeout(self, exc: Exception) -> bool:
-        name = type(exc).__name__.lower()
-
-        if "timeout" in name:
+        if isinstance(exc, (TimeoutError, ReadTimeout, Urllib3ReadTimeoutError)):
             return True
 
-        message = str(exc).lower()
+        for error in self._walk_exceptions(exc):
+            name = type(error).__name__.lower()
+            if "timeout" in name or "timedout" in name:
+                return True
 
-        return "timeout" in message or "timed out" in message
+            message = str(error).lower()
+            if "timed out" in message or "timeout" in message:
+                return True
+
+        return False
+
+    def _is_transport_error(self, exc: Exception) -> bool:
+        transport_types = (
+            ChunkedEncodingError,
+            ProtocolError,
+            ConnectionError,
+            ConnectionResetError,
+            BrokenPipeError,
+        )
+
+        for error in self._walk_exceptions(exc):
+            if isinstance(
+                error,
+                (TimeoutError, ReadTimeout, Urllib3ReadTimeoutError),
+            ):
+                continue
+            if isinstance(error, transport_types):
+                return True
+
+            name = type(error).__name__
+            if name in {
+                "ChunkedEncodingError",
+                "ProtocolError",
+                "ConnectionError",
+                "ConnectionResetError",
+                "RemoteDisconnected",
+                "BrokenPipeError",
+                "IncompleteRead",
+            }:
+                return True
+
+        return False
+
+    def _walk_exceptions(self, exc: BaseException):
+        seen = set()
+        current = exc
+
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            yield current
+            current = current.__cause__ or current.__context__
+
+    def _exception_details(self, exc: BaseException | None) -> tuple[str, str]:
+        if exc is None:
+            return "ScannerExecutionError", ""
+
+        types = []
+        messages = []
+
+        for error in self._walk_exceptions(exc):
+            types.append(type(error).__name__)
+            messages.append(str(error) or type(error).__name__)
+
+        error_type = types[0]
+        for name in types:
+            if name in {"ChunkedEncodingError", "ProtocolError"}:
+                error_type = name
+                break
+
+        original = " | ".join(
+            f"{name}: {message}"
+            for name, message in zip(types, messages)
+        )
+        return error_type, original
 
     def _duration(self, started: float) -> float:
         return round(time.monotonic() - started, 3)
+
+    def _build_error(
+        self,
+        error_cls,
+        message: str,
+        *,
+        cause: BaseException | None,
+        started: float,
+        phase: str,
+        scanner: str,
+        target: str,
+        exit_code: int | None = None,
+        stdout: str = "",
+        stderr: str = "",
+        timed_out: bool = False,
+        duration: float | None = None,
+        error_type: str | None = None,
+        original_error: str | None = None,
+    ):
+        resolved_type, resolved_original = self._exception_details(cause)
+        error_type = error_type or resolved_type
+        original_error = original_error or resolved_original
+        duration = (
+            duration if duration is not None else self._duration(started)
+        )
+        detail = message.rstrip(".")
+        if original_error:
+            detail = f"{detail}: {original_error}"
+
+        full_message = (
+            f"{detail} "
+            f"(scanner={scanner}, target={target}, phase={phase}, "
+            f"elapsed={duration}s, error_type={error_type})"
+        )
+
+        return error_cls(
+            self._safe_message(full_message),
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+            duration=duration,
+            scanner=scanner,
+            target=target,
+            phase=phase,
+            error_type=error_type,
+            original_error=original_error,
+        )
 
     def _format_failure(
         self,
@@ -277,15 +481,16 @@ class DockerRunner:
 
     def _safe_message(self, message: str) -> str:
         redacted = message
+        lowered = redacted.lower()
 
         for token in (
-            "password",
-            "secret",
-            "token",
+            "password=",
+            "secret=",
+            "token=",
             "api_key",
-            "authorization",
+            "authorization:",
         ):
-            if token in redacted.lower():
+            if token in lowered:
                 redacted = (
                     "Scanner execution failed. "
                     "See scanner logs for details."

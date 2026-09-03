@@ -126,7 +126,7 @@ def test_asset_identity_is_deterministic_for_generic_fields():
     }
 
     assert infer_asset_type(zap_asset) == "web_site"
-    assert infer_asset_value(zap_asset) == "https://internal.test"
+    assert infer_asset_value(zap_asset) == "https://internal.test/"
 
     nmap_asset = {
         "status": "up",

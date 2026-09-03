@@ -1,6 +1,7 @@
 import json
 import re
 
+from app.asset_intel.normalize import normalize_hostname
 from app.scanner.parsers.base import BaseParser
 
 
@@ -318,10 +319,7 @@ class DNSParser(BaseParser):
         return [value]
 
     def _normalize_name(self, value) -> str:
-        if not value:
-            return ""
-
-        return str(value).strip().rstrip(".").lower()
+        return normalize_hostname(value)
 
     def _is_under_zone(self, name: str, zone: str) -> bool:
         return name.endswith("." + zone)

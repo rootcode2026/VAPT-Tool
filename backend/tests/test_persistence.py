@@ -99,6 +99,55 @@ class Asset(Base):
         JSON,
         default=dict,
     )
+    first_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+    )
+
+
+class AssetRelationship(Base):
+    __tablename__ = "asset_relationships"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_asset_id",
+            "target_asset_id",
+            "relationship_type",
+            name="uq_asset_relationships_identity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id"),
+    )
+    source_asset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("assets.id"),
+    )
+    target_asset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("assets.id"),
+    )
+    relationship_type: Mapped[str] = mapped_column(String(50))
+    extra_data: Mapped[dict] = mapped_column(
+        "metadata",
+        JSON,
+        default=dict,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
@@ -349,4 +398,169 @@ def test_dns_and_subdomain_assets_persist_without_duplicates():
     assert rows[0].id == first_id
     assert rows[0].extra_data["source"] == "crtsh"
     assert rows[0].extra_data["resolved_ip"] == "10.0.0.9"
+    db.close()
+
+
+def test_asset_first_seen_preserved_and_last_seen_updates():
+    db = _session()
+    ids = db.info["ids"]
+    first_id = str(uuid.uuid4())
+    first_seen = datetime(2026, 9, 1, 12, 0, 0)
+    second_seen = datetime(2026, 9, 3, 12, 0, 0)
+
+    db.add(
+        Asset(
+            id=first_id,
+            project_id=ids["project_id"],
+            first_seen_scan_id=ids["scan_id"],
+            last_seen_scan_id=ids["scan_id"],
+            asset_type="domain",
+            value="internal.test",
+            extra_data={"sources": ["dns"]},
+            first_seen_at=first_seen,
+            last_seen_at=first_seen,
+        )
+    )
+    db.commit()
+
+    stored = db.get(Asset, first_id)
+    stored.last_seen_scan_id = str(uuid.uuid4())
+    stored.last_seen_at = second_seen
+    stored.extra_data = {
+        "sources": ["dns", "subdomain"],
+        "resolver": "10.0.0.53:53",
+    }
+    db.commit()
+
+    stored = db.get(Asset, first_id)
+    assert stored.first_seen_at == first_seen
+    assert stored.last_seen_at == second_seen
+    assert stored.extra_data["sources"] == ["dns", "subdomain"]
+    db.close()
+
+
+def test_asset_relationship_round_trip_and_dedup_identity():
+    db = _session()
+    ids = db.info["ids"]
+    domain_id = str(uuid.uuid4())
+    sub_id = str(uuid.uuid4())
+    rel_id = str(uuid.uuid4())
+
+    db.add(
+        Asset(
+            id=domain_id,
+            project_id=ids["project_id"],
+            asset_type="domain",
+            value="internal.test",
+            extra_data={"sources": ["subdomain"]},
+        )
+    )
+    db.add(
+        Asset(
+            id=sub_id,
+            project_id=ids["project_id"],
+            asset_type="subdomain",
+            value="api.internal.test",
+            extra_data={"sources": ["subdomain"]},
+        )
+    )
+    db.add(
+        AssetRelationship(
+            id=rel_id,
+            project_id=ids["project_id"],
+            source_asset_id=domain_id,
+            target_asset_id=sub_id,
+            relationship_type="contains",
+            extra_data={"scanner": "subdomain"},
+        )
+    )
+    db.commit()
+
+    stored = (
+        db.query(AssetRelationship)
+        .filter_by(
+            project_id=ids["project_id"],
+            source_asset_id=domain_id,
+            target_asset_id=sub_id,
+            relationship_type="contains",
+        )
+        .one()
+    )
+    stored.extra_data = {"scanner": "subdomain", "input": "internal.test"}
+    db.commit()
+
+    rows = (
+        db.query(AssetRelationship)
+        .filter_by(
+            project_id=ids["project_id"],
+            source_asset_id=domain_id,
+            target_asset_id=sub_id,
+            relationship_type="contains",
+        )
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].id == rel_id
+    assert rows[0].extra_data["input"] == "internal.test"
+    db.close()
+
+
+def test_relationship_created_at_stable_and_metadata_merges():
+    db = _session()
+    ids = db.info["ids"]
+    domain_id = str(uuid.uuid4())
+    ip_id = str(uuid.uuid4())
+    rel_id = str(uuid.uuid4())
+    first_seen = datetime(2026, 9, 1, 12, 0, 0)
+
+    db.add(
+        Asset(
+            id=domain_id,
+            project_id=ids["project_id"],
+            asset_type="domain",
+            value="internal.test",
+            extra_data={},
+        )
+    )
+    db.add(
+        Asset(
+            id=ip_id,
+            project_id=ids["project_id"],
+            asset_type="ip",
+            value="10.0.0.8",
+            extra_data={},
+        )
+    )
+    db.add(
+        AssetRelationship(
+            id=rel_id,
+            project_id=ids["project_id"],
+            source_asset_id=domain_id,
+            target_asset_id=ip_id,
+            relationship_type="resolves_to",
+            extra_data={
+                "sources": ["dns"],
+                "confidence": "high",
+                "evidence": {"record_type": "A"},
+            },
+            created_at=first_seen,
+            updated_at=first_seen,
+        )
+    )
+    db.commit()
+
+    stored = db.get(AssetRelationship, rel_id)
+    created = stored.created_at
+    stored.extra_data = {
+        "sources": ["dns", "subdomain"],
+        "confidence": "high",
+        "evidence": {"record_type": "A", "kind": "resolved_ip"},
+    }
+    stored.updated_at = datetime(2026, 9, 3, 12, 0, 0)
+    db.commit()
+
+    stored = db.get(AssetRelationship, rel_id)
+    assert stored.created_at == created
+    assert stored.updated_at != created
+    assert stored.extra_data["sources"] == ["dns", "subdomain"]
     db.close()

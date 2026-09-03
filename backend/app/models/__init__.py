@@ -5,6 +5,7 @@ from app.models.target import Target
 from app.models.scan import Scan
 from app.models.scan_result import ScanResult
 from app.models.asset import Asset
+from app.models.asset_relationship import AssetRelationship
 from app.models.finding import Finding
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "Scan",
     "ScanResult",
     "Asset",
+    "AssetRelationship",
     "Finding",
 ]

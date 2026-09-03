@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 
 from app.models.scan import Scan
+from app.models.scan_result import ScanResult
 from app.models.target import Target
 from app.models.finding import Finding
 
@@ -16,8 +17,11 @@ from app.schemas.scan import (
     ScanResponse,
     ScanDetailsResponse,
     ScanHistoryResponse,
+    ScanProgressResponse,
+    ScannerExecutionSummary,
 )
 
+from app.scans.observability import progress_snapshot, scanner_names
 from app.core.celery import celery_app
 
 
@@ -222,6 +226,54 @@ def get_scans(
 
 
 # ---------------------------------------------------------
+# GET SCAN PROGRESS
+# ---------------------------------------------------------
+
+@router.get(
+    "/{scan_id}/progress",
+    response_model=ScanProgressResponse,
+)
+def get_scan_progress(
+    scan_id: str,
+    db: Session = Depends(get_db),
+):
+    scan = (
+        db.query(Scan)
+        .filter(Scan.id == scan_id)
+        .first()
+    )
+
+    if not scan:
+        raise HTTPException(
+            status_code=404,
+            detail="Scan not found",
+        )
+
+    rows = (
+        db.query(ScanResult)
+        .filter(ScanResult.scan_id == scan_id)
+        .order_by(
+            ScanResult.started_at.asc(),
+            ScanResult.attempt.asc(),
+        )
+        .all()
+    )
+    snapshot = progress_snapshot(rows, scanner_names(rows))
+    return {
+        "scan_id": scan.id,
+        "status": scan.status,
+        "progress": snapshot["progress"],
+        "total_scanners": snapshot["total_scanners"],
+        "completed": snapshot["completed"],
+        "failed": snapshot["failed"],
+        "running": snapshot["running"],
+        "pending": snapshot["pending"],
+        "skipped": snapshot["skipped"],
+        "scanners": snapshot["scanners"],
+    }
+
+
+# ---------------------------------------------------------
 # GET SCAN DETAILS
 # ---------------------------------------------------------
 
@@ -256,8 +308,19 @@ def get_scan_details(
         .all()
     )
 
+    rows = (
+        db.query(ScanResult)
+        .filter(ScanResult.scan_id == scan_id)
+        .order_by(
+            ScanResult.started_at.asc(),
+            ScanResult.attempt.asc(),
+        )
+        .all()
+    )
+    snapshot = progress_snapshot(rows, scanner_names(rows))
+
     return {
-        "scan": scan,
+        "scan": _scan_payload(scan, snapshot),
         "findings": findings,
     }
 
@@ -288,4 +351,34 @@ def get_scan(
             detail="Scan not found",
         )
 
-    return scan
+    rows = (
+        db.query(ScanResult)
+        .filter(ScanResult.scan_id == scan_id)
+        .order_by(
+            ScanResult.started_at.asc(),
+            ScanResult.attempt.asc(),
+        )
+        .all()
+    )
+    snapshot = progress_snapshot(rows, scanner_names(rows))
+    return _scan_payload(scan, snapshot)
+
+
+def _scan_payload(scan: Scan, snapshot: dict) -> dict:
+    summary = {
+        name: ScannerExecutionSummary(**values)
+        for name, values in (snapshot.get("scanners") or {}).items()
+    }
+    return {
+        "id": scan.id,
+        "target_id": scan.target_id,
+        "profile": scan.profile,
+        "status": scan.status,
+        "phase": scan.phase,
+        "risk_score": scan.risk_score,
+        "risk_grade": scan.risk_grade,
+        "risk_level": scan.risk_level,
+        "progress": snapshot.get("progress", getattr(scan, "progress", 0) or 0),
+        "scanners": list((snapshot.get("scanners") or {}).keys()),
+        "scanner_summary": summary or None,
+    }

@@ -1,5 +1,6 @@
 import json
 
+from app.asset_intel.normalize import normalize_hostname
 from app.scanner.parsers.base import BaseParser
 
 
@@ -101,7 +102,4 @@ class SubdomainParser(BaseParser):
         }
 
     def _normalize_name(self, value) -> str:
-        if not value:
-            return ""
-
-        return str(value).strip().rstrip(".").lower()
+        return normalize_hostname(value)

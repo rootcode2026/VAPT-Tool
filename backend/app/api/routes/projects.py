@@ -3,9 +3,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.database import get_db
 from app.models.project import Project
 from app.models.target import Target
+from app.models.user import User
 from app.schemas.project import (
     ProjectCreate,
     ProjectResponse,
@@ -29,10 +31,11 @@ router = APIRouter(
 def create_project(
     data: ProjectCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     project = Project(
         id=str(uuid.uuid4()),
-        organization_id=data.organization_id,
+        organization_id=current_user.organization_id,
         name=data.name,
         description=data.description,
     )
@@ -54,9 +57,11 @@ def create_project(
 )
 def get_projects(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     return (
         db.query(Project)
+        .filter(Project.organization_id == current_user.organization_id)
         .order_by(Project.name.asc())
         .all()
     )
@@ -73,10 +78,14 @@ def get_projects(
 def get_project(
     project_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     project = (
         db.query(Project)
-        .filter(Project.id == project_id)
+        .filter(
+            Project.id == project_id,
+            Project.organization_id == current_user.organization_id,
+        )
         .first()
     )
 
@@ -99,10 +108,14 @@ def get_project(
 def delete_project(
     project_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     project = (
         db.query(Project)
-        .filter(Project.id == project_id)
+        .filter(
+            Project.id == project_id,
+            Project.organization_id == current_user.organization_id,
+        )
         .first()
     )
 

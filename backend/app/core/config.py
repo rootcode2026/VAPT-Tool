@@ -56,6 +56,21 @@ class Settings:
         )
     )
 
+    AUTH_BOOTSTRAP_EMAIL: str = os.getenv(
+        "AUTH_BOOTSTRAP_EMAIL",
+        "",
+    ).strip()
+
+    AUTH_BOOTSTRAP_PASSWORD: str = os.getenv(
+        "AUTH_BOOTSTRAP_PASSWORD",
+        "",
+    )
+
+    AUTH_BOOTSTRAP_ORG_NAME: str = os.getenv(
+        "AUTH_BOOTSTRAP_ORG_NAME",
+        "Organization",
+    ).strip() or "Organization"
+
     # ---------------------------------------------------------
     # Redis
     # ---------------------------------------------------------
@@ -114,6 +129,13 @@ class Settings:
     NUCLEI_IMAGE: str = os.getenv(
         "NUCLEI_IMAGE",
         "vapt-tool-nuclei",
+    )
+
+    SCANNER_MAX_ATTEMPTS: int = int(
+        os.getenv(
+            "SCANNER_MAX_ATTEMPTS",
+            "2",
+        )
     )
 
     # ---------------------------------------------------------

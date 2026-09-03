@@ -1,3 +1,4 @@
+import Providers from "@/components/providers";
 import "./globals.css";
 
 export const metadata = {
@@ -8,8 +9,8 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en" className="h-full">
-      <body className="min-h-full bg-slate-950 text-white antialiased">
-        {children}
+      <body className="min-h-full overflow-x-hidden bg-canvas text-text antialiased">
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

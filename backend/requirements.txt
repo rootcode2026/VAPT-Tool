@@ -7,3 +7,6 @@ alembic
 celery
 redis
 pytest
+httpx
+PyJWT
+bcrypt

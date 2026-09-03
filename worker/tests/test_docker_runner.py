@@ -2,6 +2,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from docker.errors import ImageNotFound
+from requests.exceptions import ChunkedEncodingError
+from urllib3.exceptions import ProtocolError
 
 from app.scanner.docker_runner import (
     DockerRunner,
@@ -11,9 +13,20 @@ from app.scanner.docker_runner import (
 )
 
 
-def _container(stdout=b"ok\n", stderr=b"", status_code=0):
+def _container(
+    stdout=b"ok\n",
+    stderr=b"",
+    status_code=0,
+    status="exited",
+):
     container = MagicMock()
-    container.wait.return_value = {"StatusCode": status_code}
+    container.status = status
+    container.attrs = {
+        "State": {
+            "Status": status,
+            "ExitCode": status_code,
+        }
+    }
     stdout_bytes = stdout
     stderr_bytes = stderr
 
@@ -40,6 +53,7 @@ def test_successful_container_execution_returns_stdout():
     )
 
     assert output == "report xml"
+    container.reload.assert_called()
     container.remove.assert_called_with(force=True)
 
 
@@ -77,22 +91,96 @@ def test_non_zero_exit_raises_scanner_failure_and_cleans_up():
     container.remove.assert_called_with(force=True)
 
 
-def test_timeout_kills_container_and_raises_timeout_error():
-    container = _container(stdout=b"partial", stderr=b"")
-    container.wait.side_effect = TimeoutError("Read timed out")
+def test_timeout_kills_container_and_raises_timeout_error(monkeypatch):
+    container = _container(
+        stdout=b"partial",
+        stderr=b"",
+        status="running",
+    )
     client = MagicMock()
     client.containers.run.return_value = container
+    monkeypatch.setattr(DockerRunner, "POLL_INTERVAL", 0)
 
     with pytest.raises(ScannerTimeoutError) as exc_info:
         DockerRunner(client=client).run(
             image="vapt-tls:latest",
             command=["internal.test"],
-            timeout=1,
+            timeout=0,
         )
 
-    assert exc_info.value.timed_out is True
-    assert "timed out" in str(exc_info.value).lower()
+    error = exc_info.value
+    assert error.timed_out is True
+    assert "timed out" in str(error).lower()
+    assert error.phase == "waiting"
+    assert error.scanner == "vapt-tls:latest"
+    assert error.target == "internal.test"
     container.kill.assert_called()
+    container.remove.assert_called_with(force=True)
+
+
+def test_chunked_encoding_error_becomes_runner_error_and_cleans_up():
+    container = _container(status="running")
+    container.reload.side_effect = ChunkedEncodingError(
+        "Response ended prematurely"
+    )
+    client = MagicMock()
+    client.containers.run.return_value = container
+
+    with pytest.raises(DockerRunnerError) as exc_info:
+        DockerRunner(client=client).run(
+            image="vapt-tls:latest",
+            command=["example.com"],
+            timeout=30,
+        )
+
+    error = exc_info.value
+    message = str(error)
+    assert "ChunkedEncodingError" in message
+    assert "Response ended prematurely" in message
+    assert "phase=waiting" in message
+    assert "scanner=vapt-tls:latest" in message
+    assert "target=example.com" in message
+    assert error.error_type == "ChunkedEncodingError"
+    assert error.phase == "waiting"
+    assert error.timed_out is False
+    container.kill.assert_called()
+    container.remove.assert_called_with(force=True)
+
+
+def test_protocol_error_is_not_hidden():
+    container = _container(status="running")
+    container.reload.side_effect = ProtocolError("Connection broken")
+    client = MagicMock()
+    client.containers.run.return_value = container
+
+    with pytest.raises(DockerRunnerError) as exc_info:
+        DockerRunner(client=client).run(
+            image="vapt-tls:latest",
+            command=["example.com"],
+        )
+
+    error = exc_info.value
+    assert "ProtocolError" in str(error)
+    assert "Connection broken" in str(error)
+    assert error.error_type == "ProtocolError"
+    container.remove.assert_called_with(force=True)
+
+
+def test_connection_reset_becomes_runner_error_and_cleans_up():
+    container = _container(status="running")
+    container.reload.side_effect = ConnectionResetError("Connection reset by peer")
+    client = MagicMock()
+    client.containers.run.return_value = container
+
+    with pytest.raises(DockerRunnerError) as exc_info:
+        DockerRunner(client=client).run(
+            image="vapt-tls:latest",
+            command=["example.com"],
+        )
+
+    error = exc_info.value
+    assert "ConnectionResetError" in str(error)
+    assert error.timed_out is False
     container.remove.assert_called_with(force=True)
 
 
@@ -102,11 +190,16 @@ def test_docker_startup_failure_raises_runner_error():
         "No such image: missing:latest"
     )
 
-    with pytest.raises(DockerRunnerError, match="was not found"):
+    with pytest.raises(DockerRunnerError) as exc_info:
         DockerRunner(client=client).run(
             image="missing:latest",
             command=["--help"],
         )
+
+    error = exc_info.value
+    assert "was not found" in str(error)
+    assert error.phase == "starting"
+    assert error.error_type == "ImageNotFound"
 
 
 def test_cleanup_happens_when_logs_fail_after_success_wait():
