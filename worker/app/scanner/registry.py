@@ -1,4 +1,5 @@
 from app.scanner.base import BaseScanner
+from app.scanner.scanners.api import ApiScanner
 from app.scanner.scanners.container import ContainerScanner
 from app.scanner.scanners.dns import DNSScanner
 from app.scanner.scanners.iac import IacScanner
@@ -39,6 +40,7 @@ class ScannerRegistry:
         self.register(SecretsScanner())
         self.register(ContainerScanner())
         self.register(IacScanner())
+        self.register(ApiScanner())
 
     def register(self, scanner: BaseScanner):
         if not scanner.name:
