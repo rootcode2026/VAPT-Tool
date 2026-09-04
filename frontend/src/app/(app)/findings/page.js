@@ -1,840 +1,411 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+/* eslint-disable react-hooks/set-state-in-effect -- project-scoped reload with stale guards */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import DashboardSection from "@/components/dashboard/DashboardSection";
+import ProjectSelect from "@/components/layout/ProjectSelect";
+import DataTable from "@/components/ui/DataTable";
+import EmptyState from "@/components/ui/EmptyState";
+import ErrorState from "@/components/ui/ErrorState";
+import FilterBar from "@/components/ui/FilterBar";
+import PageHeader from "@/components/ui/PageHeader";
+import SearchInput from "@/components/ui/SearchInput";
+import SeverityBadge from "@/components/ui/SeverityBadge";
+import { SkeletonCards, SkeletonTable } from "@/components/ui/Skeleton";
+import StatCard from "@/components/ui/StatCard";
+import StatusBadge from "@/components/ui/StatusBadge";
+import { getProjectSecuritySummary, getProjectAttackPaths } from "@/lib/api/assets";
+import { listProjectFindings } from "@/lib/api/findings";
+import { useProjectContext } from "@/lib/project-context";
+import { SEVERITY_ORDER } from "@/lib/severity";
 
-import { API_BASE_URL as API_URL, apiFetch } from "@/lib/api/client";
-import { severityClassName, severityLabel } from "@/lib/severity";
+const SEVERITY_OPTIONS = ["", "critical", "high", "medium", "low", "info"];
+const STATUS_OPTIONS = ["", "open", "resolved", "false_positive", "accepted", "confirmed", "remediated"];
+const VALIDATION_OPTIONS = ["", "detected", "corroborated", "needs_review", "confirmed", "false_positive", "accepted_risk", "remediated", "reopened"];
 
-const SEVERITIES = [
-  "all",
-  "critical",
-  "high",
-  "medium",
-  "low",
-  "info",
-];
+function formatWhen(v) {
+  if (!v) return "—";
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
+function getValidationState(finding) {
+  const meta = finding?.metadata || finding?.extra_data || {};
+  return (
+    finding?.validation_state ||
+    finding?.validationState ||
+    meta.validation_state ||
+    meta.validationState ||
+    meta.state ||
+    finding?.state ||
+    null
+  );
+}
+function getConfidence(finding) {
+  const meta = finding?.metadata || {};
+  return {
+    score: finding?.confidence_score ?? meta.confidence_score ?? meta.confidenceScore ?? null,
+    level: finding?.confidence_level ?? meta.confidence_level ?? meta.confidenceLevel ?? null,
+  };
+}
+function getRisk(finding) {
+  const meta = finding?.metadata || {};
+  return {
+    score: finding?.risk_score ?? meta.risk_score ?? finding?.score ?? null,
+    level: finding?.risk_level ?? meta.risk_level ?? null,
+    grade: finding?.risk_grade ?? meta.risk_grade ?? null,
+  };
+}
+function getRequiresReview(finding) {
+  const meta = finding?.metadata || {};
+  return meta.requires_human_review ?? finding?.requires_human_review ?? null;
+}
+function getEvidenceCount(finding) {
+  const meta = finding?.metadata || {};
+  if (Array.isArray(meta.evidence_items)) return meta.evidence_items.length;
+  if (Array.isArray(finding?.evidence_items)) return finding.evidence_items.length;
+  return finding?.evidence ? 1 : 0;
+}
 
 export default function FindingsPage() {
-  const [findings, setFindings] = useState([]);
+  const { selectedProjectId, selectedProject, status: projectStatus, error: projectError } = useProjectContext();
 
-  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState(null);
+  const [summaryError, setSummaryError] = useState("");
+  const [summaryLoaded, setSummaryLoaded] = useState(false);
+
+  const [findings, setFindings] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(20);
+  const [totalPages, setTotalPages] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const [search, setSearch] = useState("");
-  const [severity, setSeverity] = useState("all");
-  const [scanner, setScanner] = useState("all");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [severity, setSeverity] = useState("");
+  const [status, setStatus] = useState("");
+  const [scanner, setScanner] = useState("");
+  const [validationFilter, setValidationFilter] = useState("");
 
-  // ---------------------------------------------------------
-  // Load findings
-  // ---------------------------------------------------------
+  const [attackPaths, setAttackPaths] = useState([]);
+  const [attackError, setAttackError] = useState("");
 
-  async function loadFindings() {
-    try {
-      setLoading(true);
-      setError("");
-
-      const response = await apiFetch(
-        `${API_URL}/api/v1/findings`,
-        {
-          cache: "no-store",
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          "Failed to load findings"
-        );
-      }
-
-      const data = await response.json();
-
-      setFindings(data);
-    } catch (err) {
-      console.error(err);
-
-      setError(
-        err.message ||
-          "Failed to load findings"
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
+  const requestRef = useRef(0);
 
   useEffect(() => {
-    const id = window.setTimeout(() => {
-      loadFindings();
-    }, 0);
+    const id = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
     return () => window.clearTimeout(id);
+  }, [search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [selectedProjectId, debouncedSearch, severity, status, scanner]);
+
+  const loadSummary = useCallback(async (projectId, reqId) => {
+    try {
+      const data = await getProjectSecuritySummary(projectId);
+      if (requestRef.current !== reqId) return;
+      setSummary(data);
+      setSummaryLoaded(true);
+      setSummaryError("");
+    } catch (err) {
+      if (requestRef.current !== reqId) return;
+      setSummary(null);
+      setSummaryLoaded(false);
+      setSummaryError(err.message || "Unable to load security data.");
+    }
   }, []);
 
-  // ---------------------------------------------------------
-  // Scanner list
-  // ---------------------------------------------------------
+  const loadFindings = useCallback(async (projectId, p, searchVal, sev, stat, scan, reqId) => {
+    setLoading(true);
+    setError("");
+    try {
+      const query = { page: p, page_size: pageSize };
+      if (searchVal) query.search = searchVal;
+      if (sev) query.severity = sev;
+      if (stat) query.status = stat;
+      if (scan) query.scanner = scan;
+      const data = await listProjectFindings(projectId, query);
+      if (requestRef.current !== reqId) return;
+      const items = Array.isArray(data) ? data : data.items || [];
+      const t = Array.isArray(data) ? items.length : data.total ?? items.length;
+      const tp = Array.isArray(data) ? 1 : data.total_pages ?? Math.ceil(t / pageSize);
+      setFindings(items);
+      setTotal(t);
+      setTotalPages(tp);
+    } catch (err) {
+      if (requestRef.current !== reqId) return;
+      setFindings([]);
+      setError(err.message || "Unable to load security data.");
+    } finally {
+      if (requestRef.current === reqId) setLoading(false);
+    }
+  }, [pageSize]);
+
+  const loadAttackPaths = useCallback(async (projectId, reqId) => {
+    try {
+      const data = await getProjectAttackPaths(projectId, { max_paths: 50 });
+      if (requestRef.current !== reqId) return;
+      setAttackPaths(data?.paths || []);
+      setAttackError("");
+    } catch (err) {
+      if (requestRef.current !== reqId) return;
+      setAttackPaths([]);
+      setAttackError(err.message || "Unable to load security data.");
+    }
+  }, []);
+
+  const reloadAll = useCallback(async () => {
+    if (!selectedProjectId || projectStatus !== "ready") return;
+    const reqId = requestRef.current + 1;
+    requestRef.current = reqId;
+    await Promise.all([
+      loadSummary(selectedProjectId, reqId),
+      loadFindings(selectedProjectId, page, debouncedSearch, severity, status, scanner, reqId),
+      loadAttackPaths(selectedProjectId, reqId),
+    ]);
+  }, [selectedProjectId, projectStatus, page, debouncedSearch, severity, status, scanner, loadSummary, loadFindings, loadAttackPaths]);
+
+  useEffect(() => {
+    if (projectStatus !== "ready") return undefined;
+    const id = window.setTimeout(() => { reloadAll(); }, 0);
+    return () => window.clearTimeout(id);
+  }, [projectStatus, selectedProjectId, page, debouncedSearch, severity, status, scanner, reloadAll]);
 
   const scanners = useMemo(() => {
-    const uniqueScanners = [
-      ...new Set(
-        findings
-          .map((finding) => finding.scanner)
-          .filter(Boolean)
-      ),
-    ];
-
-    return uniqueScanners.sort();
+    const s = [...new Set(findings.map((f) => f.scanner).filter(Boolean))].sort();
+    return s;
   }, [findings]);
 
-  // ---------------------------------------------------------
-  // Filter findings
-  // ---------------------------------------------------------
-
   const filteredFindings = useMemo(() => {
-    const searchValue =
-      search.trim().toLowerCase();
-
-    return findings.filter((finding) => {
-      // Severity
-      if (
-        severity !== "all" &&
-        finding.severity?.toLowerCase() !==
-          severity
-      ) {
-        return false;
-      }
-
-      // Scanner
-      if (
-        scanner !== "all" &&
-        finding.scanner?.toLowerCase() !==
-          scanner.toLowerCase()
-      ) {
-        return false;
-      }
-
-      // Search
-      if (searchValue) {
-        const searchableText = [
-          finding.title,
-          finding.description,
-          finding.scanner,
-          finding.cve,
-          finding.cwe,
-          finding.target_id,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-
-        if (
-          !searchableText.includes(
-            searchValue
-          )
-        ) {
-          return false;
-        }
-      }
-
-      return true;
+    if (!validationFilter) return findings;
+    return findings.filter((f) => {
+      const state = String(getValidationState(f) || "").toLowerCase();
+      return state === validationFilter;
     });
-  }, [
-    findings,
-    search,
-    severity,
-    scanner,
-  ]);
+  }, [findings, validationFilter]);
 
-  // ---------------------------------------------------------
-  // Statistics
-  // ---------------------------------------------------------
-
-  const total = findings.length;
-
-  const critical = findings.filter(
-    (finding) =>
-      finding.severity?.toLowerCase() ===
-      "critical"
-  ).length;
-
-  const high = findings.filter(
-    (finding) =>
-      finding.severity?.toLowerCase() ===
-      "high"
-  ).length;
-
-  const medium = findings.filter(
-    (finding) =>
-      finding.severity?.toLowerCase() ===
-      "medium"
-  ).length;
-
-  const low = findings.filter(
-    (finding) =>
-      finding.severity?.toLowerCase() ===
-      "low"
-  ).length;
-
-  const info = findings.filter(
-    (finding) =>
-      finding.severity?.toLowerCase() ===
-      "info"
-  ).length;
-
-  // ---------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------
-
-  function getSeverityClasses(value) {
-    return `border ${severityClassName(value)}`;
-  }
-
-  function getStatusClasses(value) {
-    switch (
-      value?.toLowerCase()
-    ) {
-      case "open":
-        return "text-red-400";
-
-      case "resolved":
-        return "text-emerald-400";
-
-      case "false_positive":
-        return "text-slate-400";
-
-      case "accepted":
-        return "text-yellow-400";
-
-      default:
-        return "text-slate-400";
+  const severityCounts = useMemo(() => {
+    const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    for (const f of findings) {
+      const k = String(f.severity || "").toLowerCase();
+      if (k in counts) counts[k] += 1;
+      else counts.info += 1;
     }
-  }
+    return counts;
+  }, [findings]);
 
-  function formatSeverity(value) {
-    return severityLabel(value);
-  }
+  const attackPathAssetIds = useMemo(() => new Set(attackPaths.flatMap((p) => p.asset_ids || [])), [attackPaths]);
 
-  function formatStatus(value) {
-    if (!value) {
-      return "Unknown";
-    }
-
-    return value
-      .replaceAll("_", " ")
-      .replace(/\b\w/g, (letter) =>
-        letter.toUpperCase()
-      );
-  }
-
-  // ---------------------------------------------------------
-  // Loading
-  // ---------------------------------------------------------
-
-  if (loading) {
+  if (projectStatus === "loading") {
     return (
-      <div className="flex items-center justify-center py-16">
-        <div className="text-center">
-          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-slate-700 border-t-blue-500" />
-
-          <h1 className="text-xl font-semibold">
-            Loading findings...
-          </h1>
-
-          <p className="mt-2 text-sm text-slate-500">
-            Fetching security findings
-          </p>
-        </div>
+      <div>
+        <PageHeader title="Findings Intelligence" description="A project-scoped view of discovered, correlated, validated, and risk-prioritized security findings." />
+        <SkeletonCards count={4} />
+      </div>
+    );
+  }
+  if (projectStatus === "error") {
+    return (
+      <div>
+        <PageHeader title="Findings Intelligence" description="A project-scoped view of discovered, correlated, validated, and risk-prioritized security findings." />
+        <ErrorState title="Unable to load security data." message={projectError} />
+      </div>
+    );
+  }
+  if (!selectedProjectId) {
+    return (
+      <div>
+        <PageHeader title="Findings Intelligence" description="A project-scoped view of discovered, correlated, validated, and risk-prioritized security findings." />
+        <EmptyState title="No projects yet." description="Create a project to view findings." action={<Link href="/projects" className="inline-flex rounded-sm bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Create Project</Link>} />
       </div>
     );
   }
 
-  // ---------------------------------------------------------
-  // Main UI
-  // ---------------------------------------------------------
-
   return (
-    <div>
-      {/* Header */}
-      <header className="border-b border-slate-800">
-        <div className="mx-auto max-w-7xl px-6 py-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="flex items-center gap-3">
-                <Link
-                  href="/dashboard"
-                  className="text-slate-500 transition hover:text-white"
-                >
-                  ←
-                </Link>
+    <div className="space-y-6">
+      <PageHeader
+        title="Findings Intelligence"
+        description="A project-scoped view of discovered, correlated, validated, and risk-prioritized security findings."
+        actions={
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-muted">Project</span>
+            <ProjectSelect id="findings-project-context" />
+          </label>
+        }
+      />
 
-                <h1 className="text-2xl font-bold">
-                  Findings
-                </h1>
-              </div>
+      {/* Summary */}
+      {summaryLoaded ? (
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7" aria-label="Findings summary">
+          <StatCard label="Total Findings" value={summary?.total_assets !== undefined ? total : total} hint={`${total} total`} />
+          <StatCard label="Critical" value={summary?.critical_assets ?? severityCounts.critical} />
+          <StatCard label="High" value={summary?.high_assets ?? severityCounts.high} />
+          <StatCard label="Medium" value={summary?.medium_assets ?? severityCounts.medium} />
+          <StatCard label="Low" value={summary?.low_assets ?? severityCounts.low} />
+          <StatCard label="Vulnerable Assets" value={summary?.vulnerable_assets ?? 0} />
+          <StatCard label="Attack Paths" value={summary?.attack_path_count ?? attackPaths.length} hint={summary?.highest_contextual_priority ? `Highest: ${summary.highest_contextual_priority}` : undefined} />
+        </section>
+      ) : summaryError ? (
+        <ErrorState title="Unable to load security data." message={summaryError} />
+      ) : (
+        <SkeletonCards count={7} />
+      )}
 
-              <p className="mt-2 text-sm text-slate-400">
-                Security vulnerabilities discovered by your scans.
-              </p>
-            </div>
+      {/* Search + Filters */}
+      <FilterBar>
+        <SearchInput value={search} onChange={setSearch} placeholder="Search title, CVE, scanner..." id="findings-search" label="Search findings" />
+        <select value={severity} onChange={(e) => setSeverity(e.target.value)} className="rounded-sm border border-border bg-canvas px-3 py-2 text-sm" aria-label="Filter by severity">
+          <option value="">All severities</option>
+          {SEVERITY_OPTIONS.slice(1).map((s) => (
+            <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
+          ))}
+        </select>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className="rounded-sm border border-border bg-canvas px-3 py-2 text-sm" aria-label="Filter by status">
+          <option value="">All statuses</option>
+          {STATUS_OPTIONS.slice(1).map((s) => (
+            <option key={s} value={s}>{s.replaceAll("_", " ")}</option>
+          ))}
+        </select>
+        <select value={scanner} onChange={(e) => setScanner(e.target.value)} className="rounded-sm border border-border bg-canvas px-3 py-2 text-sm" aria-label="Filter by scanner">
+          <option value="">All scanners</option>
+          {scanners.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+        <select value={validationFilter} onChange={(e) => setValidationFilter(e.target.value)} className="rounded-sm border border-border bg-canvas px-3 py-2 text-sm" aria-label="Filter by validation">
+          {VALIDATION_OPTIONS.map((v) => (
+            <option key={v || "all"} value={v}>{v ? v.replaceAll("_", " ") : "All validation"}</option>
+          ))}
+        </select>
+        {(severity || status || scanner || validationFilter || debouncedSearch) && (
+          <button type="button" onClick={() => { setSearch(""); setSeverity(""); setStatus(""); setScanner(""); setValidationFilter(""); }} className="rounded-sm border border-border px-3 py-1.5 text-sm hover:bg-surface-hover">
+            Clear
+          </button>
+        )}
+        <span className="text-xs text-muted">{total} findings {selectedProject?.name ? `in ${selectedProject.name}` : ""}</span>
+      </FilterBar>
 
-            <button
-              type="button"
-              onClick={loadFindings}
-              className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:bg-slate-900 hover:text-white"
-            >
-              Refresh
-            </button>
-          </div>
+      {/* Inventory */}
+      <div className="rounded-md border border-border bg-surface p-4 sm:p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Finding Inventory</h2>
+          <span className="text-xs text-muted">Page {page} of {totalPages || 1} — {total} total</span>
         </div>
-      </header>
 
-      <div className="mx-auto max-w-7xl px-6 py-8">
-        {/* Error */}
-        {error && (
-          <div className="mb-6 flex items-start justify-between gap-4 rounded-xl border border-red-900 bg-red-950/40 px-4 py-3">
-            <div>
-              <p className="font-medium text-red-400">
-                Unable to load findings
-              </p>
-
-              <p className="mt-1 text-sm text-red-300">
-                {error}
-              </p>
+        {loading ? (
+          <SkeletonTable rows={6} />
+        ) : error ? (
+          <ErrorState title="Unable to load security data." message={error} onRetry={() => loadFindings(selectedProjectId, page, debouncedSearch, severity, status, scanner, requestRef.current + 1)} />
+        ) : filteredFindings.length === 0 ? (
+          <EmptyState title={findings.length === 0 ? "No findings" : "No matching findings"} description={findings.length === 0 ? "No findings discovered for this project." : "No findings match the current filters."} />
+        ) : (
+          <>
+            <DataTable
+              rowKey={(row) => row.id}
+              columns={[
+                { key: "severity", header: "Severity", render: (row) => <SeverityBadge severity={row.severity} /> },
+                {
+                  key: "title",
+                  header: "Title",
+                  render: (row) => (
+                    <Link href={`/findings/${row.id}`} className="text-sm font-medium hover:underline">
+                      {row.title}
+                    </Link>
+                  ),
+                },
+                {
+                  key: "validation",
+                  header: "Validation",
+                  render: (row) => {
+                    const state = getValidationState(row);
+                    if (!state) return <span className="text-xs text-muted">Not available</span>;
+                    const requires = getRequiresReview(row);
+                    return (
+                      <span className="inline-flex flex-col gap-1">
+                        <span className="rounded-sm border border-border px-1.5 py-0.5 text-xs">{String(state).replaceAll("_", " ")}</span>
+                        {requires === true && <span className="text-xs text-warning">Requires human review</span>}
+                        {requires === false && <span className="text-xs text-success">Human validated</span>}
+                      </span>
+                    );
+                  },
+                },
+                {
+                  key: "risk",
+                  header: "Risk",
+                  render: (row) => {
+                    const r = getRisk(row);
+                    if (r.score == null) return <span className="text-xs text-muted">Not available</span>;
+                    return <span className="text-xs font-medium">{r.score}{r.grade ? ` (${r.grade})` : ""}{r.level ? ` • ${r.level}` : ""}</span>;
+                  },
+                },
+                {
+                  key: "confidence",
+                  header: "Confidence",
+                  render: (row) => {
+                    const c = getConfidence(row);
+                    if (c.score == null) return <span className="text-xs text-muted">Not available</span>;
+                    return <span className="text-xs">{c.score}{c.level ? ` • ${c.level}` : ""}</span>;
+                  },
+                },
+                { key: "asset", header: "Asset", render: (row) => (row.asset_id ? <Link href={`/assets/${row.asset_id}`} className="text-xs hover:underline break-all">{row.asset_id}</Link> : <span className="text-xs text-muted">Not available</span>) },
+                { key: "scanner", header: "Scanner", render: (row) => <span className="text-xs">{row.scanner || "—"}</span> },
+                { key: "cve", header: "CVE/CWE", render: (row) => <span className="text-xs">{row.cve || row.cwe || "—"}</span> },
+                { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
+                { key: "created_at", header: "Created", render: (row) => <span className="text-xs">{formatWhen(row.created_at)}</span> },
+              ]}
+              rows={filteredFindings}
+            />
+            {/* Attack path context per finding */}
+            <div className="mt-3 hidden text-xs text-muted xl:block">
+              {attackPaths.length > 0 ? (
+                <p>
+                  {filteredFindings.filter((f) => f.asset_id && attackPathAssetIds.has(f.asset_id)).length} of {filteredFindings.length} findings on this page are associated with attack-surface assets.{" "}
+                  <Link href="/attack-surface" className="text-primary hover:underline">View attack surface</Link>
+                </p>
+              ) : attackError ? null : (
+                <p>No attack paths for this project — findings show as unassociated.</p>
+              )}
             </div>
-
-            <button
-              type="button"
-              onClick={() => setError("")}
-              className="text-red-400 hover:text-red-300"
-            >
-              ×
-            </button>
-          </div>
+          </>
         )}
 
-        {/* Severity cards */}
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-          <SeverityCard
-            label="Total"
-            value={total}
-            onClick={() =>
-              setSeverity("all")
-            }
-            active={severity === "all"}
-          />
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <button type="button" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded-sm border border-border px-3 py-1.5 text-sm disabled:opacity-50">Previous</button>
+          <span className="text-xs text-muted">{total} findings • Page {page} of {totalPages || 1}</span>
+          <button type="button" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)} className="rounded-sm border border-border px-3 py-1.5 text-sm disabled:opacity-50">Next</button>
+        </div>
+      </div>
 
-          <SeverityCard
-            label="Critical"
-            value={critical}
-            valueClass="text-red-400"
-            onClick={() =>
-              setSeverity("critical")
-            }
-            active={severity === "critical"}
-          />
-
-          <SeverityCard
-            label="High"
-            value={high}
-            valueClass="text-orange-400"
-            onClick={() =>
-              setSeverity("high")
-            }
-            active={severity === "high"}
-          />
-
-          <SeverityCard
-            label="Medium"
-            value={medium}
-            valueClass="text-yellow-400"
-            onClick={() =>
-              setSeverity("medium")
-            }
-            active={severity === "medium"}
-          />
-
-          <SeverityCard
-            label="Low"
-            value={low}
-            valueClass="text-blue-400"
-            onClick={() =>
-              setSeverity("low")
-            }
-            active={severity === "low"}
-          />
-
-          <SeverityCard
-            label="Info"
-            value={info}
-            valueClass="text-slate-400"
-            onClick={() =>
-              setSeverity("info")
-            }
-            active={severity === "info"}
-          />
-        </section>
-
-        {/* Filters */}
-        <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-          <div className="grid gap-4 lg:grid-cols-[1fr_200px_200px_auto]">
-            {/* Search */}
-            <div>
-              <label
-                htmlFor="finding-search"
-                className="mb-2 block text-xs font-medium uppercase tracking-wider text-slate-500"
-              >
-                Search
-              </label>
-
-              <input
-                id="finding-search"
-                type="text"
-                value={search}
-                onChange={(event) =>
-                  setSearch(
-                    event.target.value
-                  )
-                }
-                placeholder="Search title, CVE, CWE, scanner..."
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Severity */}
-            <div>
-              <label
-                htmlFor="severity-filter"
-                className="mb-2 block text-xs font-medium uppercase tracking-wider text-slate-500"
-              >
-                Severity
-              </label>
-
-              <select
-                id="severity-filter"
-                value={severity}
-                onChange={(event) =>
-                  setSeverity(
-                    event.target.value
-                  )
-                }
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-blue-500"
-              >
-                {SEVERITIES.map(
-                  (item) => (
-                    <option
-                      key={item}
-                      value={item}
-                    >
-                      {formatSeverity(item)}
-                    </option>
-                  )
-                )}
-              </select>
-            </div>
-
-            {/* Scanner */}
-            <div>
-              <label
-                htmlFor="scanner-filter"
-                className="mb-2 block text-xs font-medium uppercase tracking-wider text-slate-500"
-              >
-                Scanner
-              </label>
-
-              <select
-                id="scanner-filter"
-                value={scanner}
-                onChange={(event) =>
-                  setScanner(
-                    event.target.value
-                  )
-                }
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-blue-500"
-              >
-                <option value="all">
-                  All scanners
-                </option>
-
-                {scanners.map(
-                  (item) => (
-                    <option
-                      key={item}
-                      value={item}
-                    >
-                      {item}
-                    </option>
-                  )
-                )}
-              </select>
-            </div>
-
-            {/* Clear */}
-            <div className="flex items-end">
-              <button
-                type="button"
-                onClick={() => {
-                  setSearch("");
-                  setSeverity("all");
-                  setScanner("all");
-                }}
-                className="w-full rounded-xl border border-slate-700 px-4 py-3 text-sm text-slate-300 transition hover:border-slate-500 hover:bg-slate-800 hover:text-white lg:w-auto"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-4 text-xs text-slate-500">
-            Showing{" "}
-            <span className="font-medium text-slate-300">
-              {filteredFindings.length}
-            </span>{" "}
-            of{" "}
-            <span className="font-medium text-slate-300">
-              {findings.length}
-            </span>{" "}
-            findings
-          </div>
-        </section>
-
-        {/* Findings */}
-        <section className="mt-8">
-          {filteredFindings.length ===
-          0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-16 text-center">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-slate-900 text-2xl">
-                ✓
-              </div>
-
-              <h2 className="mt-4 text-lg font-semibold">
-                No findings found
-              </h2>
-
-              <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
-                No findings match your current search and filter settings.
-              </p>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setSearch("");
-                  setSeverity("all");
-                  setScanner("all");
-                }}
-                className="mt-5 rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 hover:text-white"
-              >
-                Clear Filters
-              </button>
-            </div>
+      {/* Additional intelligence strip */}
+      <div className="grid gap-4 xl:grid-cols-2">
+        <div className="rounded-md border border-border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Scanner Provenance</h3>
+          <p className="mt-1 text-xs text-muted">Which scanners contributed evidence. Corroboration is visible when backend reports multiple scanners.</p>
+          {findings.length === 0 ? (
+            <p className="mt-3 text-xs text-muted">Not available</p>
           ) : (
-            <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50">
-              {/* Desktop table */}
-              <div className="hidden overflow-x-auto lg:block">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-slate-800 bg-slate-900">
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Finding
-                      </th>
-
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Severity
-                      </th>
-
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Scanner
-                      </th>
-
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Score
-                      </th>
-
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Reference
-                      </th>
-
-                      <th className="px-5 py-4 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Status
-                      </th>
-
-                      <th className="px-5 py-4 text-right text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Action
-                      </th>
-                    </tr>
-                  </thead>
-
-                  <tbody className="divide-y divide-slate-800">
-                    {filteredFindings.map(
-                      (finding) => (
-                        <tr
-                          key={finding.id}
-                          className="transition hover:bg-slate-900"
-                        >
-                          {/* Finding */}
-                          <td className="max-w-md px-5 py-5">
-                            <div className="font-medium text-white">
-                              {finding.title}
-                            </div>
-
-                            {finding.description && (
-                              <div className="mt-1 line-clamp-2 text-xs text-slate-500">
-                                {
-                                  finding.description
-                                }
-                              </div>
-                            )}
-
-                            <div className="mt-2 text-xs text-slate-600">
-                              ID:{" "}
-                              {finding.id}
-                            </div>
-                          </td>
-
-                          {/* Severity */}
-                          <td className="px-5 py-5">
-                            <span
-                              className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${getSeverityClasses(
-                                finding.severity
-                              )}`}
-                            >
-                              {formatSeverity(
-                                finding.severity
-                              )}
-                            </span>
-                          </td>
-
-                          {/* Scanner */}
-                          <td className="px-5 py-5">
-                            <span className="rounded-lg bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300">
-                              {
-                                finding.scanner
-                              }
-                            </span>
-                          </td>
-
-                          {/* Score */}
-                          <td className="px-5 py-5">
-                            {finding.score !==
-                              null &&
-                            finding.score !==
-                              undefined ? (
-                              <span className="font-semibold text-slate-200">
-                                {
-                                  finding.score
-                                }
-                              </span>
-                            ) : (
-                              <span className="text-slate-600">
-                                —
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Reference */}
-                          <td className="px-5 py-5">
-                            <div className="space-y-1 text-xs">
-                              {finding.cve && (
-                                <div className="text-slate-300">
-                                  <span className="text-slate-600">
-                                    CVE:
-                                  </span>{" "}
-                                  {
-                                    finding.cve
-                                  }
-                                </div>
-                              )}
-
-                              {finding.cwe && (
-                                <div className="text-slate-400">
-                                  <span className="text-slate-600">
-                                    CWE:
-                                  </span>{" "}
-                                  {
-                                    finding.cwe
-                                  }
-                                </div>
-                              )}
-
-                              {!finding.cve &&
-                                !finding.cwe && (
-                                  <span className="text-slate-600">
-                                    —
-                                  </span>
-                                )}
-                            </div>
-                          </td>
-
-                          {/* Status */}
-                          <td className="px-5 py-5">
-                            <span
-                              className={`text-sm font-medium ${getStatusClasses(
-                                finding.status
-                              )}`}
-                            >
-                              {formatStatus(
-                                finding.status
-                              )}
-                            </span>
-                          </td>
-
-                          {/* Action */}
-                          <td className="px-5 py-5 text-right">
-                            <Link
-                              href={`/findings/${finding.id}`}
-                              className="inline-flex rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:bg-slate-800 hover:text-white"
-                            >
-                              View
-                            </Link>
-                          </td>
-                        </tr>
-                      )
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Mobile cards */}
-              <div className="divide-y divide-slate-800 lg:hidden">
-                {filteredFindings.map(
-                  (finding) => (
-                    <div
-                      key={finding.id}
-                      className="p-5"
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <h3 className="font-medium text-white">
-                            {finding.title}
-                          </h3>
-
-                          <p className="mt-1 text-xs text-slate-600">
-                            {
-                              finding.scanner
-                            }
-                          </p>
-                        </div>
-
-                        <span
-                          className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${getSeverityClasses(
-                            finding.severity
-                          )}`}
-                        >
-                          {formatSeverity(
-                            finding.severity
-                          )}
-                        </span>
-                      </div>
-
-                      <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-                        <div>
-                          <p className="text-xs text-slate-500">
-                            Scanner
-                          </p>
-
-                          <p className="mt-1 text-sm text-slate-200">
-                            {
-                              finding.scanner
-                            }
-                          </p>
-                        </div>
-
-                        <div>
-                          <p className="text-xs text-slate-500">
-                            Score
-                          </p>
-
-                          <p className="mt-1 text-sm text-slate-200">
-                            {finding.score ??
-                              "—"}
-                          </p>
-                        </div>
-
-                        <div>
-                          <p className="text-xs text-slate-500">
-                            Status
-                          </p>
-
-                          <p
-                            className={`mt-1 text-sm font-medium ${getStatusClasses(
-                              finding.status
-                            )}`}
-                          >
-                            {formatStatus(
-                              finding.status
-                            )}
-                          </p>
-                        </div>
-
-                        <div className="flex items-end">
-                          <Link
-                            href={`/findings/${finding.id}`}
-                            className="w-full rounded-lg border border-slate-700 px-3 py-2 text-center text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:bg-slate-800 hover:text-white"
-                          >
-                            View Details
-                          </Link>
-                        </div>
-                      </div>
-
-                      {(finding.cve ||
-                        finding.cwe) && (
-                        <div className="mt-4 rounded-lg bg-slate-950 p-3 text-xs">
-                          {finding.cve && (
-                            <div className="text-slate-300">
-                              CVE:{" "}
-                              {finding.cve}
-                            </div>
-                          )}
-
-                          {finding.cwe && (
-                            <div className="mt-1 text-slate-400">
-                              CWE:{" "}
-                              {finding.cwe}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
-                )}
-              </div>
-            </div>
+            <ul className="mt-3 flex flex-wrap gap-2">
+              {[...new Set(findings.map((f) => f.scanner).filter(Boolean))].map((s) => (
+                <li key={s} className="rounded-sm border border-border bg-canvas px-2 py-1 text-xs">{s}</li>
+              ))}
+            </ul>
           )}
-        </section>
+        </div>
+        <div className="rounded-md border border-border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Human Review Safety</h3>
+          <p className="mt-1 text-xs text-muted">Automated detections require human review. Confirmed findings are human validated.</p>
+          <ul className="mt-3 space-y-1 text-xs">
+            <li><span className="font-medium">Detected/Corroborated</span> — Automated detection. Requires human review.</li>
+            <li><span className="font-medium">Needs Review</span> — Flagged for analyst.</li>
+            <li><span className="font-medium">Confirmed/False Positive</span> — Human validated.</li>
+          </ul>
+          <p className="mt-2 text-xs text-warning">Do not label scanner detections as “Verified” or “Confirmed” without human validation.</p>
+        </div>
       </div>
     </div>
-  );
-}
-
-
-// ---------------------------------------------------------
-// Severity Card
-// ---------------------------------------------------------
-
-function SeverityCard({
-  label,
-  value,
-  valueClass = "text-white",
-  onClick,
-  active,
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-2xl border p-5 text-left transition ${
-        active
-          ? "border-blue-700 bg-blue-950/30"
-          : "border-slate-800 bg-slate-900/60 hover:border-slate-700 hover:bg-slate-900"
-      }`}
-    >
-      <p className="text-sm text-slate-500">
-        {label}
-      </p>
-
-      <p
-        className={`mt-2 text-3xl font-bold ${valueClass}`}
-      >
-        {value}
-      </p>
-    </button>
   );
 }

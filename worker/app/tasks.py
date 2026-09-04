@@ -27,6 +27,7 @@ from .scanner.execution import (
     scanner_summary,
     utc_now,
 )
+from .scanner.base import ScanContext
 from .scanner.pipeline import ScannerPipeline
 from .scanner.profiles import get_scanners_for_profile
 from .scanner.result_store import (
@@ -34,6 +35,30 @@ from .scanner.result_store import (
     update_attempt,
     update_scan_progress,
 )
+from .scanner.workspace import cleanup_workspace, create_workspace
+
+
+def _sanitize_secrets_raw(scanner: str, raw: str | None) -> str | None:
+    """Defense-in-depth: redact secrets scanner raw output before persistence/logging."""
+    if scanner != "secrets" or not raw:
+        return raw
+    try:
+        from app.scanner.scanners.secrets import _redact_text as _rt
+
+        return _rt(str(raw))
+    except Exception:
+        return raw
+
+
+def _sanitize_secrets_error(scanner: str, msg: str | None) -> str | None:
+    if scanner != "secrets" or not msg:
+        return msg
+    try:
+        from app.scanner.scanners.secrets import _redact_text as _rt
+
+        return _rt(str(msg))
+    except Exception:
+        return msg
 
 
 DATABASE_URL = os.getenv(
@@ -258,11 +283,11 @@ def execute_scan(
                     db,
                     attempt_rows[(name, attempt)],
                     status="failed",
-                    raw_output=failure.get("raw_output", ""),
+                    raw_output=_sanitize_secrets_raw(name, failure.get("raw_output", "")),
                     completed_at=failure.get("completed_at") or utc_now(),
                     duration_ms=failure.get("duration_ms"),
                     error_type=failure.get("error_type"),
-                    error_message=failure.get("error_message") or failure.get("error"),
+                    error_message=_sanitize_secrets_error(name, failure.get("error_message") or failure.get("error")),
                     error_phase=failure.get("error_phase"),
                     retryable=failure.get("retryable"),
                     findings_count=0,
@@ -280,14 +305,45 @@ def execute_scan(
                     attempt,
                 )
 
-            outcome = run_with_retries(
-                pipeline.run,
-                scanner_name,
-                target,
-                max_attempts=max_attempts,
-                on_attempt_start=on_attempt_start,
-                on_attempt_failure=on_attempt_failure,
-            )
+            # S7.2 workspace lifecycle — isolated per attempt, only when required
+            scanner_instance = pipeline.manager.registry.get(scanner_name)
+            requires_ws = bool(getattr(scanner_instance, "requires_workspace", False))
+
+            if requires_ws:
+                def _execute_with_workspace(s: str, t: str):
+                    ws = None
+                    try:
+                        ws = create_workspace(scan_id=scan_id, scanner=s, project_id=project_id)
+                        ctx = ScanContext(
+                            target=ws,
+                            target_type=None,
+                            project_id=project_id,
+                            scan_id=scan_id,
+                            workspace=ws,
+                            metadata={"original_target": t, "scanner": s},
+                        )
+                        return pipeline.run_with_context(s, ctx)
+                    finally:
+                        # Cleanup on success, failure, timeout, exception — never leak
+                        cleanup_workspace(ws)
+
+                outcome = run_with_retries(
+                    _execute_with_workspace,
+                    scanner_name,
+                    target,
+                    max_attempts=max_attempts,
+                    on_attempt_start=on_attempt_start,
+                    on_attempt_failure=on_attempt_failure,
+                )
+            else:
+                outcome = run_with_retries(
+                    pipeline.run,
+                    scanner_name,
+                    target,
+                    max_attempts=max_attempts,
+                    on_attempt_start=on_attempt_start,
+                    on_attempt_failure=on_attempt_failure,
+                )
 
             if is_scanner_success(outcome):
                 findings = outcome.get("findings", [])
@@ -316,7 +372,7 @@ def execute_scan(
                         db,
                         attempt_rows[(scanner_name, outcome.get("attempt") or 1)],
                         status="completed",
-                        raw_output=outcome.get("raw_output", ""),
+                        raw_output=_sanitize_secrets_raw(scanner_name, outcome.get("raw_output", "")),
                         completed_at=completed_at,
                         duration_ms=outcome.get("duration_ms"),
                         findings_count=len(findings),
@@ -354,11 +410,11 @@ def execute_scan(
                         db,
                         attempt_rows[(scanner_name, outcome.get("attempt") or 1)],
                         status="failed",
-                        raw_output=failure.get("raw_output", ""),
+                        raw_output=_sanitize_secrets_raw(scanner_name, failure.get("raw_output", "")),
                         completed_at=utc_now(),
                         duration_ms=failure.get("duration_ms"),
                         error_type=failure.get("error_type"),
-                        error_message=failure.get("error_message"),
+                        error_message=_sanitize_secrets_error(scanner_name, failure.get("error_message")),
                         error_phase="persistence",
                         retryable=False,
                         findings_count=0,

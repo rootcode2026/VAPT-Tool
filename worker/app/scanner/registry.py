@@ -1,11 +1,14 @@
 from app.scanner.base import BaseScanner
+from app.scanner.scanners.container import ContainerScanner
 from app.scanner.scanners.dns import DNSScanner
+from app.scanner.scanners.iac import IacScanner
 from app.scanner.scanners.http_fingerprint import HTTPFingerprintScanner
 from app.scanner.scanners.nikto import NiktoScanner
 from app.scanner.scanners.nmap import NmapScanner
 from app.scanner.scanners.nuclei import NucleiScanner
 from app.scanner.scanners.sast import SASTScanner
 from app.scanner.scanners.sca import SCAScanner
+from app.scanner.scanners.secrets import SecretsScanner
 from app.scanner.scanners.subdomain import SubdomainScanner
 from app.scanner.scanners.tls import TLSScanner
 from app.scanner.scanners.zap import ZAPScanner
@@ -33,6 +36,9 @@ class ScannerRegistry:
         self.register(SubdomainScanner())
         self.register(SCAScanner())
         self.register(SASTScanner())
+        self.register(SecretsScanner())
+        self.register(ContainerScanner())
+        self.register(IacScanner())
 
     def register(self, scanner: BaseScanner):
         if not scanner.name:

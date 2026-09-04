@@ -81,6 +81,33 @@ class DockerRunner:
     def __init__(self, client=None):
         self.client = client or docker.from_env()
 
+    def _validate_volumes(self, volumes: dict | None) -> dict:
+        """AppSec hardening: validate workspace mounts, prevent host escape."""
+        if not volumes:
+            return {}
+        if not isinstance(volumes, dict):
+            raise ValueError("Volumes must be a dict")
+        # Only allow absolute host paths, no traversal, not sensitive roots
+        forbidden = {"/", "/etc", "/var/run", "/var/run/docker.sock", "/root"}
+        cleaned: dict = {}
+        for host, container_cfg in volumes.items():
+            host_str = str(host).strip()
+            # Handle both Unix (/tmp) and Windows (C:\Users\...) absolute paths
+            is_windows_abs = len(host_str) >= 2 and host_str[1] == ":" and host_str[0].isalpha()
+            is_unix_abs = host_str.startswith("/")
+            if not (is_windows_abs or is_unix_abs):
+                raise ValueError(f"Volume host path must be absolute: {host_str}")
+            # Check traversal for both separators
+            parts = host_str.replace("\\", "/").split("/")
+            if ".." in parts:
+                raise ValueError(f"Volume host path must not contain traversal: {host_str}")
+            if host_str in forbidden or host_str.startswith("/etc/") or host_str.startswith("/var/run/"):
+                # Allow /tmp and /workspace only for scanner workspaces
+                if not (host_str.startswith("/tmp/") or host_str.startswith("/workspace")):
+                    raise ValueError(f"Volume host path not allowed: {host_str}")
+            cleaned[host_str] = container_cfg
+        return cleaned
+
     def run(
         self,
         image: str,
@@ -88,12 +115,15 @@ class DockerRunner:
         timeout: int = 300,
         scanner: str | None = None,
         target: str | None = None,
+        volumes: dict | None = None,
+        workspace: str | None = None,
     ) -> str:
         """
         Run a scanner container and return stdout for parsers.
 
         Existing scanners depend on a string result. Richer execution
         details are available on exceptions and via run_detailed().
+        AppSec scanners may pass `volumes` for workspace mounts.
         """
 
         return self.run_detailed(
@@ -102,6 +132,8 @@ class DockerRunner:
             timeout=timeout,
             scanner=scanner,
             target=target,
+            volumes=volumes,
+            workspace=workspace,
         ).output
 
     def run_detailed(
@@ -111,6 +143,8 @@ class DockerRunner:
         timeout: int = 300,
         scanner: str | None = None,
         target: str | None = None,
+        volumes: dict | None = None,
+        workspace: str | None = None,
     ) -> DockerRunResult:
         container = None
         started = time.monotonic()
@@ -122,14 +156,26 @@ class DockerRunner:
         )
         phase = "starting"
 
+        # AppSec hardening: validate volumes before container creation
+        validated_volumes = self._validate_volumes(volumes)
+        # Workspace convenience: if workspace provided, mount read-only
+        if workspace and workspace not in validated_volumes:
+            ws = str(workspace).strip()
+            if ws and ws.startswith("/") and ".." not in ws.split("/"):
+                # Mount workspace as /workspace read-only by default
+                validated_volumes[ws] = {"bind": "/workspace", "mode": "ro"}
+
         try:
             try:
-                container = self.client.containers.run(
+                run_kwargs: dict = dict(
                     image=image,
                     command=command,
                     detach=True,
                     remove=False,
                 )
+                if validated_volumes:
+                    run_kwargs["volumes"] = validated_volumes
+                container = self.client.containers.run(**run_kwargs)
             except ImageNotFound as exc:
                 raise self._build_error(
                     DockerRunnerError,

@@ -8,7 +8,7 @@ def test_metadata():
     assert m["name"] == "sast"
     assert "repository" in m["target_types"]
     assert m["input_type"] == "source_code"
-    assert m["output_format"] == "json"
+    assert m["output_format"] == "sarif"
 
 def test_target_type_validation():
     from app.scanner.manager import ScannerManager

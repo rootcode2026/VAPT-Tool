@@ -28,6 +28,15 @@ SCAN_PROFILES = {
     "sast": [
         "sast",
     ],
+    # AppSec families — declarative, registry-driven
+    "secrets": ["secrets"],
+    "container": ["container"],
+    "iac": ["iac"],
+    "api": [],
+    "secrets_full": ["secrets"],
+    "container_full": ["container"],
+    "iac_full": ["iac"],
+    "api_full": [],
 }
 
 

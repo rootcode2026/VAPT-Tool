@@ -56,3 +56,61 @@ def get_user_organization(
         .filter(Organization.id == current_user.organization_id)
         .first()
     )
+
+
+def require_project_access(
+    project_id: str,
+    db: Session,
+    current_user: User,
+):
+    """Verify project belongs to current user's organization or raise 404."""
+    from app.models.project import Project
+
+    if not project_id or not str(project_id).strip():
+        raise HTTPException(status_code=404, detail="Project not found")
+    project = (
+        db.query(Project)
+        .filter(
+            Project.id == str(project_id).strip(),
+            Project.organization_id == current_user.organization_id,
+        )
+        .first()
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def pagination_params(
+    page: int = 1,
+    page_size: int = 20,
+):
+    """Normalize pagination — page>=1, 1<=page_size<=100."""
+    try:
+        page = int(page)
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(page_size)
+    except (TypeError, ValueError):
+        page_size = 20
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 1
+    if page_size > 100:
+        page_size = 100
+    return page, page_size
+
+
+def paginated_response(items: list, total: int, page: int, page_size: int) -> dict:
+    import math
+
+    total_pages = math.ceil(total / page_size) if total > 0 else 0
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }

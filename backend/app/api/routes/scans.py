@@ -5,13 +5,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user, require_project_access
+from app.core.celery import celery_app
 from app.db.database import get_db
-
+from app.models.project import Project
 from app.models.scan import Scan
 from app.models.scan_result import ScanResult
 from app.models.target import Target
 from app.models.finding import Finding
-
+from app.models.user import User
 from app.schemas.scan import (
     ScanCreate,
     ScanResponse,
@@ -20,9 +22,7 @@ from app.schemas.scan import (
     ScanProgressResponse,
     ScannerExecutionSummary,
 )
-
 from app.scans.observability import progress_snapshot, scanner_names
-from app.core.celery import celery_app
 
 
 router = APIRouter(
@@ -42,6 +42,7 @@ router = APIRouter(
 def create_scan(
     data: ScanCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     target = (
         db.query(Target)
@@ -51,6 +52,8 @@ def create_scan(
         )
         .first()
     )
+    if target:
+        require_project_access(target.project_id, db, current_user)
 
     if not target:
         raise HTTPException(
@@ -124,17 +127,34 @@ def get_scans(
         le=100,
         description="Number of scans per page",
     ),
+    project_id: str | None = Query(default=None, description="Filter by project"),
+    project: str | None = Query(default=None, description="Filter by project (alias)"),
+    status: str | None = Query(default=None, description="Filter by status"),
+    profile: str | None = Query(default=None, description="Filter by profile"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    # -----------------------------------------------------
-    # Total scan count
-    # -----------------------------------------------------
+    # Optional project scoping — verified against user's organization
+    selected_project = (project_id or project or "").strip() or None
+    if selected_project:
+        require_project_access(selected_project, db, current_user)
 
-    total = (
-        db.query(func.count(Scan.id))
-        .scalar()
-        or 0
-    )
+    # -----------------------------------------------------
+    # Total scan count (project-scoped when filter present)
+    # -----------------------------------------------------
+    count_q = db.query(func.count(Scan.id)).join(Target, Target.id == Scan.target_id)
+    if selected_project:
+        count_q = count_q.filter(Target.project_id == selected_project)
+    else:
+        # Default: only scans for projects in user's org
+        count_q = count_q.join(Project, Project.id == Target.project_id).filter(
+            Project.organization_id == current_user.organization_id
+        )
+    if status:
+        count_q = count_q.filter(Scan.status == status.strip().lower())
+    if profile:
+        count_q = count_q.filter(Scan.profile == profile.strip().lower())
+    total = count_q.scalar() or 0
 
     # -----------------------------------------------------
     # Pagination calculation
@@ -154,31 +174,34 @@ def get_scans(
     # Scan history query
     # -----------------------------------------------------
 
+    base_rows = db.query(
+        Scan.id,
+        Scan.target_id,
+        Target.value.label("target"),
+        Scan.profile,
+        Scan.status,
+        Scan.phase,
+        Scan.created_at,
+        Scan.progress,
+        Scan.risk_score,
+        Scan.risk_grade,
+        Scan.risk_level,
+        func.count(Finding.id).label("findings_count"),
+    ).join(Target, Target.id == Scan.target_id).outerjoin(
+        Finding, Finding.scan_id == Scan.id
+    )
+    if selected_project:
+        base_rows = base_rows.filter(Target.project_id == selected_project)
+    else:
+        base_rows = base_rows.join(Project, Project.id == Target.project_id).filter(
+            Project.organization_id == current_user.organization_id
+        )
+    if status:
+        base_rows = base_rows.filter(Scan.status == status.strip().lower())
+    if profile:
+        base_rows = base_rows.filter(Scan.profile == profile.strip().lower())
     rows = (
-        db.query(
-            Scan.id,
-            Scan.target_id,
-            Target.value.label("target"),
-            Scan.profile,
-            Scan.status,
-            Scan.phase,
-            Scan.created_at,
-            Scan.risk_score,
-            Scan.risk_grade,
-            Scan.risk_level,
-            func.count(Finding.id).label(
-                "findings_count"
-            ),
-        )
-        .join(
-            Target,
-            Target.id == Scan.target_id,
-        )
-        .outerjoin(
-            Finding,
-            Finding.scan_id == Scan.id,
-        )
-        .group_by(
+        base_rows.group_by(
             Scan.id,
             Scan.target_id,
             Target.value,
@@ -186,15 +209,12 @@ def get_scans(
             Scan.status,
             Scan.phase,
             Scan.created_at,
+            Scan.progress,
             Scan.risk_score,
             Scan.risk_grade,
             Scan.risk_level,
         )
-        # Newest scan first
-        .order_by(
-            Scan.created_at.desc(),
-            Scan.id.desc(),
-        )
+        .order_by(Scan.created_at.desc(), Scan.id.desc())
         .offset(offset)
         .limit(page_size)
         .all()
@@ -209,6 +229,7 @@ def get_scans(
             "status": row.status,
             "phase": row.phase,
             "created_at": row.created_at,
+            "progress": row.progress,
             "risk_score": row.risk_score,
             "risk_grade": row.risk_grade,
             "risk_level": row.risk_level,
@@ -226,6 +247,17 @@ def get_scans(
     }
 
 
+def _require_scan_access(scan_id: str, db: Session, current_user: User) -> Scan:
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    target = db.query(Target).filter(Target.id == scan.target_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    require_project_access(target.project_id, db, current_user)
+    return scan
+
+
 # ---------------------------------------------------------
 # GET SCAN PROGRESS
 # ---------------------------------------------------------
@@ -237,18 +269,9 @@ def get_scans(
 def get_scan_progress(
     scan_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    scan = (
-        db.query(Scan)
-        .filter(Scan.id == scan_id)
-        .first()
-    )
-
-    if not scan:
-        raise HTTPException(
-            status_code=404,
-            detail="Scan not found",
-        )
+    scan = _require_scan_access(scan_id, db, current_user)
 
     rows = (
         db.query(ScanResult)
@@ -285,18 +308,9 @@ def get_scan_progress(
 def get_scan_details(
     scan_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    scan = (
-        db.query(Scan)
-        .filter(Scan.id == scan_id)
-        .first()
-    )
-
-    if not scan:
-        raise HTTPException(
-            status_code=404,
-            detail="Scan not found",
-        )
+    scan = _require_scan_access(scan_id, db, current_user)
 
     findings = (
         db.query(Finding)
@@ -337,20 +351,9 @@ def get_scan_details(
 def get_scan(
     scan_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    scan = (
-        db.query(Scan)
-        .filter(
-            Scan.id == scan_id
-        )
-        .first()
-    )
-
-    if not scan:
-        raise HTTPException(
-            status_code=404,
-            detail="Scan not found",
-        )
+    scan = _require_scan_access(scan_id, db, current_user)
 
     rows = (
         db.query(ScanResult)

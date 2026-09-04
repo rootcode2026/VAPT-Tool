@@ -36,12 +36,21 @@ function formatLevel(value) {
   return String(value).replaceAll("_", " ");
 }
 
+function formatPriority(value) {
+  if (!value) return "Not available";
+  return String(value).charAt(0).toUpperCase() + String(value).slice(1);
+}
+
 function SectionLink({ href, children }) {
   return (
     <Link href={href} className="text-xs font-medium text-primary hover:underline">
       {children}
     </Link>
   );
+}
+
+function Unavailable({ label = "Not available" }) {
+  return <span className="text-muted">{label}</span>;
 }
 
 export default function DashboardPage() {
@@ -119,11 +128,7 @@ export default function DashboardPage() {
           title="Security Overview"
           description="Monitor your security posture, vulnerabilities, and attack surface."
         />
-        <ErrorState
-          title="Unable to load security data."
-          message={projectError}
-          onRetry={refreshProjects}
-        />
+        <ErrorState title="Unable to load security data." message={projectError} onRetry={refreshProjects} />
       </div>
     );
   }
@@ -151,14 +156,34 @@ export default function DashboardPage() {
     );
   }
 
-  const findings = snapshot?.findings.items || [];
-  const scans = snapshot?.scans.items || [];
-  const assets = snapshot?.assets.items || [];
-  const severityCounts = snapshot?.findings.loaded ? countBySeverity(findings) : null;
-  const assetCounts = snapshot?.assets.loaded ? countByAssetType(assets) : null;
-  const riskScan = snapshot?.scans.loaded ? selectCurrentRiskScan(scans) : null;
+  const security = snapshot?.securitySummary?.data || null;
+  const securityLoaded = Boolean(snapshot?.securitySummary?.loaded);
+  const securityError = snapshot?.securitySummary?.error || null;
+
+  const attackPaths = snapshot?.attackPaths?.data || { paths: [], total: 0, truncated: false };
+  const attackLoaded = Boolean(snapshot?.attackPaths?.loaded);
+  const attackError = snapshot?.attackPaths?.error || null;
+
+  const scans = snapshot?.scans?.items || [];
+  const scansLoaded = Boolean(snapshot?.scans?.loaded);
+  const scansError = snapshot?.scans?.error || null;
+
+  const findings = snapshot?.findings?.items || [];
+  const findingsLoaded = Boolean(snapshot?.findings?.loaded);
+  const findingsError = snapshot?.findings?.error || null;
+
+  const assets = snapshot?.assets?.items || [];
+  const assetsLoaded = Boolean(snapshot?.assets?.loaded);
+  const assetsError = snapshot?.assets?.error || null;
+
+  const severityCounts = findingsLoaded ? countBySeverity(findings) : null;
+  const assetCounts = assetsLoaded ? countByAssetType(assets) : null;
+  const riskScan = scansLoaded ? selectCurrentRiskScan(scans) : null;
   const latestScan = scans[0] || null;
-  const topFindings = snapshot?.findings.loaded ? rankFindings(findings) : [];
+  const topFindings = findingsLoaded ? rankFindings(findings, 6) : [];
+  const topPaths = attackLoaded ? (attackPaths.paths || []).slice(0, 5) : [];
+
+  const isInitialLoading = loading && !snapshot;
 
   return (
     <div className="space-y-6">
@@ -189,288 +214,294 @@ export default function DashboardPage() {
         }
       />
 
-      {loadError ? (
-        <ErrorState
-          title="Unable to load security data."
-          message={loadError}
-          onRetry={refresh}
-        />
-      ) : null}
+      {loadError ? <ErrorState title="Unable to load security data." message={loadError} onRetry={refresh} /> : null}
 
-      {loading && !snapshot ? (
+      {/* 1 — Security overview cards (5) */}
+      {isInitialLoading ? (
+        <SkeletonCards count={5} />
+      ) : (
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5" aria-label="Security overview">
+          <StatCard
+            label="Total assets"
+            unavailable={!securityLoaded}
+            value={securityLoaded ? security?.total_assets ?? 0 : "Not available"}
+            hint={selectedProject?.name}
+          />
+          <StatCard
+            label="Internet-facing"
+            unavailable={!securityLoaded}
+            value={securityLoaded ? security?.internet_facing_assets ?? 0 : "Not available"}
+          />
+          <StatCard
+            label="Vulnerable assets"
+            unavailable={!securityLoaded}
+            value={securityLoaded ? security?.vulnerable_assets ?? 0 : "Not available"}
+          />
+          <StatCard
+            label="Critical assets"
+            unavailable={!securityLoaded}
+            value={securityLoaded ? security?.critical_assets ?? 0 : "Not available"}
+          />
+          <StatCard
+            label="Attack paths"
+            unavailable={!attackLoaded}
+            value={attackLoaded ? attackPaths.total ?? 0 : "Not available"}
+            hint={attackLoaded && attackPaths.truncated ? "Truncated" : undefined}
+          />
+        </section>
+      )}
+
+      {/* 2 + 3 + 4 — Risk, Asset, Attack-path overviews */}
+      {isInitialLoading ? (
+        <SkeletonCards count={3} />
+      ) : (
+        <div className="grid gap-4 xl:grid-cols-3">
+          {/* Risk overview */}
+          <DashboardSection title="Risk overview" action={<SectionLink href="/findings">View findings</SectionLink>}>
+            {!findingsLoaded ? (
+              <ErrorState title="Unable to load security data." message={findingsError} onRetry={refresh} />
+            ) : !securityLoaded ? (
+              <ErrorState title="Unable to load security data." message={securityError} onRetry={refresh} />
+            ) : (
+              <div className="space-y-4">
+                <dl className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <dt className="text-muted">Critical</dt>
+                    <dd className="mt-1 font-semibold tabular-nums text-critical">{security?.critical_assets ?? severityCounts?.critical ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">High</dt>
+                    <dd className="mt-1 font-semibold tabular-nums text-high">{security?.high_assets ?? severityCounts?.high ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">Medium</dt>
+                    <dd className="mt-1 font-semibold tabular-nums text-medium">{security?.medium_assets ?? severityCounts?.medium ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">Low</dt>
+                    <dd className="mt-1 font-semibold tabular-nums text-low">{security?.low_assets ?? 0}</dd>
+                  </div>
+                  <div className="col-span-2">
+                    <dt className="text-muted">Highest priority</dt>
+                    <dd className="mt-1 font-medium">{formatPriority(security?.highest_contextual_priority)}</dd>
+                  </div>
+                </dl>
+                {findingsLoaded && findings.length > 0 ? (
+                  <SeverityDistribution counts={severityCounts} />
+                ) : findingsLoaded ? (
+                  <EmptyState title="No findings" description="No vulnerabilities for this project." />
+                ) : null}
+                {riskScan ? (
+                  <div className="rounded-sm border border-border bg-canvas p-3">
+                    <p className="text-xs text-muted">Current risk (latest scan)</p>
+                    <p className="mt-1 text-sm font-medium">
+                      {riskScan.risk_score != null ? `${riskScan.risk_score} (${riskScan.risk_grade || "—"})` : "Not available"} — {formatLevel(riskScan.risk_level) || "Not available"}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted">Risk score not available — run a scan to generate a backend risk score.</p>
+                )}
+              </div>
+            )}
+          </DashboardSection>
+
+          {/* Asset overview */}
+          <DashboardSection
+            title="Asset overview"
+            action={
+              <div className="flex gap-3">
+                <SectionLink href="/assets">View assets</SectionLink>
+                <SectionLink href="/attack-surface">View attack surface</SectionLink>
+              </div>
+            }
+          >
+            {!assetsLoaded ? (
+              <ErrorState title="Unable to load security data." message={assetsError} onRetry={refresh} />
+            ) : !securityLoaded ? (
+              <ErrorState title="Unable to load security data." message={securityError} onRetry={refresh} />
+            ) : assets.length === 0 ? (
+              <EmptyState title="No assets" description="No assets have been discovered for this project." />
+            ) : (
+              <div className="space-y-4">
+                <dl className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <dt className="text-muted">Total assets</dt>
+                    <dd className="mt-1 font-semibold tabular-nums">{security?.total_assets ?? assets.length}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">Exposed</dt>
+                    <dd className="mt-1 font-semibold tabular-nums">{security?.exposed_service_assets ?? security?.internet_facing_assets ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">Vulnerable</dt>
+                    <dd className="mt-1 font-semibold tabular-nums">{security?.vulnerable_assets ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">Web apps</dt>
+                    <dd className="mt-1 font-semibold tabular-nums">{security?.web_application_assets ?? 0}</dd>
+                  </div>
+                </dl>
+                <AssetTypeSummary counts={assetCounts} />
+              </div>
+            )}
+          </DashboardSection>
+
+          {/* Attack-path overview */}
+          <DashboardSection title="Attack-path overview" action={<SectionLink href="/attack-surface">View paths</SectionLink>}>
+            {!attackLoaded ? (
+              <ErrorState title="Unable to load security data." message={attackError} onRetry={refresh} />
+            ) : attackPaths.total === 0 ? (
+              <EmptyState title="No attack paths" description="No internet-to-vulnerable paths detected. This may mean no internet-facing assets or no findings — an empty result is expected for isolated projects." />
+            ) : (
+              <div className="space-y-3">
+                <dl className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <dt className="text-muted">Total paths</dt>
+                    <dd className="mt-1 font-semibold tabular-nums">{attackPaths.total}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">Truncated</dt>
+                    <dd className="mt-1 font-medium">{attackPaths.truncated ? "Yes" : "No"}</dd>
+                  </div>
+                </dl>
+                <ul className="space-y-2">
+                  {topPaths.map((p) => (
+                    <li key={p.path_id} className="rounded-sm border border-border bg-canvas px-3 py-2">
+                      <p className="text-xs font-medium text-text">
+                        {p.entry_asset_id} → {p.target_asset_id}
+                      </p>
+                      <p className="mt-1 flex flex-wrap gap-2 text-xs">
+                        <span className="rounded-sm border border-border px-1.5 py-0.5">Priority: {p.priority}</span>
+                        <span className="rounded-sm border border-border px-1.5 py-0.5">Confidence: {p.confidence}</span>
+                        <span className="rounded-sm border border-border px-1.5 py-0.5">Length: {p.length}</span>
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted">{p.explanation}</p>
+                    </li>
+                  ))}
+                </ul>
+                {attackPaths.total > topPaths.length ? (
+                  <p className="text-xs text-muted">Showing {topPaths.length} of {attackPaths.total} paths.</p>
+                ) : null}
+              </div>
+            )}
+          </DashboardSection>
+        </div>
+      )}
+
+      {/* Risk score row (kept for backward compat) */}
+      {isInitialLoading ? (
         <SkeletonCards count={4} />
       ) : (
-        <>
-          <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <RiskScoreCard
-              label="Risk score"
-              score={snapshot?.scans.loaded ? riskScan?.risk_score : null}
-              grade={snapshot?.scans.loaded ? riskScan?.risk_grade : null}
-              description={
-                !snapshot?.scans.loaded
-                  ? "Data unavailable."
-                  : formatLevel(riskScan?.risk_level) ||
-                    (scans.length === 0
-                      ? "No scans yet."
-                      : riskScan
-                        ? "From the latest scan with a backend risk score."
-                        : "Not available")
-              }
-            />
-            <StatCard
-              label="Critical findings"
-              unavailable={!snapshot?.findings.loaded}
-              value={
-                snapshot?.findings.loaded
-                  ? severityCounts.critical
-                  : "Not available"
-              }
-            />
-            <StatCard
-              label="High findings"
-              unavailable={!snapshot?.findings.loaded}
-              value={
-                snapshot?.findings.loaded ? severityCounts.high : "Not available"
-              }
-            />
-            <StatCard
-              label="Total findings"
-              unavailable={!snapshot?.findings.loaded}
-              value={
-                snapshot?.findings.loaded ? findings.length : "Not available"
-              }
-            />
-            <StatCard
-              label="Assets"
-              unavailable={!snapshot?.assets.loaded}
-              value={snapshot?.assets.loaded ? assets.length : "Not available"}
-            />
-            <StatCard
-              label="Recent scans"
-              unavailable={!snapshot?.scans.loaded}
-              value={snapshot?.scans.loaded ? scans.length : "Not available"}
-              hint={selectedProject?.name}
-            />
-          </section>
-
-          <div className="grid gap-4 xl:grid-cols-3">
-            <DashboardSection title="Security posture">
-              <dl className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <dt className="text-muted">Risk grade</dt>
-                  <dd className="mt-1 font-medium">
-                    {snapshot?.scans.loaded
-                      ? riskScan?.risk_grade || "Not available"
-                      : "Data unavailable."}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-muted">Risk score</dt>
-                  <dd className="mt-1 font-medium tabular-nums">
-                    {snapshot?.scans.loaded
-                      ? riskScan?.risk_score ?? "Not available"
-                      : "Data unavailable."}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-muted">Critical findings</dt>
-                  <dd className="mt-1 font-medium tabular-nums">
-                    {snapshot?.findings.loaded
-                      ? severityCounts.critical
-                      : "Data unavailable."}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-muted">High findings</dt>
-                  <dd className="mt-1 font-medium tabular-nums">
-                    {snapshot?.findings.loaded
-                      ? severityCounts.high
-                      : "Data unavailable."}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-muted">Assets</dt>
-                  <dd className="mt-1 font-medium tabular-nums">
-                    {snapshot?.assets.loaded ? assets.length : "Data unavailable."}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-muted">Last scan</dt>
-                  <dd className="mt-1 font-medium">
-                    {snapshot?.scans.loaded
-                      ? latestScan
-                        ? formatWhen(latestScan.created_at)
-                        : "No scans yet."
-                      : "Data unavailable."}
-                  </dd>
-                </div>
-              </dl>
-            </DashboardSection>
-
-            <DashboardSection
-              title="Severity overview"
-              action={<SectionLink href="/findings">View findings</SectionLink>}
-            >
-              {!snapshot?.findings.loaded ? (
-                <ErrorState
-                  title="Unable to load security data."
-                  message={snapshot?.findings.error}
-                  onRetry={refresh}
-                />
-              ) : findings.length === 0 ? (
-                <EmptyState
-                  title="No vulnerabilities detected."
-                  description="The findings API returned no results for this project."
-                />
-              ) : (
-                <SeverityDistribution counts={severityCounts} />
-              )}
-            </DashboardSection>
-
-            <DashboardSection
-              title="Asset overview"
-              action={
-                <div className="flex gap-3">
-                  <SectionLink href="/assets">View assets</SectionLink>
-                  <SectionLink href="/attack-surface">View attack surface</SectionLink>
-                </div>
-              }
-            >
-              {!snapshot?.assets.loaded ? (
-                <ErrorState
-                  title="Unable to load security data."
-                  message={snapshot?.assets.error}
-                  onRetry={refresh}
-                />
-              ) : assets.length === 0 ? (
-                <EmptyState
-                  title="No security data available yet."
-                  description="No assets have been discovered for this project."
-                />
-              ) : (
-                <AssetTypeSummary counts={assetCounts} />
-              )}
-            </DashboardSection>
-          </div>
-
-          <DashboardSection
-            title="Top findings"
-            action={<SectionLink href="/findings">View all findings</SectionLink>}
-          >
-            {loading && !snapshot?.findings.loaded ? (
-              <SkeletonTable rows={4} />
-            ) : !snapshot?.findings.loaded ? (
-              <ErrorState
-                title="Unable to load security data."
-                message={snapshot?.findings.error}
-                onRetry={refresh}
-              />
-            ) : topFindings.length === 0 ? (
-              <EmptyState title="No vulnerabilities detected." />
-            ) : (
-              <DataTable
-                rowKey={(row) => row.id}
-                columns={[
-                  {
-                    key: "severity",
-                    header: "Severity",
-                    render: (row) => <SeverityBadge severity={row.severity} />,
-                  },
-                  {
-                    key: "title",
-                    header: "Title",
-                    render: (row) => (
-                      <Link href={`/findings/${row.id}`} className="hover:underline">
-                        {row.title}
-                      </Link>
-                    ),
-                  },
-                  { key: "scanner", header: "Scanner" },
-                  {
-                    key: "status",
-                    header: "Status",
-                    render: (row) => <StatusBadge status={row.status} />,
-                  },
-                  {
-                    key: "score",
-                    header: "Score",
-                    render: (row) =>
-                      row.score == null ? "—" : row.score,
-                  },
-                  {
-                    key: "created_at",
-                    header: "Created",
-                    render: (row) =>
-                      row.created_at ? formatWhen(row.created_at) : "—",
-                  },
-                ]}
-                rows={topFindings}
-              />
-            )}
-          </DashboardSection>
-
-          <DashboardSection
-            title="Recent scans"
-            action={<SectionLink href="/scans">View scans</SectionLink>}
-          >
-            {!snapshot?.scans.loaded ? (
-              <ErrorState
-                title="Unable to load security data."
-                message={snapshot?.scans.error}
-                onRetry={refresh}
-              />
-            ) : scans.length === 0 ? (
-              <EmptyState
-                title="No scans yet."
-                description="Start a scan to generate risk scores and findings for this project."
-                action={
-                  <Link
-                    href="/scans"
-                    className="inline-flex rounded-sm bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"
-                  >
-                    Start your first scan
-                  </Link>
-                }
-              />
-            ) : (
-              <DataTable
-                rowKey={(row) => row.id}
-                columns={[
-                  {
-                    key: "target",
-                    header: "Target",
-                    render: (row) => (
-                      <Link href={`/scans/${row.id}`} className="hover:underline">
-                        {row.target || row.target_id}
-                      </Link>
-                    ),
-                  },
-                  { key: "profile", header: "Profile" },
-                  {
-                    key: "status",
-                    header: "Status",
-                    render: (row) => <StatusBadge status={row.status} />,
-                  },
-                  {
-                    key: "risk",
-                    header: "Risk",
-                    render: (row) =>
-                      row.risk_score == null
-                        ? "Not available"
-                        : `${row.risk_score}${row.risk_grade ? ` (${row.risk_grade})` : ""}`,
-                  },
-                  {
-                    key: "created_at",
-                    header: "Created",
-                    render: (row) => formatWhen(row.created_at),
-                  },
-                ]}
-                rows={scans.slice(0, 8)}
-              />
-            )}
-          </DashboardSection>
-        </>
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <RiskScoreCard
+            label="Risk score"
+            score={scansLoaded ? riskScan?.risk_score : null}
+            grade={scansLoaded ? riskScan?.risk_grade : null}
+            description={
+              !scansLoaded
+                ? "Data unavailable."
+                : formatLevel(riskScan?.risk_level) ||
+                  (scans.length === 0 ? "No scans yet." : riskScan ? "From the latest scan with a backend risk score." : "Not available")
+            }
+          />
+          <StatCard label="Critical findings" unavailable={!findingsLoaded} value={findingsLoaded ? countBySeverity(findings).critical : "Not available"} />
+          <StatCard label="High findings" unavailable={!findingsLoaded} value={findingsLoaded ? countBySeverity(findings).high : "Not available"} />
+          <StatCard label="Total findings" unavailable={!findingsLoaded} value={findingsLoaded ? findings.length : "Not available"} />
+        </section>
       )}
+
+      {/* Highest-priority findings */}
+      <DashboardSection title="Highest-priority findings" action={<SectionLink href="/findings">View all findings</SectionLink>}>
+        {loading && !findingsLoaded ? (
+          <SkeletonTable rows={4} />
+        ) : !findingsLoaded ? (
+          <ErrorState title="Unable to load security data." message={findingsError} onRetry={refresh} />
+        ) : topFindings.length === 0 ? (
+          <EmptyState title="No vulnerabilities detected." description="The findings API returned no results for this project." />
+        ) : (
+          <DataTable
+            rowKey={(row) => row.id}
+            columns={[
+              { key: "severity", header: "Severity", render: (row) => <SeverityBadge severity={row.severity} /> },
+              {
+                key: "title",
+                header: "Title",
+                render: (row) => (
+                  <Link href={`/findings/${row.id}`} className="hover:underline">
+                    {row.title}
+                  </Link>
+                ),
+              },
+              { key: "scanner", header: "Scanner" },
+              { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
+              {
+                key: "score",
+                header: "Risk",
+                render: (row) => (row.score == null ? "—" : row.score),
+              },
+              {
+                key: "asset",
+                header: "Asset",
+                render: (row) => row.asset_id || "—",
+              },
+              { key: "created_at", header: "Created", render: (row) => (row.created_at ? formatWhen(row.created_at) : "—") },
+            ]}
+            rows={topFindings}
+          />
+        )}
+      </DashboardSection>
+
+      {/* Recent scans */}
+      <DashboardSection title="Recent scans" action={<SectionLink href="/scans">View scans</SectionLink>}>
+        {!scansLoaded ? (
+          <ErrorState title="Unable to load security data." message={scansError} onRetry={refresh} />
+        ) : scans.length === 0 ? (
+          <EmptyState
+            title="No scans yet."
+            description="Start a scan to generate risk scores and findings for this project."
+            action={
+              <Link href="/scans" className="inline-flex rounded-sm bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">
+                Start your first scan
+              </Link>
+            }
+          />
+        ) : (
+          <DataTable
+            rowKey={(row) => row.id}
+            columns={[
+              {
+                key: "target",
+                header: "Target",
+                render: (row) => (
+                  <Link href={`/scans/${row.id}`} className="hover:underline">
+                    {row.target || row.target_id}
+                  </Link>
+                ),
+              },
+              { key: "profile", header: "Profile" },
+              { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
+              {
+                key: "progress",
+                header: "Progress",
+                render: (row) => (row.progress != null ? `${row.progress}%` : "—"),
+              },
+              {
+                key: "findings_count",
+                header: "Findings",
+                render: (row) => (row.findings_count != null ? row.findings_count : "—"),
+              },
+              {
+                key: "risk",
+                header: "Risk",
+                render: (row) => (row.risk_score == null ? "Not available" : `${row.risk_score}${row.risk_grade ? ` (${row.risk_grade})` : ""}`),
+              },
+              { key: "risk_level", header: "Level", render: (row) => formatLevel(row.risk_level) || "—" },
+              { key: "created_at", header: "Created", render: (row) => formatWhen(row.created_at) },
+            ]}
+            rows={scans.slice(0, 8)}
+          />
+        )}
+      </DashboardSection>
     </div>
   );
 }

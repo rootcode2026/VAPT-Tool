@@ -59,6 +59,12 @@ CANONICAL_ASSET_TYPES = frozenset(
         "dns_ns",
         "dns_txt",
         "dns_soa",
+        # AppSec canonical types (additive, used by SAST/SCA/container/IaC)
+        "package",
+        "container_image",
+        "repository",
+        "source_file",
+        "iac_resource",
     }
 )
 

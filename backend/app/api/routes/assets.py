@@ -4,11 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user, require_project_access
 from app.db.database import get_db
 from app.models.asset import Asset
 from app.models.asset_change_event import AssetChangeEvent
 from app.models.asset_relationship import AssetRelationship
 from app.models.finding import Finding
+from app.models.user import User
 from app.schemas.asset import (
     AssetClassifications,
     AssetDetailResponse,
@@ -45,7 +47,7 @@ router = APIRouter(
 
 @router.get(
     "",
-    response_model=list[AssetResponse],
+    response_model=None,
 )
 def get_assets(
     project: str | None = None,
@@ -53,17 +55,32 @@ def get_assets(
     asset_type: str | None = None,
     search: str | None = None,
     value: str | None = None,
+    status: str | None = Query(default=None, description="Filter by status"),
     limit: int = Query(default=100, ge=1, le=500),
+    page: int | None = Query(default=None, ge=1, description="Page number (paginated mode)"),
+    page_size: int | None = Query(default=None, ge=1, le=100, description="Page size (paginated mode)"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     query = db.query(Asset)
-    selected_project = project or project_id
+    selected_project = (project or project_id or "").strip() or None
 
     if selected_project:
+        require_project_access(selected_project, db, current_user)
         query = query.filter(Asset.project_id == selected_project)
+    else:
+        # No project filter — restrict to user's organization projects
+        from app.models.project import Project
+
+        query = query.join(Project, Project.id == Asset.project_id).filter(
+            Project.organization_id == current_user.organization_id
+        )
 
     if asset_type:
         query = query.filter(Asset.asset_type == asset_type.strip().lower())
+
+    if status:
+        query = query.filter(Asset.status == status.strip().lower())
 
     lookup = (search or value or "").strip()[:256]
     if lookup:
@@ -74,12 +91,29 @@ def get_assets(
         )
         query = query.filter(Asset.value.ilike(f"%{escaped}%", escape="\\"))
 
-    return (
-        query
-        .order_by(Asset.last_seen_at.desc(), Asset.created_at.desc())
-        .limit(limit)
-        .all()
-    )
+    query = query.order_by(Asset.last_seen_at.desc(), Asset.created_at.desc())
+
+    # Paginated mode when page/page_size supplied — frontend-friendly
+    if page is not None or page_size is not None:
+        p = page or 1
+        ps = page_size or limit
+        if ps > 100:
+            ps = 100
+        total = query.count()
+        import math
+
+        total_pages = math.ceil(total / ps) if total > 0 else 0
+        offset = (p - 1) * ps
+        items = query.offset(offset).limit(ps).all()
+        return {
+            "items": [AssetResponse.model_validate(a).model_dump() for a in items],
+            "total": total,
+            "page": p,
+            "page_size": ps,
+            "total_pages": total_pages,
+        }
+
+    return query.limit(limit).all()
 
 
 @router.get(
@@ -90,10 +124,12 @@ def get_assets_summary(
     project_id: str | None = Query(default=None),
     project: str | None = Query(default=None),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # Extended D6.2 intelligence summary — additive, preserves old fields
-    pid = project_id or project
+    pid = (project_id or project or "").strip() or None
     if pid:
+        require_project_access(pid, db, current_user)
         return get_project_security_intelligence_summary(db, pid)
     # No project: aggregate across all assets via intelligence summary helper
     # Fallback: compute across all projects (still project-scoped per asset)
@@ -154,8 +190,10 @@ def get_assets_summary(
 def get_security_intelligence_summary(
     project_id: str = Query(..., description="Project ID"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # Clearly named sibling endpoint per D6.2 — preserves /summary
+    require_project_access(project_id, db, current_user)
     return get_project_security_intelligence_summary(db, project_id)
 
 
@@ -169,12 +207,45 @@ def get_attack_paths(
     max_depth: int = Query(default=5, ge=1, le=10, description="Maximum path depth (edges)"),
     max_paths: int = Query(default=100, ge=1, le=500, description="Maximum paths to return"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    # Project-scoped deterministic attack path foundation
+    # Project-scoped deterministic attack path foundation — on-demand, no persistence
+    # If persistence not yet available, this constructs input from persisted assets/relationships/findings.
+    require_project_access(project_id, db, current_user)
+    # If asset filter supplied, verify it belongs to project (prevents cross-project probing)
+    if asset_id:
+        from app.models.asset import Asset as _Asset
+
+        a = db.query(_Asset).filter(_Asset.id == asset_id, _Asset.project_id == project_id).first()
+        if not a:
+            raise HTTPException(status_code=404, detail="Asset not found")
     result = get_attack_paths_for_project(
         db, project_id, max_depth=max_depth, max_paths=max_paths, asset_id=asset_id
     )
     return result
+
+
+@router.get(
+    "/relationships",
+    response_model=list[AssetRelationshipResponse] if False else list,
+)
+def list_relationships_alias(
+    project_id: str = Query(..., description="Project ID"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_project_access(project_id, db, current_user)
+    rels = (
+        db.query(AssetRelationship)
+        .filter(AssetRelationship.project_id == project_id)
+        .order_by(AssetRelationship.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    from app.schemas.asset import AssetRelationshipResponse
+
+    return [AssetRelationshipResponse.model_validate(r).model_dump() for r in rels]
 
 
 @router.get(
@@ -184,11 +255,13 @@ def get_attack_paths(
 def get_asset(
     asset_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
 
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+    require_project_access(asset.project_id, db, current_user)
 
     neighbors = _load_neighbors(db, asset)
     findings = (
@@ -228,6 +301,22 @@ def get_asset(
             "contextual_risk": contextual_risk,
         }
     )
+
+
+@router.get(
+    "/{asset_id}/relationships",
+    response_model=list[AssetNeighborResponse],
+)
+def get_asset_relationships(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    require_project_access(asset.project_id, db, current_user)
+    return _load_neighbors(db, asset)
 
 
 def _get_asset_security_summary(db: Session, asset: Asset) -> AssetSecuritySummary:

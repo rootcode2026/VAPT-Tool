@@ -1,4 +1,5 @@
 from app.finding_engine.engine import FindingEngine
+from app.scanner.base import ScanContext
 from app.scanner.execution import (
     ScannerStageError,
     failed_scanner_result,
@@ -21,6 +22,37 @@ class ScannerPipeline:
             raw_output = self.manager.run(
                 scanner=scanner,
                 target=target,
+            )
+        except Exception as exc:
+            raise ScannerStageError("execution", exc) from exc
+
+        try:
+            parser = self.parser_registry.get(scanner)
+            parsed_result = parser.parse(raw_output)
+        except Exception as exc:
+            raise ScannerStageError("parsing", exc) from exc
+
+        try:
+            findings = self.finding_engine.analyze(
+                parsed_result
+            )
+        except Exception as exc:
+            raise ScannerStageError("analysis", exc) from exc
+
+        return {
+            "scanner": scanner,
+            "status": "completed",
+            "raw_output": raw_output,
+            "parsed_result": parsed_result,
+            "findings": findings,
+        }
+
+    def run_with_context(self, scanner: str, context: ScanContext | str) -> dict:
+        """AppSec-ready pipeline entry point (workspace-aware)."""
+        try:
+            raw_output = self.manager.run_with_context(
+                scanner=scanner,
+                context=context,
             )
         except Exception as exc:
             raise ScannerStageError("execution", exc) from exc

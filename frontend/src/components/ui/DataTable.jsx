@@ -1,4 +1,4 @@
-export default function DataTable({ columns, rows, empty, rowKey }) {
+export default function DataTable({ columns, rows, empty, rowKey, caption }) {
   if (!rows?.length) {
     return empty || null;
   }
@@ -26,11 +26,11 @@ export default function DataTable({ columns, rows, empty, rowKey }) {
         ))}
       </ul>
       <div className="hidden overflow-x-auto rounded-md border border-border md:block">
-        <table className="min-w-full text-left text-sm">
+        <table className="min-w-full text-left text-sm" role="table" aria-label={caption || "Data table"}>
           <thead className="border-b border-border bg-surface-hover text-xs uppercase tracking-wide text-muted">
             <tr>
               {columns.map((column) => (
-                <th key={column.key} className="whitespace-nowrap px-3 py-2.5 font-medium">
+                <th key={column.key} scope="col" className="whitespace-nowrap px-3 py-2.5 font-medium">
                   {column.header}
                 </th>
               ))}

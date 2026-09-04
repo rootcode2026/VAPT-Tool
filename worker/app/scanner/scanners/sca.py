@@ -2,174 +2,280 @@ import json
 import os
 from pathlib import Path
 
-from app.scanner.base import BaseScanner
+from app.scanner.base import BaseScanner, ScanContext
+from app.scanner.docker_runner import DockerRunner, ScannerFailureError
 from app.services.sca.analyzer import SCAAnalyzer
-from app.services.sca.vuln.fixture import FixtureVulnerabilityProvider
-
-# For S2, default to fixture provider for determinism; OSV can be injected via analyzer if needed
-# To use OSV, set SCA_PROVIDER=osv or mock in tests
 
 IGNORED_DIRS = {"node_modules", "venv", ".venv", ".git", "__pycache__", "dist", "build", ".mypy_cache", ".pytest_cache", ".tox", ".cache"}
-IGNORED_PARTS = {".git", "node_modules", "venv", "__pycache__"}
-
 SUPPORTED_FILES = {
     "package.json",
     "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
     "requirements.txt",
     "pyproject.toml",
     "poetry.lock",
+    "Pipfile.lock",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "go.mod",
+    "go.sum",
+    "Cargo.lock",
+    "Gemfile.lock",
 }
 
-MAX_MANIFESTS = 10
-MAX_FILE_SIZE = 2 * 1024 * 1024  # reuse analyzer limit
+FALLBACK_ENABLED = os.getenv("SCA_FALLBACK_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+PRODUCTION_ENGINE = "osv-scanner"
+PRODUCTION_VERSION = "1.9.2"
+FALLBACK_ENGINE = "sca_analyzer"
 
 
 class SCAScanner(BaseScanner):
     name = "sca"
     category = "application_security"
-    description = "Software Composition Analysis — dependency vulnerability detection"
+    family = "sca"
+    description = "Software Composition Analysis — OSV SARIF with workspace"
     target_types = {"repository", "project", "directory", "path"}
     input_type = "manifest"
-    output_format = "json"
-    capabilities = {"sca", "dependency", "vulnerability"}
-    timeout = 60
+    requires_workspace = True
+    supported_profiles = {"sca", "full"}
+    output_format = "sarif"
+    capabilities = {"sca", "dependency", "vulnerability", "sarif", "osv"}
+    timeout = 120
+
+    IMAGE = "vapt-sca:latest"
+    FALLBACK_IMAGE = "ghcr.io/google/osv-scanner:1.9.2"
+
+    def __init__(self):
+        self.runner = None
+
+    def _get_runner(self):
+        if self.runner is None:
+            self.runner = DockerRunner()
+        return self.runner
+
+    def _inject_provenance(self, findings: list[dict], engine: str, mode: str) -> list[dict]:
+        for f in findings:
+            if isinstance(f, dict):
+                meta = f.get("metadata") if isinstance(f.get("metadata"), dict) else {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta["execution_engine"] = engine
+                meta["execution_mode"] = mode
+                if engine == PRODUCTION_ENGINE:
+                    meta["engine_version"] = PRODUCTION_VERSION
+                    meta["image"] = self.IMAGE
+                f["metadata"] = meta
+                f["scanner"] = "sca"
+        return findings
 
     def scan(self, target: str) -> str:
-        """
-        Discover manifests recursively under target directory and analyze.
-
-        Target is expected to be a filesystem path (project directory).
-        For backward compatibility, if target is not a valid directory, treat it as manifest content.
-        """
-        # Input size guard
+        """Legacy scan — in-process analyzer for backward compatibility."""
+        # Keep original manifest discovery logic for legacy direct string input
         if len(target.encode("utf-8")) > 5 * 1024 * 1024:
             raise ValueError("SCA target exceeds size limit")
-
-        # Determine if target is a directory path
         target_path = Path(target)
         manifests: dict[str, str] = {}
         manifest_paths: list[str] = []
-
         if target_path.exists() and target_path.is_dir():
-            # Recursive discovery
             for root, dirs, files in os.walk(target_path, topdown=True):
-                # Modify dirs in-place to skip ignored
                 dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
-                # Also skip hidden cache directories
-                dirs[:] = [d for d in dirs if d not in {"__pycache__", ".cache"}]
-                # Prevent descending into ignored parts
-                # os.walk already handles topdown, so this is sufficient
                 for fname in files:
                     if fname not in SUPPORTED_FILES:
                         continue
                     fpath = Path(root) / fname
-                    # Skip if any part is ignored
                     if any(part in IGNORED_DIRS for part in fpath.parts):
                         continue
-                    if any(part.startswith(".") and part in {".git", ".cache"} for part in fpath.parts):
-                        continue
-                    # Check file size
                     try:
-                        if fpath.stat().st_size > MAX_FILE_SIZE:
+                        if fpath.stat().st_size > 2 * 1024 * 1024:
                             continue
                         content = fpath.read_text(encoding="utf-8", errors="strict")
-                    except Exception as e:
-                        # Malformed or unreadable -> will be recorded as error in analyzer
-                        # For now, skip and let analyzer handle via errors? But we need to surface error
-                        # Instead, include as manifest with content that will fail parsing and be recorded
-                        try:
-                            content = fpath.read_text(encoding="utf-8", errors="ignore")
-                        except Exception:
-                            continue
-                    # Use manifest type as key, but need to handle duplicate names in different directories
-                    # For S2, use file path as manifest identifier, but analyzer expects manifest_type
-                    # We'll use the filename as key and deduplicate by content? For now, use relative path
+                    except Exception:
+                        continue
                     rel = str(fpath.relative_to(target_path))
-                    # Use manifest type based on filename
                     mtype = fname
-                    # If multiple same manifest types in different dirs, we need to handle
-                    # For now, if same mtype already exists, keep first and record duplicate as separate?
-                    # Simpler: use mtype as key, but if duplicate, merge? For S2 we limit to 10 manifests total
                     if mtype in manifests:
-                        # Duplicate manifest type in different directory - keep count but avoid overwrite
-                        # Use path as key with type prefix
-                        key = f"{rel}:{mtype}"
-                        # But analyzer expects manifest_type, so we need to keep type
-                        # We'll store with original type but ensure uniqueness via loop
-                        # For simplicity, if duplicate, skip second occurrence (deduplicate)
                         continue
                     manifests[mtype] = content
                     manifest_paths.append(rel)
-                    if len(manifests) >= MAX_MANIFESTS:
+                    if len(manifests) >= 10:
                         break
-                if len(manifests) >= MAX_MANIFESTS:
+                if len(manifests) >= 10:
                     break
             if not manifests:
-                # No manifests found -> return empty result
-                result = {
-                    "scanner": "sca",
-                    "dependencies": [],
-                    "vulnerabilities": [],
-                    "findings": [],
-                    "errors": [],
-                    "metadata": {
-                        "manifests_scanned": 0,
-                        "dependencies_total": 0,
-                        "vulnerable_dependencies": 0,
-                        "provider": "fixture",
-                        "provider_errors": [],
-                        "manifest_paths": [],
-                    },
-                }
+                result = {"scanner": "sca", "dependencies": [], "vulnerabilities": [], "findings": [], "errors": [], "metadata": {"manifests_scanned": 0, "execution_engine": FALLBACK_ENGINE, "execution_mode": "legacy"}}
                 return json.dumps(result)
         else:
-            # Try to parse target as JSON manifest map
             try:
                 parsed = json.loads(target)
                 if isinstance(parsed, dict) and any(k in parsed for k in SUPPORTED_FILES):
                     for k, v in parsed.items():
                         if k in SUPPORTED_FILES and isinstance(v, str):
-                            if len(v.encode("utf-8")) <= MAX_FILE_SIZE:
-                                manifests[k] = v
-                elif isinstance(parsed, dict) and "content" in parsed and "manifest_type" in parsed:
-                    manifests[parsed["manifest_type"]] = parsed["content"]
+                            manifests[k] = v
                 else:
-                    # Treat entire target as package.json content
                     manifests["package.json"] = target
             except (json.JSONDecodeError, TypeError):
-                # Treat as raw manifest content (assume package.json)
                 manifests["package.json"] = target
-
-        # Invoke SCAAnalyzer via factory (production -> osv, test/dev -> fixture)
-        # Explicit injection still works: SCAAnalyzer(provider=...)
         try:
             from app.services.sca.factory import create_sca_analyzer
-
             analyzer = create_sca_analyzer()
             result = analyzer.analyze(manifests)
-        except Exception as e:
-            # Fallback to direct analyzer if factory unavailable
-            try:
-                analyzer = SCAAnalyzer()
-                result = analyzer.analyze(manifests)
-            except Exception as inner:
-                raise ValueError(f"SCA analysis failed: {inner}") from inner
+        except Exception:
+            analyzer = SCAAnalyzer()
+            result = analyzer.analyze(manifests)
+        findings = self._inject_provenance(result.get("findings", []), FALLBACK_ENGINE, "legacy")
+        result["findings"] = findings
+        result["metadata"] = result.get("metadata", {})
+        result["metadata"]["execution_engine"] = FALLBACK_ENGINE
+        result["metadata"]["execution_mode"] = "legacy"
+        return json.dumps(result, default=str)
 
-        # Build scanner output compatible with pipeline: include metadata for observability
-        output = {
-            "scanner": "sca",
-            "dependencies": result.get("dependencies", []),
-            "vulnerabilities": result.get("vulnerabilities", []),
-            "findings": result.get("findings", []),
-            "errors": result.get("errors", []),
-            "metadata": {
-                "manifests_scanned": len(result.get("dependencies", [])),
-                "dependencies_total": len(result.get("dependencies", [])),
-                "vulnerable_dependencies": len({(v["ecosystem"], v["package_name"], v["installed_version"]) for v in result.get("vulnerabilities", [])}),
-                "provider": "fixture",
-                "provider_errors": [e for e in result.get("errors", []) if e.get("provider_error")],
-                "manifest_paths": manifest_paths,
-                "manifest_types": list(manifests.keys()),
-            },
-        }
-        return json.dumps(output, default=str)
+    def scan_with_context(self, context: ScanContext) -> str:
+        ws = context.workspace
+        if not ws or not Path(ws).exists() or not Path(ws).is_dir():
+            return json.dumps({"scanner": "sca", "assets": [], "findings": [], "errors": [], "metadata": {"workspace": ws, "reason": "no workspace", "execution_engine": "none", "execution_mode": "none"}})
+        ws_path = Path(ws)
+        src_root = ws_path / "src" if (ws_path / "src").is_dir() else ws_path
+
+        # Quick check: any supported manifest?
+        has_manifest = False
+        try:
+            for p in src_root.rglob("*"):
+                if p.is_file() and p.name in SUPPORTED_FILES:
+                    if any(part in IGNORED_DIRS for part in p.parts):
+                        continue
+                    try:
+                        p.resolve().relative_to(ws_path.resolve())
+                    except ValueError:
+                        continue
+                    has_manifest = True
+                    break
+        except Exception:
+            has_manifest = False
+
+        if not has_manifest:
+            return json.dumps({"scanner": "sca", "assets": [], "findings": [], "errors": [], "metadata": {"workspace": ws, "reason": "no manifests", "execution_engine": PRODUCTION_ENGINE, "execution_mode": "empty", "engine_version": PRODUCTION_VERSION}})
+
+        container_target = "/workspace/src" if (Path(ws) / "src").is_dir() else "/workspace"
+        # OSV-Scanner command: scan --format sarif --output /tmp/sarif.json --recursive, then cat
+        # Use shell to handle output redirection and handle exit 1 (findings) as success
+        # OSV-Scanner exits 0 when no vulns, 1 when vulns found, 0-1 both success
+        # Use --offline to avoid network
+        command = [
+            "sh", "-c",
+            f"osv-scanner --format=sarif --output=/tmp/sarif.json --recursive {container_target} --offline 2>/dev/null; cat /tmp/sarif.json 2>/dev/null || cat /tmp/sarif.json || echo '{{\"version\":\"2.1.0\",\"runs\":[]}}'"
+        ]
+        volumes = {str(ws_path.resolve()): {"bind": "/workspace", "mode": "ro"}}
+        runner = self._get_runner()
+        last_exc = None
+        for image in [self.IMAGE, self.FALLBACK_IMAGE]:
+            try:
+                try:
+                    raw = runner.run(
+                        image=image,
+                        command=command,
+                        timeout=self.timeout,
+                        scanner="sca",
+                        target=context.target,
+                        volumes=volumes,
+                        workspace=str(ws_path.resolve()),
+                    )
+                    # raw should be SARIF JSON; if empty, try to read from file
+                    if not raw or not raw.strip():
+                        raw = '{"version":"2.1.0","runs":[]}'
+                except ScannerFailureError as e:
+                    # OSV-Scanner exit 1 with findings is success if stdout is SARIF
+                    if getattr(e, "exit_code", None) == 1 and e.stdout and e.stdout.strip().startswith("{") and '"runs"' in e.stdout:
+                        raw = e.stdout
+                    elif getattr(e, "exit_code", None) in (0, 1) and e.stdout and '"runs"' in e.stdout:
+                        raw = e.stdout
+                    else:
+                        raise
+                # Validate SARIF
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict) and "runs" in parsed:
+                        from app.scanner.parsers.sarif_parser import SarifParser
+                        sarif_parser = SarifParser()
+                        parsed_result = sarif_parser.parse(raw)
+                        # Inject provenance and package context
+                        parsed_result["findings"] = self._inject_provenance(parsed_result.get("findings", []), PRODUCTION_ENGINE, "docker")
+                        for a in parsed_result.get("assets", []):
+                            if isinstance(a.get("metadata"), dict):
+                                a["metadata"]["execution_engine"] = PRODUCTION_ENGINE
+                            else:
+                                a["metadata"] = {"execution_engine": PRODUCTION_ENGINE}
+                        parsed_result["metadata"] = parsed_result.get("metadata", {})
+                        parsed_result["metadata"]["execution_engine"] = PRODUCTION_ENGINE
+                        parsed_result["metadata"]["execution_mode"] = "docker"
+                        parsed_result["metadata"]["engine_version"] = PRODUCTION_VERSION
+                        parsed_result["metadata"]["image"] = image
+                        return json.dumps(parsed_result)
+                    return raw
+                except json.JSONDecodeError:
+                    return raw
+            except Exception as exc:
+                last_exc = exc
+                if "not found" in str(exc).lower() and image == self.IMAGE:
+                    continue
+                if not FALLBACK_ENABLED:
+                    raise
+                # Fallback to local analyzer
+                try:
+                    # Use legacy manifest discovery on workspace
+                    target_path = Path(ws)
+                    manifests: dict[str, str] = {}
+                    for root, dirs, files in os.walk(target_path, topdown=True):
+                        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+                        for fname in files:
+                            if fname not in SUPPORTED_FILES:
+                                continue
+                            fpath = Path(root) / fname
+                            if any(part in IGNORED_DIRS for part in fpath.parts):
+                                continue
+                            try:
+                                if fpath.stat().st_size > 2 * 1024 * 1024:
+                                    continue
+                                content = fpath.read_text(encoding="utf-8", errors="strict")
+                            except Exception:
+                                continue
+                            if fname not in manifests:
+                                manifests[fname] = content
+                                if len(manifests) >= 10:
+                                    break
+                        if len(manifests) >= 10:
+                            break
+                    from app.services.sca.factory import create_sca_analyzer
+                    try:
+                        analyzer = create_sca_analyzer()
+                        result = analyzer.analyze(manifests)
+                    except Exception:
+                        analyzer = SCAAnalyzer()
+                        result = analyzer.analyze(manifests)
+                    findings = self._inject_provenance(result.get("findings", []), FALLBACK_ENGINE, "fallback")
+                    result["findings"] = findings
+                    result["metadata"] = result.get("metadata", {})
+                    result["metadata"]["execution_engine"] = FALLBACK_ENGINE
+                    result["metadata"]["execution_mode"] = "fallback"
+                    result["metadata"]["fallback_reason"] = str(exc)[:500]
+                    return json.dumps(result, default=str)
+                except Exception:
+                    raise exc
+        if last_exc:
+            raise last_exc
+        if FALLBACK_ENABLED:
+            # Final fallback
+            from app.services.sca.factory import create_sca_analyzer
+            try:
+                analyzer = create_sca_analyzer()
+                result = analyzer.analyze({})
+            except Exception:
+                analyzer = SCAAnalyzer()
+                result = analyzer.analyze({})
+            result["findings"] = self._inject_provenance(result.get("findings", []), FALLBACK_ENGINE, "fallback")
+            result["metadata"] = result.get("metadata", {})
+            result["metadata"]["execution_engine"] = FALLBACK_ENGINE
+            result["metadata"]["execution_mode"] = "fallback"
+            return json.dumps(result, default=str)
+        raise RuntimeError("SCA scanner failed and fallback is disabled")

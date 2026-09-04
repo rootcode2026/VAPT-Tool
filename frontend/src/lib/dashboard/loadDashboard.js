@@ -1,7 +1,6 @@
-import { listAssets } from "@/lib/api/assets";
-import { listFindings } from "@/lib/api/findings";
-import { listScans } from "@/lib/api/scans";
-import { listTargets } from "@/lib/api/targets";
+import { getProjectAttackPaths, getProjectSecuritySummary, listProjectAssets } from "@/lib/api/assets";
+import { listProjectFindings } from "@/lib/api/findings";
+import { listProjectScans } from "@/lib/api/scans";
 import { SEVERITY_ORDER } from "@/lib/severity";
 
 function settledValue(result) {
@@ -22,7 +21,10 @@ function scanItems(payload) {
 }
 
 function asList(payload) {
-  return Array.isArray(payload) ? payload : [];
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload.items)) return payload.items;
+  return [];
 }
 
 export function selectCurrentRiskScan(scans) {
@@ -79,52 +81,64 @@ export function rankFindings(findings, limit = 8) {
 }
 
 export async function loadProjectDashboard(projectId) {
-  const [targetsResult, scansResult, findingsResult, assetsResult] =
+  if (!projectId) {
+    return {
+      securitySummary: { data: null, error: "No project selected.", loaded: false },
+      attackPaths: { data: null, error: "No project selected.", loaded: false },
+      scans: { items: [], error: "No project selected.", loaded: false },
+      findings: { items: [], error: "No project selected.", loaded: false },
+      assets: { items: [], error: "No project selected.", loaded: false },
+    };
+  }
+
+  const [securityResult, attackPathsResult, scansResult, findingsResult, assetsResult] =
     await Promise.allSettled([
-      listTargets(),
-      listScans({ page: 1, page_size: 100 }),
-      listFindings(),
-      listAssets({ project_id: projectId, limit: 500 }),
+      getProjectSecuritySummary(projectId),
+      getProjectAttackPaths(projectId, { max_paths: 50, max_depth: 5 }),
+      listProjectScans(projectId, { page: 1, page_size: 20 }),
+      listProjectFindings(projectId, { page: 1, page_size: 100 }),
+      listProjectAssets(projectId, { page: 1, page_size: 500 }),
     ]);
 
-  const targets = settledValue(targetsResult);
+  const securitySummary = settledValue(securityResult);
+  const attackPaths = settledValue(attackPathsResult);
   const scans = settledValue(scansResult);
   const findings = settledValue(findingsResult);
   const assets = settledValue(assetsResult);
 
-  const projectTargets = asList(targets.data).filter(
-    (target) => target.project_id === projectId
-  );
-  const targetIds = new Set(projectTargets.map((target) => target.id));
-
-  const projectScans = scanItems(scans.data).filter((scan) =>
-    targetIds.has(scan.target_id)
-  );
-  const projectFindings = asList(findings.data).filter((finding) =>
-    targetIds.has(finding.target_id)
-  );
-  const projectAssets = asList(assets.data);
-
   return {
-    targets: {
-      items: projectTargets,
-      error: targets.error,
-      loaded: !targets.error,
+    securitySummary: {
+      data: securitySummary.data || null,
+      error: securitySummary.error,
+      loaded: !securitySummary.error && securitySummary.data != null,
+    },
+    attackPaths: {
+      data: attackPaths.data || { paths: [], total: 0, truncated: false },
+      error: attackPaths.error,
+      loaded: !attackPaths.error && attackPaths.data != null,
     },
     scans: {
-      items: projectScans,
+      items: scanItems(scans.data),
+      raw: scans.data,
       error: scans.error,
       loaded: !scans.error,
     },
     findings: {
-      items: projectFindings,
+      items: asList(findings.data),
+      raw: findings.data,
       error: findings.error,
       loaded: !findings.error,
     },
     assets: {
-      items: projectAssets,
+      items: asList(assets.data),
+      raw: assets.data,
       error: assets.error,
       loaded: !assets.error,
     },
   };
+}
+
+// Backward-compat: old callers used listTargets etc. Keep helpers for fallback
+export function legacyCountBySeverity(findings) {
+  return countBySeverity(findings);
 }
