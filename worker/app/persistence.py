@@ -442,7 +442,6 @@ def persist_parsed_bundle(
         previous_assets_map=previous_map,
         observed_at=observed_at,
     )
-    persist_change_events(db, change_events)
 
     persisted = upsert_assets(
         db,
@@ -460,6 +459,11 @@ def persist_parsed_bundle(
         scanner=scanner,
         now=observed_at,
     )
+    # Change events carry asset_id, which is a FK to assets.id. The assets
+    # referenced by 'new_asset' / attribute events must already exist before
+    # the event rows are written, otherwise the insert aborts the transaction
+    # (surfacing later as a masking InFailedSqlTransaction on the asset upsert).
+    persist_change_events(db, change_events)
     return persisted
 
 

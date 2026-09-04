@@ -135,6 +135,7 @@ Verified from code, tests, and working-tree state:
 - **Vulnerability DB freshness depends on image build.** OSV-Scanner and Semgrep rules are baked into the Docker images; offline mode avoids runtime network but requires image rebuilds for DB/rule updates.
 - **Secrets redaction is pattern-based.** `SECRET_REDACT_PATTERNS` covers assignments, known prefixes (`sk_`, `ghp_`, `AKIA`, etc.), PEM headers, and 32+ char high-entropy strings; it is not a guarantee of catching every custom secret format.
 - **Known working-tree test issue.** `worker/tests/test_sca_scanner.py :: test_dependency_count_correct` expects `metadata.dependencies_total` which the current `sca.py` does not emit (legacy `sca.py` did). This is a pre-existing working-tree failure unrelated to S7.5; fix or update the test before release. Do not hide it as environmental.
+- **Asset-change-event FK ordering (fixed).** `asset_change_events.asset_id` is a FK to `assets.id`; `persist_parsed_bundle` writes change events AFTER assets/relationships are upserted, and `persist_change_events` isolates each insert in a savepoint. Regression tests: `worker/tests/test_atomic_persistence.py :: test_15` / `test_16`. Previous behavior (events before assets) made every first Nmap scan fail with a masked `InFailedSqlTransaction`.
 - **Future beyond cloud foundation not implemented.** Continuous monitoring, AI analyst, attack graph visualization, reporting/compliance, remediation, external intel remain DEFERRED.
 
 ## Current Infrastructure
