@@ -10,3 +10,4 @@ pytest
 httpx
 PyJWT
 bcrypt
+python-multipart
