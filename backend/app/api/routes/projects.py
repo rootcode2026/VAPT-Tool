@@ -289,7 +289,7 @@ def get_project_assets(
     status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     page: int | None = Query(default=None, ge=1),
-    page_size: int | None = Query(default=None, ge=1, le=100),
+    page_size: int | None = Query(default=None, ge=1, le=500),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
