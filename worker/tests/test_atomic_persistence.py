@@ -2,9 +2,14 @@ import uuid
 import json
 from datetime import datetime, timezone, timedelta
 import pytest
-from sqlalchemy import create_engine, String, ForeignKey, DateTime, UniqueConstraint, JSON, text
+from sqlalchemy import create_engine, String, ForeignKey, DateTime, UniqueConstraint, JSON, text, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-from app.persistence import upsert_assets, upsert_relationships, observation_timestamps
+from app.persistence import (
+    upsert_assets,
+    upsert_relationships,
+    observation_timestamps,
+    persist_parsed_bundle,
+)
 
 
 class Base(DeclarativeBase):
@@ -74,8 +79,39 @@ class AssetRelationship(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AssetChangeEvent(Base):
+    __tablename__ = "asset_change_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_id",
+            "asset_id",
+            "change_type",
+            name="uq_asset_change_events_idempotency",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"))
+    asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("assets.id"))
+    scan_id: Mapped[str] = mapped_column(String(36), ForeignKey("scans.id"))
+    change_type: Mapped[str] = mapped_column(String(50))
+    previous_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    extra_data: Mapped[str] = mapped_column("metadata", String, default="{}")
+
+
 def _setup_db():
     engine = create_engine("sqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def _fk_pragma(dbapi_connection, connection_record):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+        except Exception:
+            pass
+
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
@@ -84,9 +120,26 @@ def _setup_db():
     target_id = str(uuid.uuid4())
     scan_id = str(uuid.uuid4())
 
-    db.add(Project(id=project_id, name="Test Project"))
-    db.add(Target(id=target_id, project_id=project_id))
-    db.add(Scan(id=scan_id, target_id=target_id))
+    # Raw SQL inserts keep explicit INSERT order so SQLite FK enforcement
+    # (PRAGMA foreign_keys=ON) sees the project/target rows before the scan row.
+    db.execute(
+        text(
+            "INSERT INTO projects (id, name) VALUES (:id, :name)"
+        ),
+        {"id": project_id, "name": "Test Project"},
+    )
+    db.execute(
+        text(
+            "INSERT INTO targets (id, project_id) VALUES (:id, :project_id)"
+        ),
+        {"id": target_id, "project_id": project_id},
+    )
+    db.execute(
+        text(
+            "INSERT INTO scans (id, target_id) VALUES (:id, :target_id)"
+        ),
+        {"id": scan_id, "target_id": target_id},
+    )
     db.commit()
 
     return db, project_id, scan_id
@@ -100,6 +153,15 @@ def _get_metadata(db, model, record_id) -> dict:
     elif isinstance(raw, dict):
         return raw
     return {}
+
+
+def _add_scan(db, scan_id: str) -> None:
+    target_id = db.execute(text("SELECT id FROM targets LIMIT 1")).scalar()
+    db.execute(
+        text("INSERT INTO scans (id, target_id) VALUES (:id, :target_id)"),
+        {"id": scan_id, "target_id": target_id},
+    )
+    db.commit()
 
 
 def test_1_new_asset_insert():
@@ -129,9 +191,7 @@ def test_1_new_asset_insert():
 def test_2_existing_asset_update():
     db, project_id, scan_id1 = _setup_db()
     scan_id2 = str(uuid.uuid4())
-    db.add(Scan(id=scan_id2, target_id=db.query(Target).first().id))
-    db.commit()
-
+    _add_scan(db, scan_id2)
     t1 = datetime(2026, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
     t2 = datetime(2026, 9, 2, 10, 0, 0, tzinfo=timezone.utc)
 
@@ -428,10 +488,8 @@ def test_10_relationship_metadata_merge():
 
 def test_11_out_of_order_observations_last_seen_does_not_move_backwards():
     db, project_id, scan_id_latest = _setup_db()
-    target = db.query(Target).first()
     scan_id_older = str(uuid.uuid4())
-    db.add(Scan(id=scan_id_older, target_id=target.id))
-    db.commit()
+    _add_scan(db, scan_id_older)
 
     t_latest = datetime(2026, 9, 5, 12, 0, 0, tzinfo=timezone.utc)
     t_older = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -467,10 +525,8 @@ def test_11_out_of_order_observations_last_seen_does_not_move_backwards():
 
 def test_12_out_of_order_worker_processing():
     db, project_id, scan_id_1 = _setup_db()
-    target = db.query(Target).first()
     scan_id_2 = str(uuid.uuid4())
-    db.add(Scan(id=scan_id_2, target_id=target.id))
-    db.commit()
+    _add_scan(db, scan_id_2)
 
     t_earlier = datetime(2026, 8, 20, 10, 0, 0, tzinfo=timezone.utc)
     t_later = datetime(2026, 8, 25, 10, 0, 0, tzinfo=timezone.utc)
@@ -546,4 +602,93 @@ def test_14_genuine_db_persistence_errors_propagate():
     # Invalid table column in query causes genuine DB error -> must propagate
     with pytest.raises(Exception):
         db.execute(text("SELECT non_existent_column FROM assets"))
+    db.close()
+
+
+def test_15_new_asset_bundle_persists_change_events_with_fk():
+    """Regression: change events reference assets that must exist first.
+
+    persist_parsed_bundle used to write asset_change_events BEFORE the assets
+    they reference, violating asset_change_events_asset_id_fkey (assets.id)
+    for brand-new assets. That FK violation aborted the transaction and the
+    subsequent assets upsert failed with a masking InFailedSqlTransaction.
+    """
+    db, project_id, scan_id = _setup_db()
+    t0 = datetime(2026, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+    persisted = persist_parsed_bundle(
+        db,
+        project_id=project_id,
+        scan_id=scan_id,
+        scanner="nmap",
+        assets=[
+            {
+                "type": "host",
+                "value": "203.0.113.7",
+                "metadata": {"ip": "203.0.113.7", "status": "up"},
+            }
+        ],
+        findings=[],
+        now=t0,
+    )
+    db.commit()
+
+    assert len(persisted) == 1
+    asset = db.query(Asset).filter_by(project_id=project_id, value="203.0.113.7").one()
+    events = (
+        db.query(AssetChangeEvent)
+        .filter_by(project_id=project_id, asset_id=asset.id)
+        .all()
+    )
+    assert any(e.change_type == "new_asset" for e in events)
+
+    # Session must remain fully usable: assets row present, no aborted txn.
+    assert db.query(Asset).filter_by(project_id=project_id).count() == 1
+    db.close()
+
+
+def test_16_failed_change_event_isolated_by_savepoint():
+    """A failing change event must not abort the surrounding transaction."""
+    db, project_id, scan_id = _setup_db()
+    t0 = datetime(2026, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+    # Handcraft an event referencing a non-existent asset -> FK failure.
+    # Even when such an insert fails, the transaction must remain usable.
+    bad_event = {
+        "id": str(uuid.uuid4()),
+        "project_id": project_id,
+        "asset_id": "00000000-0000-0000-0000-0000000000bb",
+        "scan_id": scan_id,
+        "change_type": "new_asset",
+        "previous_state": None,
+        "current_state": {"status": "active"},
+        "detected_at": t0,
+        "metadata": {},
+    }
+    from app.asset_intel.change_detection import persist_change_events
+
+    persist_change_events(db, [bad_event])
+
+    # Transaction still usable: the assets upsert must succeed afterwards.
+    persisted = upsert_assets(
+        db,
+        project_id=project_id,
+        scan_id=scan_id,
+        assets=[
+            {
+                "type": "host",
+                "value": "203.0.113.8",
+                "metadata": {"ip": "203.0.113.8", "status": "up"},
+            }
+        ],
+        scanner="nmap",
+        now=t0,
+    )
+    db.commit()
+
+    assert len(persisted) == 1
+    assert (
+        db.query(Asset).filter_by(project_id=project_id, value="203.0.113.8").count()
+        == 1
+    )
     db.close()

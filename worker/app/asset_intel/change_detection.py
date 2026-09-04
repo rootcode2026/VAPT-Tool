@@ -14,8 +14,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import logging
 import uuid
 from sqlalchemy import text
+
+logger = logging.getLogger("vapt.asset_intel.change_detection")
 
 ASSET_STALE_AFTER_DAYS = 7
 ASSET_INACTIVE_AFTER_DAYS = 30
@@ -332,48 +335,59 @@ def persist_change_events(db, events: list[dict]) -> list[dict]:
         if not isinstance(event, dict):
             continue
         try:
-            db.execute(
-                text(
-                    """
-                    INSERT INTO asset_change_events (
-                        id,
-                        project_id,
-                        asset_id,
-                        scan_id,
-                        change_type,
-                        previous_state,
-                        current_state,
-                        detected_at,
-                        metadata
-                    )
-                    VALUES (
-                        :id,
-                        :project_id,
-                        :asset_id,
-                        :scan_id,
-                        :change_type,
-                        :previous_state,
-                        :current_state,
-                        :detected_at,
-                        :metadata
-                    )
-                    ON CONFLICT (scan_id, asset_id, change_type)
-                    DO NOTHING
-                    """
-                ),
-                {
-                    "id": event.get("id") or str(uuid.uuid4()),
-                    "project_id": event["project_id"],
-                    "asset_id": event["asset_id"],
-                    "scan_id": event["scan_id"],
-                    "change_type": event["change_type"],
-                    "previous_state": json.dumps(event.get("previous_state")),
-                    "current_state": json.dumps(event.get("current_state")),
-                    "detected_at": event.get("detected_at") or datetime.now(timezone.utc),
-                    "metadata": json.dumps(event.get("metadata") or {}),
-                },
-            )
+            # Isolate each event in a savepoint: a failed event must not abort
+            # the surrounding transaction, which would otherwise surface as a
+            # cascading psycopg2.errors.InFailedSqlTransaction on the next
+            # statement (e.g. the assets upsert) and hide the real error.
+            with db.begin_nested():
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO asset_change_events (
+                            id,
+                            project_id,
+                            asset_id,
+                            scan_id,
+                            change_type,
+                            previous_state,
+                            current_state,
+                            detected_at,
+                            metadata
+                        )
+                        VALUES (
+                            :id,
+                            :project_id,
+                            :asset_id,
+                            :scan_id,
+                            :change_type,
+                            :previous_state,
+                            :current_state,
+                            :detected_at,
+                            :metadata
+                        )
+                        ON CONFLICT (scan_id, asset_id, change_type)
+                        DO NOTHING
+                        """
+                    ),
+                    {
+                        "id": event.get("id") or str(uuid.uuid4()),
+                        "project_id": event["project_id"],
+                        "asset_id": event["asset_id"],
+                        "scan_id": event["scan_id"],
+                        "change_type": event["change_type"],
+                        "previous_state": json.dumps(event.get("previous_state")),
+                        "current_state": json.dumps(event.get("current_state")),
+                        "detected_at": event.get("detected_at") or datetime.now(timezone.utc),
+                        "metadata": json.dumps(event.get("metadata") or {}),
+                    },
+                )
             persisted.append(event)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - change events are best-effort side-channel
+            logger.warning(
+                "Skipping change event %s (scan=%s, asset=%s): %s",
+                event.get("change_type"),
+                event.get("scan_id"),
+                event.get("asset_id"),
+                exc,
+            )
     return persisted
