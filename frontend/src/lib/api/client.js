@@ -138,12 +138,20 @@ export async function apiRequest(path, options = {}) {
 
   const data = await parseBody(response);
 
-  if (response.status === 401 && authRedirect) {
-    clearAccessToken();
-    if (unauthorizedHandler) {
-      unauthorizedHandler();
+  // Global expired-session handling: 401 on a protected request → clear session + redirect to login
+  // - Only for authenticated requests (auth !== false) to avoid redirecting public 401s
+  // - Respect authRedirect flag to allow callers like login to suppress redirect
+  // - Do not redirect for auth routes themselves (e.g., login 401 for invalid credentials)
+  if (response.status === 401 && auth !== false && authRedirect) {
+    const urlString = url.toString();
+    const isAuthRoute = urlString.includes("/api/v1/auth/");
+    if (!isAuthRoute) {
+      clearAccessToken();
+      if (unauthorizedHandler) {
+        unauthorizedHandler();
+      }
+      redirectToLogin();
     }
-    redirectToLogin();
   }
 
   if (!response.ok) {
@@ -157,22 +165,24 @@ export async function apiRequest(path, options = {}) {
 }
 
 export async function apiFetch(input, init = {}) {
-  const token = getAccessToken();
-  const headers = new Headers(init.headers || {});
+  const { auth = true, authRedirect = true, ...fetchInit } = init;
+  const token = auth === false ? null : getAccessToken();
+  const headers = new Headers(fetchInit.headers || {});
 
-  if (token && !headers.has("Authorization")) {
+  if (auth !== false && token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
   let response;
 
   try {
-    response = await fetch(input, { ...init, headers });
+    response = await fetch(input, { ...fetchInit, headers });
   } catch (error) {
     throw error;
   }
 
-  if (response.status === 401) {
+  // Global 401 handling for apiFetch — same semantics as apiRequest
+  if (response.status === 401 && auth !== false && authRedirect) {
     const url = typeof input === "string" ? input : input?.url;
     const isAuthRoute = typeof url === "string" && url.includes("/api/v1/auth/");
     if (!isAuthRoute) {
