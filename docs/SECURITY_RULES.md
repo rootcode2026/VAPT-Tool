@@ -1,7 +1,7 @@
 # VAPT Platform Security Rules
 
 > Scope: every AI coding session and every manual change. Violations break the `READY` classification for the affected stage.
-> References: `worker/app/scanner/docker_runner.py`, `worker/app/scanner/workspace.py`, `worker/app/scanner/scanners/*.py`, `scanners/*/Dockerfile`, `worker/app/scanner/parsers/secrets_parser.py`, `worker/app/persistence.py`, `worker/app/tasks.py`, `docker-compose.yml`, `.env.example`.
+> References: `worker/app/scanner/docker_runner.py`, `worker/app/scanner/workspace.py`, `worker/app/scanner/scanners/*.py`, `scanners/*/Dockerfile`, `worker/app/scanner/parsers/secrets_parser.py`, `worker/app/persistence.py`, `worker/app/tasks.py`, `worker/app/ingestion/*`, `backend/app/api/routes/ingestions.py`, `docker-compose.yml`, `.env.example`.
 
 ## Container Security
 
@@ -90,6 +90,34 @@ Future AI components (analyst, triage, remediation suggestions) must never recei
 - **Pin security-sensitive tool versions.** Document and pin: Semgrep `1.75.0`, OSV-Scanner `1.9.2`, Gitleaks `8.30.1` (with digest `sha256:c00b6bd0...`). Update via Dockerfile + scanner `PRODUCTION_VERSION` + `.env.example` together.
 - **Avoid unnecessary dependencies.** Do not add new Python/JS packages for scanner-adjacent code without checking existing `backend/requirements.txt` and `worker/requirements.txt`. Prefer stdlib (`re`, `hashlib`, `json`, `pathlib`) for redaction/hashing.
 - **Scanner Dockerfiles must be minimal.** Do not install extra tools, do not `pip install` unverified packages in scanner images, and do not add `curl`/`wget` runtime fetches where the tool already bundles rules.
+
+## Ingestion Security (P11.1)
+
+Ingestion handles **untrusted** repository/archive contents. Never execute them:
+
+- **No automatic execution:** Never run `package.json` scripts, `Makefile`, `build.sh`, `Dockerfile` `RUN`, CI YAML, hooks, binaries, or any repository code during ingestion. Files may be *detected* and *scanned* later, but not executed. `IngestionService` only validates and extracts; it does not `import` or `exec` repository files.
+- **Archive validation before extraction:** Inspect every entry's `filename`/`linkname` before writing. Reject `../` traversal, absolute Unix (`/etc/passwd`), Windows drive (`C:\`), UNC (`\\server`), `//`, and null bytes. Use `_validate_entry_name` for ZIP/TAR. For TAR, also reject `..` in `linkname`.
+- **Symlink/hardlink escape:** `zip` symlinks via `external_attr` + `linkname` content; `tar` `issym()`/`islnk()` — validate `linkname` is not absolute, not `..` traversal, and `resolve().relative_to(workspace)` stays inside. Create symlinks only after validation; hard links only if target exists within workspace. Count symlinks/hardlinks toward `MAX_FILE_COUNT`.
+- **Workspace containment:** `create_workspace` (`0o700`, `WORKSPACE_BASE`) + `resolve().relative_to(workspace)` for every extracted file **before and after** write. `_ensure_workspace_containment` verifies `workspace` is inside `WORKSPACE_BASE`. `cleanup_workspace` verifies `relative_to(base)` and `path != base` before `shutil.rmtree`.
+- **Resource limits (env-overridable, safe defaults):** `MAX_ARCHIVE_SIZE` 100 MB, `MAX_EXTRACTED_SIZE` 500 MB, `MAX_FILE_COUNT` 10k, `MAX_FILE_SIZE` 50 MB, `MAX_ARCHIVE_BOMB_RATIO` 100. Enforce in **two passes**: first validate `file_size`/`file_count`/`total_size` without writing, then stream extraction with `remaining` check. Reject with `IngestionError` category (`archive_too_large`, `extracted_too_large`, `too_many_files`, `file_too_large`).
+- **Malformed archives:** `zipfile.BadZipFile`/`tarfile.TarError` → `IngestionError` `malformed_archive`/`unsupported_format`, not crash, not log raw content. `detect_archive_type` checks filename + magic (`PK\x03\x04`, `\x1f\x8b`, `ustar` at 257) and fallback try.
+- **No secrets in logs:** `IngestionResult.to_safe_dict()` truncates `error_message` 500, `warnings` 20×200, `source_name` 100, never logs `archive_bytes` or file contents. `IngestionError` messages are bounded and sanitized; backend `prepare_ingestion` returns `detail` without raw. Never store `SECRET_VALUE_FAKE` etc. in metadata (test_24 verifies).
+- **Project isolation:** `IngestionService.prepare_from_archive(archive_bytes, filename, project_id)` requires `project_id` (validated, not empty), creates workspace with `project_id` prefix (`vapt-<ingest>-ingestion-<project>`), `IngestionResult.project_id` preserved, `require_project_access` in API ensures `project_id` belongs to `current_user.organization_id`. No cross-project workspace reuse.
+- **No execution of build scripts:** `artifact_detection` only `rglob` and `read_text[:2000]` for `openapi`/`swagger` marker, never `subprocess` or `eval` on repository files.
+- **Cleanup:** `IngestionService.cleanup(workspace)` → `cleanup_workspace` (idempotent, verifies `relative_to`), called in service `except` (failed ingestion cleans workspace, returns `workspace_path=""`) and in API `shutil.rmtree` + `finally`. Failed ingestion never leaves workspace.
+
+## Cloud Security (P12.1)
+
+Cloud foundation must be read-only, non-destructive, and credential-safe:
+
+- **Provider-neutral:** `CloudProvider` registry, `is_supported_provider` check, `MockCloudDiscoveryAdapter` for tests, no live SDK calls in unit tests, no `aws`/`gcloud`/`az` CLI `subprocess`
+- **No destructive actions:** `discover()` is read-only, never `delete`/`update`/`create` cloud resources, never modify cloud state, never trust resource names as commands
+- **No shell interpolation:** Never interpolate `resource_id`/`resource.name`/`tags` into shell commands (`;|&$` etc. would be rejected by `_validate_image_ref`-style validation if ever used) — use controlled APIs, not `subprocess` with `shell=True`
+- **Credential reference only:** `CloudAccount.credential_reference` is opaque string (100 chars), never plaintext `AWS_SECRET`/`GCP private key`/`Azure secret` in `Asset`/`Finding`/`logs`; `to_safe_dict()` strips `secret`/`token`/`key`/`private` from `metadata`/`tags`; `test_20`/`test_21` verify, future vault deferred
+- **Project isolation:** Every `CloudAccount`/`CloudResource` has `project_id`, `canonical_value` is `cloud_account:{provider}:{account}:{region}` / `cloud_resource:{provider}:{account}:{region}:{type}:{id}` (deterministic, hash if >1024), `Asset` persistence is `(project_id, asset_type, value)` — same value different `project_id` → different rows, `GET /api/v1/cloud/accounts?project_id=` etc. require `require_project_access` and `WHERE project_id`
+- **No secrets in logs:** `CloudDiscoveryResult.to_safe_dict()` sanitizes `error_message` 500, no raw API responses, `sanitize_cloud_metadata` strips `secret`/`token`
+- **Read-only discovery:** Default, never perform destructive operations, never execute arbitrary resource-provided commands
+- **No external calls in tests:** `MockCloudDiscoveryAdapter` with deterministic `provider-resource-{i}` and `contains`/`uses` relationships, no network, no credentials required
 
 ## Change Safety
 

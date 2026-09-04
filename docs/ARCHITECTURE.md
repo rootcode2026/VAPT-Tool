@@ -1,6 +1,6 @@
 # VAPT Platform Architecture
 
-> Verified against: `worker/app/scanner/*`, `worker/app/finding_engine/`, `worker/app/services/*`, `worker/app/asset_intel/`, `worker/app/risk_engine/`, `worker/app/tasks.py`, `worker/app/persistence.py`, `backend/app/api/routes/*`, `frontend/src/app/(app)/*`, `docker-compose.yml`, `scanners/*/Dockerfile`.
+> Verified against: `worker/app/scanner/*`, `worker/app/ingestion/*`, `worker/app/finding_engine/`, `worker/app/services/*`, `worker/app/asset_intel/`, `worker/app/risk_engine/`, `worker/app/tasks.py`, `worker/app/persistence.py`, `backend/app/api/routes/*`, `frontend/src/app/(app)/*`, `docker-compose.yml`, `scanners/*/Dockerfile`.
 > Labels: COMPLETE / IN PROGRESS / PLANNED / DEFERRED refer to code + test + verification evidence, not file existence alone.
 
 ## System Overview
@@ -24,7 +24,8 @@
 - **Backend API** (`backend/`) — FastAPI, JWT auth (`backend/app/api/deps.py`, `routes/auth.py`), project-scoped CRUD (`projects`, `targets`, `scans`, `findings`, `assets`, `scanners`, `dashboard`), Alembic migrations (10 versions), `backend/app/services/` for domain logic.
 - **Celery Worker** (`worker/`) — `worker/app/celery_app.py` + `worker/app/tasks.py :: execute_scan`, `worker/app/persistence.py`, `worker/app/scanner/*`, `worker/app/finding_engine/`, `worker/app/services/*`, `worker/app/asset_intel/`, `worker/app/risk_engine/`.
 - **Data Plane** — PostgreSQL (`security_saas`), Redis (Celery results), RabbitMQ (Celery broker), Docker runtime via `docker-socket-proxy`.
-- **Scanner Plane** — Per-family Docker images in `scanners/` (nmap, nuclei, zap, nikto, tls, dns, subdomain, sast, sca, secrets), invoked via `DockerRunner`.
+- **Scanner Plane** — Per-family Docker images in `scanners/` (nmap, nuclei, zap, nikto, tls, dns, subdomain, sast, sca, secrets, container, iac, api), invoked via `DockerRunner`.
+- **Ingestion Plane** — `worker/app/ingestion/` (`service.py`, `archive.py`, `artifact_detection.py`, `scanner_routing.py`, `limits.py`) + `backend/app/api/routes/ingestions.py` — secure archive extraction (ZIP/TAR/TGZ) into isolated workspace, artifact detection, scanner routing, then `ScanContext` → `ScannerPipeline`.
 
 ## High-Level Components
 
@@ -37,6 +38,7 @@
 | Redis | `docker-compose.yml :: redis` | Celery result backend |
 | RabbitMQ | `docker-compose.yml :: rabbitmq` | Celery broker |
 | Docker Runtime | `worker/app/scanner/docker_runner.py` + `docker-socket-proxy` | Container lifecycle, volume validation, timeout polling, log collection |
+| Ingestion Service | `worker/app/ingestion/` + `backend/app/api/routes/ingestions.py` | Archive validation, secure extraction (zip/tar), artifact detection (languages, manifests, IaC, API, secrets), scanner routing, project-scoped workspace preparation |
 | Scanner Images | `scanners/*/Dockerfile` | Per-tool images, pinned versions/digests where practical, non-root where practical |
 
 ## Scanner Architecture
@@ -45,7 +47,7 @@
 
 - **`BaseScanner`** (`worker/app/scanner/base.py`) — ABC with identity (`name`, `category`, `family`, `description`), target/input (`target_types`, `input_type`, `requires_workspace`, `supported_profiles`), output (`output_format`), capabilities, timeout. Two entry points: `scan(target: str) -> str` (legacy, required) and `scan_with_context(ScanContext) -> str` (AppSec, defaults to `scan(context.target)`).
 - **`ScanContext`** (`worker/app/scanner/base.py`) — `@dataclass` with `target`, `target_type`, `project_id`, `scan_id`, `workspace`, `metadata`. Added for AppSec without breaking legacy scanners.
-- **`ScannerRegistry`** (`worker/app/scanner/registry.py`) — Registers 11 built-in scanners (`nmap`, `nuclei`, `http_fingerprint`, `zap`, `nikto`, `tls`, `dns`, `subdomain`, `sca`, `sast`, `secrets`), exposes `get(name)` / `list()` / `register()`.
+- **`ScannerRegistry`** (`worker/app/scanner/registry.py`) — Registers 14 built-in scanners (`nmap`, `nuclei`, `http_fingerprint`, `zap`, `nikto`, `tls`, `dns`, `subdomain`, `sca`, `sast`, `secrets`, `container`, `iac`, `api`), exposes `get(name)` / `list()` / `register()`.
 - **`ScannerManager`** (`worker/app/scanner/manager.py`) — Thin dispatcher: `run(scanner, target)` → `scanner.scan(target)` with `target_type` validation; `run_with_context(scanner, ScanContext|str)` → `scanner.scan_with_context(context)` (or `scan(target)` fallback).
 - **`ScannerPipeline`** (`worker/app/scanner/pipeline.py`) — Three stages: `manager.run` → `parser_registry.get(scanner).parse(raw)` → `finding_engine.analyze(parsed)`. Two entry points `run(scanner, target)` / `run_with_context(scanner, context)`, plus `run_many` with `run_with_retries` per scanner.
 - **`DockerRunner`** (`worker/app/scanner/docker_runner.py`) — `run(image, command, timeout, scanner, target, volumes, workspace) -> str` and `run_detailed(...) -> DockerRunResult`. Validates volumes, injects workspace mount, polls `container.reload()` / `container.status` (not streaming `wait()`), handles timeouts vs transport errors (`ChunkedEncodingError`, `ProtocolError`), collects `stdout`/`stderr` separately, enforces `DIAGNOSTIC_LIMIT=4000` and `_safe_message` redaction.
@@ -65,6 +67,18 @@
 - Docker mount: `DockerRunner._validate_volumes` + `tasks.py` workspace injection mounts `{ws: {"bind": "/workspace", "mode": "ro"}}` (read-only). Scanners resolve `ws/src` vs `ws` and `p.resolve().relative_to(ws.resolve())` to prevent traversal/symlink escape.
 
 Invariants: one workspace per scan/attempt, never shared, never predictable shared directory, always cleaned in `finally`, retry creates a new one.
+
+## Ingestion Architecture (P11.1)
+
+`worker/app/ingestion/` — COMPLETE (foundation):
+
+- **Service:** `IngestionService` (`service.py`) with `IngestionResult` dataclass (`ingestion_id`, `project_id`, `source_type`/`source_name`, `workspace_path`, `file_count`/`total_size`, `detected_languages`, `detected_artifact_types`, `artifact_details`, `recommended_scanners`/`scan_reasons`, `status`/`duration_ms`/`error_category`/`error_message`). Methods: `prepare_from_archive(archive_bytes, filename, project_id)` and `prepare_from_directory(source_path, project_id)` — both create isolated workspace via `create_workspace` (project_id prefix, 0o700), validate, extract, detect, route, return result, and guarantee `cleanup_workspace` on failure via `finally`/`shutil.rmtree` in caller. **Does not execute** package scripts, Makefiles, Dockerfiles, CI, hooks, binaries — only scans later.
+- **Archive:** `archive.py` — `safe_extract_zip`/`safe_extract_tar`/`detect_archive_type` with Python stdlib (`zipfile`, `tarfile`). Two-pass validation: first validate every entry (`_validate_entry_name` rejects `../`, absolute `/`, Windows `C:\`/`\\`, `//`, null bytes), then symlink/hardlink checks (`_check_symlink_target` rejects absolute/`..` escape via `resolve().relative_to(workspace)`), then size/count limits (`MAX_ARCHIVE_SIZE` 100 MB, `MAX_EXTRACTED_SIZE` 500 MB, `MAX_FILE_COUNT` 10k, `MAX_FILE_SIZE` 50 MB, `MAX_ARCHIVE_BOMB_RATIO` 100, env-overridable), then extraction with streaming and post-extract `resolve().relative_to(workspace)` containment. `IngestionError` with safe `category` (`traversal`, `absolute_path`, `windows_path`, `symlink_escape`, `archive_too_large`, etc.) and bounded message (no raw content).
+- **Detection:** `artifact_detection.py` — `detect_artifacts(workspace)` walks `rglob`, skips `ignored_dirs` (`.git` still counted for repo metadata), checks `LANGUAGE_MAP` (11 languages), `DEPENDENCY_MANIFESTS` (14 manifests), `SECRETS_CANDIDATES` (`.env`, `config`/`credential`, `.pem`/`.key`), `IAC_EXTENSIONS`/`IAC_FILENAMES` (`.tf`, `Dockerfile`, `k8s` yaml), `API_SPEC_NAMES` (openapi/swagger via name + content `openapi`/`swagger` in first 2KB), `REPO_METADATA` (`.git`, `.github`, `Jenkinsfile`), returns sorted deterministic counts (`total_files`, `source_files`, etc.) and `summarize_artifact_types`.
+- **Routing:** `scanner_routing.py` — `recommend_scanners(detection, has_container_image=False)` maps `languages`→`sast`, `manifests`→`sca`, `secrets`→`secrets`, `iac_files`→`iac`, `api_specs`→`api`, flag `has_container_image`→`container`; returns `{recommended: sorted, reasons: {scanner: reason}, all_scanners}` without blindly executing. `web`/`full` profiles unchanged (8 web only).
+- **Limits:** `limits.py` — safe defaults, `os.getenv` overridable, used in both two-pass validation and streaming extraction.
+- **Backend API:** `backend/app/api/routes/ingestions.py` — `POST /api/v1/ingestions/prepare` (`project_id` Form + `file` UploadFile, `require_project_access`, `MAX_ARCHIVE_SIZE` check, `detect_archive_type`, same `archive.py` validation duplicated for backend (no worker import), `rglob` detection, `recommend_scanners`, `shutil.rmtree` cleanup, returns safe IngestionResult; no secrets in logs, error 400 with sanitized `detail`.
+- **Flow:** `Repository/Artifact (ZIP/TAR/TGZ bytes + filename, project_id) → IngestionService → Input Validation (project_id, archive size/type) → Secure Extraction (validate every entry, enforce limits, handle symlinks) → Isolated Workspace (create_workspace, 0o700, project_id, resolve containment) → Artifact Detection → Scanner Routing → IngestionResult (file_count, total_size, languages, artifact_types, recommended_scanners) → ScanContext(workspace) → Existing ScannerPipeline` — no second pipeline.
 
 ## Scanner Execution
 
@@ -103,7 +117,7 @@ for scanner_name in get_scanners_for_profile(profile):
 - **`BaseParser`** (`worker/app/scanner/parsers/base.py`) — `parse(raw: str) -> dict` returning `{scanner, assets, findings, errors, metadata}`.
 - **`ParserRegistry`** (`worker/app/scanner/parsers/registry.py`) — Maps scanner name → parser instance; `get(scanner)`.
 - **`SarifParser`** (`worker/app/scanner/parsers/sarif_parser.py`) — Generic SARIF 2.1.0 parser for AppSec families (sast, sca, secrets). Extracts `runs[0].results[]` → findings, `runs[0].artifacts[]` / `results[].locations[]` → `source_file`/`package` assets, preserves `ruleId`, `level`, `message`, `locations`, `partialFingerprints`.
-- **Per-scanner parsers:** `nmap_parser`, `nuclei_parser`, `zap_parser`, `nikto_parser`, `tls_parser`, `dns_parser`, `subdomain_parser`, `http_fingerprint_parser`, `sast_parser` (SARIF → typed findings), `sca_parser` (SARIF → dependency vulns), `secrets_parser` (SARIF/legacy → `secret` findings, `source_file` assets, mandatory redaction).
+- **Per-scanner parsers:** `nmap_parser`, `nuclei_parser`, `zap_parser`, `nikto_parser`, `tls_parser`, `dns_parser`, `subdomain_parser`, `http_fingerprint_parser`, `sast_parser` (SARIF → typed findings), `sca_parser` (SARIF → dependency vulns), `secrets_parser` (SARIF/legacy → `secret` findings, `source_file` assets, mandatory redaction), `container_parser` (SARIF → `container_image`/`container_layer`), `iac_parser` (Checkov JSON/SARIF → `iac_resource`), `api_parser` (SARIF → `api_endpoint`).
 
 ## Finding Architecture
 
@@ -180,6 +194,19 @@ Two layers (both deterministic, no external calls):
 - **`provenance.py`** — `validate_relationship`, `merge_relationship_metadata` — enforces allowed `(source_type, relationship_type, target_type)` triples.
 - **`change_detection.py`** — `detect_asset_changes` / `persist_change_events` — compares current vs previous assets/relationships (loaded single-query via `_load_target_assets_pre_mutation`), emits `created`/`updated`/`disappeared` events, `compute_asset_lifecycle_status` (active/stale).
 - **`classification.py` / `enrich.py`** — Asset classification and metadata enrichment.
+
+## Cloud Foundation (P12.1)
+
+`worker/app/cloud/` — FOUNDATION (provider-neutral, no live SDK):
+
+- **Provider:** `provider.py` (`SUPPORTED_PROVIDERS` `aws`/`gcp`/`azure`, `CloudProvider` + `CloudProviderCapabilities` (8 capabilities), `get_provider`/`list_providers`/`is_supported_provider`, `register_provider`, sample `regions`/`supported_services` per provider)
+- **Models:** `models.py` (`CloudAccount` with `aws_account_id`/`gcp_project_id`/`azure_subscription_id`+`resource_group`/`region`/`credential_reference` opaque + `canonical_value()` → `cloud_account:{provider}:{account}:{region}`, `CloudResource` with `provider`/`resource_type`/`resource_id`/`region`/`service`/`name`/`account_id`/`tags`/`metadata` + `canonical_value()` → `cloud_resource:{provider}:{account}:{region}:{type}:{id}` with hash if >1024, `CloudDiscoveryResult`, `CloudRegion`, `CloudSecurityCheck`/`CloudCheckResult` (`to_finding_dict()` → `Finding` for `FindingEngine`))
+- **Normalization:** `normalization.py` (`normalize_account_value`, `normalize_resource_value`, `sanitize_cloud_metadata` strips `secret`/`token`/`key`, `validate_provider`)
+- **Discovery:** `discovery.py` (`CloudDiscoveryAdapter` abstract `discover(account) -> CloudDiscoveryResult`, `MockCloudDiscoveryAdapter` deterministic `provider-resource-{i}`, `contains` + `uses` relationships, `MockAWS/GCP/AzureAdapter` wrappers, no SDK, no network, `unsupported_provider` handling)
+- **Checks:** `checks.py` (`CloudSecurityCheck` `check_id`/`title`/`provider`/`resource_type`/`severity`, `CloudCheckResult` `to_finding_dict()` → `Finding`, `DEFAULT_CHECKS` 3, `get_checks_for_provider`/`run_checks_for_resource`)
+- **Asset:** `asset.py` (`cloud_account_to_asset`, `cloud_resource_to_asset` → `cloud_account`/`cloud_resource` canonical, `build_cloud_relationships` via `contains`/`uses`)
+- **Reuse:** `Asset`/`AssetRelationship`/`Finding`/`Evidence`/`Risk`/`Asset.normalize`/`correlate`/`persistence` — no new cloud table, project-scoped `(project_id, asset_type, value)`, `cloud_account`/`cloud_resource` added to `CANONICAL_ASSET_TYPES`
+- **No destructive actions:** No `delete`/`update`/`create` on cloud, no `subprocess` for `aws`/`gcloud`/`az` CLI, no shell interpolation of resource names, read-only discovery only
 
 ## Persistence
 

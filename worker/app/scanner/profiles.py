@@ -32,11 +32,11 @@ SCAN_PROFILES = {
     "secrets": ["secrets"],
     "container": ["container"],
     "iac": ["iac"],
-    "api": [],
+    "api": ["api"],
     "secrets_full": ["secrets"],
     "container_full": ["container"],
     "iac_full": ["iac"],
-    "api_full": [],
+    "api_full": ["api"],
 }
 
 
