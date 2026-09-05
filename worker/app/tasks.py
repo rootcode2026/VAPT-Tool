@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import uuid
 
 from sqlalchemy import create_engine, text
@@ -70,8 +71,8 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 
 # ---------------------------------------------------------------------------
-# Audit logging for scan lifecycle (Phase 6C) — reuses existing taxonomy,
-# append-only, redacted, bounded, tenant-derived from DB.
+# Audit logging for scan lifecycle (Phase 6C+6G) — reuses existing taxonomy,
+# append-only, redacted, bounded, tenant-derived from DB, correlation-aware.
 # ---------------------------------------------------------------------------
 
 _AUDIT_EVENT_SCAN_CREATED = "SCAN_CREATED"
@@ -88,6 +89,9 @@ _AUDIT_SENSITIVE_KEYS = {
     "api_key", "apikey", "authorization", "cookie", "private_key",
     "client_secret", "credential",
 }
+# Correlation ID validation (same as backend middleware)
+_AUDIT_CORR_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
+_AUDIT_CORR_MAX = 64
 
 
 def _sanitize_audit_metadata(metadata: dict | None) -> dict | None:
@@ -147,6 +151,24 @@ def _get_finding_tenant(db, target_id: str) -> tuple[str | None, str | None]:
     return _get_scan_tenant(db, target_id)
 
 
+def _validate_correlation_id(cid: str | None) -> str | None:
+    if not cid or not isinstance(cid, str):
+        return None
+    c = cid.strip()
+    if not c or len(c) > _AUDIT_CORR_MAX or not _AUDIT_CORR_RE.match(c):
+        return None
+    return c
+
+
+def _scan_audit_exists(db, scan_id: str, event_type: str) -> bool:
+    """Idempotency guard: check if audit for scan already exists to avoid duplicate terminal events on retry/redeliver."""
+    try:
+        row = db.execute(text("SELECT 1 FROM audit_logs WHERE resource_id = :rid AND event_type = :evt LIMIT 1"), {"rid": scan_id, "evt": event_type}).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
 def _audit_finding_event(
     db,
     *,
@@ -155,8 +177,10 @@ def _audit_finding_event(
     event_type: str,
     result: str,
     metadata: dict | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     """Audit FINDING_* events. Tenant derived from target, actor NULL (system). Savepoint-isolated."""
+    correlation_id = _validate_correlation_id(correlation_id)
     nested = None
     try:
         org_id, proj_id = _get_finding_tenant(db, target_id)
@@ -176,14 +200,14 @@ def _audit_finding_event(
                     INSERT INTO audit_logs
                     (id, organization_id, project_id, actor_user_id, target_user_id, event_type, action, resource_type, resource_id, result, request_id, correlation_id, ip_address, user_agent, metadata, created_at)
                     VALUES
-                    (:id, :org, :proj, NULL, NULL, :evt, :act, :rtype, :rid, :res, NULL, NULL, NULL, NULL, {meta_sql}, {ts_sql})
+                    (:id, :org, :proj, NULL, NULL, :evt, :act, :rtype, :rid, :res, NULL, :corr, NULL, NULL, {meta_sql}, {ts_sql})
                     """
         try:
             nested = db.begin_nested()
         except Exception:
             nested = None
         if nested is not None:
-            db.execute(text(insert_sql), {"id": str(uuid.uuid4()), "org": org_id, "proj": proj_id, "evt": event_type, "act": event_type, "rtype": "finding", "rid": finding_id, "res": result, "meta": meta_json})
+            db.execute(text(insert_sql), {"id": str(uuid.uuid4()), "org": org_id, "proj": proj_id, "evt": event_type, "act": event_type, "rtype": "finding", "rid": finding_id, "res": result, "corr": correlation_id, "meta": meta_json})
             try:
                 db.flush()
                 nested.commit()
@@ -196,7 +220,7 @@ def _audit_finding_event(
                     return
                 raise
         else:
-            db.execute(text(insert_sql), {"id": str(uuid.uuid4()), "org": org_id, "proj": proj_id, "evt": event_type, "act": event_type, "rtype": "finding", "rid": finding_id, "res": result, "meta": meta_json})
+            db.execute(text(insert_sql), {"id": str(uuid.uuid4()), "org": org_id, "proj": proj_id, "evt": event_type, "act": event_type, "rtype": "finding", "rid": finding_id, "res": result, "corr": correlation_id, "meta": meta_json})
             db.flush()
     except Exception:
         pass
@@ -211,8 +235,17 @@ def _audit_scan_event(
     result: str,
     metadata: dict | None = None,
     actor_user_id: str | None = None,
+    correlation_id: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     """Insert audit_logs row for scan lifecycle. Uses a savepoint so missing table does not abort outer scan transaction."""
+    # Validate correlation ID; request_id remains NULL for worker (HTTP-only) per spec
+    correlation_id = _validate_correlation_id(correlation_id)
+    request_id = None
+    # Idempotency: skip if this scan already has this event (prevents duplicate on retry/redeliver)
+    if event_type in (_AUDIT_EVENT_SCAN_STARTED, _AUDIT_EVENT_SCAN_COMPLETED, _AUDIT_EVENT_SCAN_FAILED, _AUDIT_EVENT_SCAN_CREATED):
+        if _scan_audit_exists(db, scan_id, event_type):
+            return
     nested = None
     try:
         org_id, proj_id = _get_scan_tenant(db, target_id)
@@ -238,7 +271,7 @@ def _audit_scan_event(
                     INSERT INTO audit_logs
                     (id, organization_id, project_id, actor_user_id, target_user_id, event_type, action, resource_type, resource_id, result, request_id, correlation_id, ip_address, user_agent, metadata, created_at)
                     VALUES
-                    (:id, :org, :proj, :actor, NULL, :evt, :act, :rtype, :rid, :res, NULL, NULL, NULL, NULL, {meta_sql}, {ts_sql})
+                    (:id, :org, :proj, :actor, NULL, :evt, :act, :rtype, :rid, :res, :req, :corr, NULL, NULL, {meta_sql}, {ts_sql})
                     """
         if nested is not None:
             db.execute(
@@ -253,6 +286,8 @@ def _audit_scan_event(
                     "rtype": _AUDIT_RESOURCE_SCAN,
                     "rid": scan_id,
                     "res": result,
+                    "req": request_id,
+                    "corr": correlation_id,
                     "meta": meta_json,
                 },
             )
@@ -280,6 +315,8 @@ def _audit_scan_event(
                     "rtype": _AUDIT_RESOURCE_SCAN,
                     "rid": scan_id,
                     "res": result,
+                    "req": request_id,
+                    "corr": correlation_id,
                     "meta": meta_json,
                 },
             )
@@ -315,6 +352,7 @@ def _persist_findings(
     findings: list,
     persisted_assets,
     created_at,
+    correlation_id: str | None = None,
 ) -> None:
     for finding in findings:
         fid = str(uuid.uuid4())
@@ -394,7 +432,7 @@ def _persist_findings(
                 "created_at": created_at,
             },
         )
-        # FINDING_CREATED — system actor NULL, tenant derived from target, safe metadata only
+        # FINDING_CREATED — system actor NULL, tenant derived from target, safe metadata only, correlation preserved
         try:
             _audit_finding_event(
                 db,
@@ -407,6 +445,7 @@ def _persist_findings(
                     "scanner": finding.get("scanner") or scanner_name,
                     "status": finding.get("status"),
                 },
+                correlation_id=correlation_id,
             )
         except Exception:
             pass
@@ -425,6 +464,8 @@ def execute_scan(
     target_id: str,
     target: str,
     profile: str,
+    correlation_id: str | None = None,
+    request_id: str | None = None,
 ):
     print(f"Starting scan: {scan_id}")
     print(f"Target: {target}")
@@ -452,6 +493,7 @@ def execute_scan(
             },
         )
         # SCAN_STARTED — background worker event, actor NULL (no HTTP user), tenant from DB
+        # correlation_id preserved from HTTP (logical operation), request_id remains NULL for worker
         _audit_scan_event(
             db,
             scan_id=scan_id,
@@ -459,6 +501,7 @@ def execute_scan(
             event_type=_AUDIT_EVENT_SCAN_STARTED,
             result=_AUDIT_RESULT_SUCCESS,
             metadata={"profile": profile},
+            correlation_id=correlation_id,
         )
         db.commit()
 
@@ -612,6 +655,7 @@ def execute_scan(
                         findings=findings,
                         persisted_assets=persisted_assets,
                         created_at=completed_at,
+                        correlation_id=correlation_id,
                     )
                     update_attempt(
                         db,
@@ -735,6 +779,7 @@ def execute_scan(
                 event_type=_AUDIT_EVENT_SCAN_FAILED,
                 result=_AUDIT_RESULT_FAILURE,
                 metadata={"profile": profile, "scanners": scanners, "finding_count": len(all_findings)},
+                correlation_id=correlation_id,
             )
             db.commit()
             print(f"Scan failed: {scan_id}")
@@ -792,6 +837,7 @@ def execute_scan(
             event_type=_AUDIT_EVENT_SCAN_COMPLETED,
             result=_AUDIT_RESULT_SUCCESS,
             metadata={"profile": profile, "scanners": scanners, "finding_count": len(all_findings), "risk_score": risk_assessment["score"]},
+            correlation_id=correlation_id,
         )
         db.commit()
 
@@ -843,6 +889,7 @@ def execute_scan(
                 event_type=_AUDIT_EVENT_SCAN_FAILED,
                 result=_AUDIT_RESULT_FAILURE,
                 metadata={"profile": profile, "error": str(exc)[:500]},
+                correlation_id=correlation_id,
             )
             db.commit()
         except Exception as status_error:
