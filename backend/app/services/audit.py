@@ -226,6 +226,23 @@ class AuditService:
         if result not in (RESULT_SUCCESS, RESULT_FAILURE, RESULT_DENIED, RESULT_PARTIAL):
             result = result[:20]
 
+        # Auto-fill request context from ContextVar if not explicitly provided (HTTP requests)
+        if request_id is None or correlation_id is None or ip_address is None or user_agent is None:
+            try:
+                from app.core.request_id import get_audit_context
+
+                ctx = get_audit_context()
+                if request_id is None:
+                    request_id = ctx.get("request_id")
+                if correlation_id is None:
+                    correlation_id = ctx.get("correlation_id")
+                if ip_address is None:
+                    ip_address = ctx.get("ip_address")
+                if user_agent is None:
+                    user_agent = ctx.get("user_agent")
+            except Exception:
+                pass
+
         safe_metadata = sanitize_metadata(metadata) if metadata is not None else None
 
         def _trunc(v: str | None, n: int = 100) -> str | None:

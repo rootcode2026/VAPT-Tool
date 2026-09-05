@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.api.routes.assets import router as assets_router
+from app.api.routes.audit_logs import router as audit_logs_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.cloud import router as cloud_router
 from app.api.routes.dashboard import router as dashboard_router
@@ -20,7 +21,9 @@ from app.api.routes.scans import router as scans_router
 from app.api.routes.targets import router as targets_router
 from app.core.bootstrap import bootstrap_auth_user
 from app.core.config import settings
+from app.core.request_id import CORRELATION_ID_HEADER, REQUEST_ID_HEADER
 from app.db.database import SessionLocal, get_db
+from app.middleware.request_id import RequestContextMiddleware
 
 
 @asynccontextmanager
@@ -53,12 +56,15 @@ cors_origins = {
 if settings.FRONTEND_URL:
     cors_origins.add(settings.FRONTEND_URL.rstrip("/"))
 
+app.add_middleware(RequestContextMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[REQUEST_ID_HEADER, CORRELATION_ID_HEADER],
 )
 
 
@@ -76,6 +82,7 @@ app.include_router(ingestions_router, dependencies=protected)
 app.include_router(cloud_router, dependencies=protected)
 app.include_router(organization_members_router, dependencies=protected)
 app.include_router(project_members_router, dependencies=protected)
+app.include_router(audit_logs_router, dependencies=protected)
 
 
 @app.get("/")
