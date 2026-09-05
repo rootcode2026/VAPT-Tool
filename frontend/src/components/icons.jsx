@@ -139,3 +139,23 @@ export function IconCopy(props) {
     </svg>
   );
 }
+
+export function IconUsers(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <circle cx="9" cy="8" r="3" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M4 13c0-2.2 1.8-4 4-4h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <circle cx="17" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M14.5 14c0-1.7 1.3-3 3-3h2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function IconShield(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M12 3l7 3v5c0 4.2-2.9 7.2-7 8-4.1-.8-7-3.8-7-8V6l7-3Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+      <path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}

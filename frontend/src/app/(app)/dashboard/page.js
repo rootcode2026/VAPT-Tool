@@ -23,6 +23,7 @@ import {
   selectCurrentRiskScan,
 } from "@/lib/dashboard/loadDashboard";
 import { useProjectContext } from "@/lib/project-context";
+import { listAuditLogs } from "@/lib/api/audit";
 
 function formatWhen(value) {
   if (!value) return "—";
@@ -66,10 +67,14 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const requestRef = useRef(0);
+  const [recentAudit, setRecentAudit] = useState({ items: [], loaded: false, error: null });
+  const [codeFindings, setCodeFindings] = useState({ critical: 0, high: 0, total: 0, loaded: false });
 
   const loadData = useCallback(async (projectId) => {
     if (!projectId) {
       setSnapshot(null);
+      setRecentAudit({ items: [], loaded: false, error: null });
+      setCodeFindings({ critical: 0, high: 0, total: 0, loaded: false });
       setLoadError("");
       setLoading(false);
       return;
@@ -84,6 +89,32 @@ export default function DashboardPage() {
       const data = await loadProjectDashboard(projectId);
       if (requestRef.current !== requestId) return;
       setSnapshot(data);
+      // Derive Code Security counts from findings
+      const findings = data?.findings?.items || [];
+      const codeScanners = new Set(["sast", "sca", "secrets", "iac", "container", "api", "semgrep", "osv-scanner", "gitleaks", "checkov", "trivy"]);
+      const code = findings.filter((f) => codeScanners.has(String(f.scanner).toLowerCase()));
+      setCodeFindings({
+        total: code.length,
+        critical: code.filter((f) => f.severity === "critical").length,
+        high: code.filter((f) => f.severity === "high").length,
+        loaded: true,
+      });
+      // Recent audit (best-effort, ignore 403)
+      try {
+        const audit = await listAuditLogs({ project_id: projectId, page: 1, page_size: 5 });
+        if (requestRef.current === requestId) {
+          setRecentAudit({ items: audit.items || [], loaded: true, error: null });
+        }
+      } catch (auditErr) {
+        if (requestRef.current === requestId) {
+          // 403 means no audit.read — not an error for dashboard
+          if (auditErr.status === 403) {
+            setRecentAudit({ items: [], loaded: true, error: null });
+          } else {
+            setRecentAudit({ items: [], loaded: false, error: auditErr.message });
+          }
+        }
+      }
     } catch (err) {
       if (requestRef.current !== requestId) return;
       setSnapshot(null);
@@ -500,6 +531,65 @@ export default function DashboardPage() {
             ]}
             rows={scans.slice(0, 8)}
           />
+        )}
+      </DashboardSection>
+
+      {/* Code Security */}
+      <DashboardSection title="Code Security" action={<SectionLink href="/findings">View findings</SectionLink>}>
+        {!findingsLoaded ? (
+          <ErrorState title="Unable to load code security data." message={findingsError} onRetry={refresh} />
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">Code findings</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums">{codeFindings.loaded ? codeFindings.total : "—"}</p>
+              <p className="text-xs text-muted">SAST • SCA • Secrets • IaC • Container • API</p>
+            </div>
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">Critical</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-critical">{codeFindings.loaded ? codeFindings.critical : "—"}</p>
+            </div>
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">High</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-high">{codeFindings.loaded ? codeFindings.high : "—"}</p>
+            </div>
+          </div>
+        )}
+        <p className="mt-2 text-xs text-muted">Code Security dashboard coming in next phase — full SAST/SCA/Secrets/IaC/Container/API workspace.</p>
+      </DashboardSection>
+
+      {/* Cloud Security */}
+      <DashboardSection title="Cloud Security" action={<SectionLink href="/assets">View assets</SectionLink>}>
+        <EmptyState title="No cloud accounts connected" description="Cloud security covers AWS, GCP, Azure — identity, network, storage, configuration and risk. Connect a cloud account to see posture." />
+        <p className="mt-2 text-xs text-muted">Provider-neutral foundation (mock) — live connectors in future phase.</p>
+      </DashboardSection>
+
+      {/* Recent Audit */}
+      <DashboardSection title="Recent Audit Activity" action={<SectionLink href="/audit">View audit logs</SectionLink>}>
+        {!recentAudit.loaded ? (
+          recentAudit.error ? (
+            <ErrorState title="Unable to load audit activity." message={recentAudit.error} onRetry={refresh} />
+          ) : (
+            <p className="text-xs text-muted">Audit activity not available — requires audit.read (org_admin).</p>
+          )
+        ) : recentAudit.items.length === 0 ? (
+          <EmptyState title="No recent audit events" description="No administrative activity for this project." />
+        ) : (
+          <ul className="space-y-2">
+            {recentAudit.items.slice(0, 5).map((evt) => (
+              <li key={evt.id} className="flex items-center justify-between rounded-sm border border-border bg-canvas px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-text">
+                    {evt.event_type} • {evt.result}
+                  </p>
+                  <p className="truncate text-xs text-muted">
+                    {formatWhen(evt.created_at)} • {evt.actor_user_id ? evt.actor_user_id.slice(0, 8) : "system"}
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-sm border border-border bg-surface px-1.5 py-0.5 text-xs">{evt.resource_type || "—"}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </DashboardSection>
     </div>

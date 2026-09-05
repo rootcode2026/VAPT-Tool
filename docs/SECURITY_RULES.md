@@ -180,6 +180,11 @@ Cloud foundation must be read-only, non-destructive, and credential-safe:
 - **Read-only discovery:** Default, never perform destructive operations, never execute arbitrary resource-provided commands
 - **No external calls in tests:** `MockCloudDiscoveryAdapter` with deterministic `provider-resource-{i}` and `contains`/`uses` relationships, no network, no credentials required
 
+## Admin Platform (7A)
+- **Authorization:** `require_super_admin` (`User.role=="super_admin"`) for `GET /admin/*`, org admin via existing `organization_membership` + `project_membership` + `permissions.py`, every org-owned query `WHERE organization_id` or `project_id` via `require_project_access`, super_admin platform-wide deliberate (`WHERE` no filter), no client `organization_id` trust.
+- **Data minimization:** Dashboard `organizations`/`users`/`projects`/`scans`/`findings`/`assets` only counts/aggregates, no `password`/`hash`/`JWT`/`token`/`api_key`/`private_key`/`cookie`/`evidence`/`source`, `system_health` never `database URLs`/`credentials`.
+- **Tenant isolation:** `admin/dashboard/summary` global counts via `func.count` (no tenant filter for super_admin by design), `admin/organizations/summary` `WHERE organization_id` per org for super_admin view, org dashboard `GET /dashboard/summary` `WHERE organization_id==current_user.organization_id` (existing), cross-tenant impossible via `require_super_admin` + `organization_id` checks.
+
 ## Change Safety
 
 Future agents must:
