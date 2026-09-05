@@ -1,6 +1,7 @@
 import {
   IconAssets,
   IconAttackSurface,
+  IconAudit,
   IconDashboard,
   IconFindings,
   IconProjects,
@@ -15,6 +16,7 @@ export const PRIMARY_NAV = [
   { name: "Findings", href: "/findings", icon: IconFindings },
   { name: "Assets", href: "/assets", icon: IconAssets },
   { name: "Attack Surface", href: "/attack-surface", icon: IconAttackSurface },
+  { name: "Audit", href: "/audit", icon: IconAudit },
 ];
 
 export const SECONDARY_NAV = [
@@ -28,6 +30,7 @@ export const PAGE_TITLES = {
   "/findings": "Findings",
   "/assets": "Assets",
   "/attack-surface": "Attack Surface",
+  "/audit": "Audit",
   "/settings": "Settings",
   "/targets": "Targets",
 };

@@ -115,6 +115,12 @@ Applies to `secrets` scanner and any future credential-handling code:
 equested_id, no resource contents, same 401/403/404), all savepoint-isolated, never break auth, tenant server-controlled, no enumeration.
 - **Request Context + Read API (6F):** `X-Request-ID`/`X-Correlation-ID` bounded 64 safe chars `^[A-Za-z0-9._-]+$`, `uuid4().hex` fallback, not sequential, returned in response, CORS exposed, IP via `request.client.host` (not `X-Forwarded-For`, documented trusted proxy limitation), User-Agent bounded 500, never `Authorization`/`Cookie`/`body`. `GET /api/v1/audit_logs` requires `audit.read` (org_admin/super_admin), tenant `WHERE organization_id` else super_admin all, `project_id` validated `require_project_access` cannot bypass, actor/resource filters ANDed with tenant, pagination bounded, sorting fixed `created_at DESC` no SQL injection, response sanitized (metadata already `[REDACTED]`).
 - **Worker Correlation + Integrity (6G):** `X-Correlation-ID` bounded 64 safe `^[A-Za-z0-9._-]+$`, `uuid4` fallback, not sequential, propagated `HTTP -> Celery` via `kwargs` (only `correlation_id`+`scan_id`/`target_id`/`profile` hint, never `Authorization`/`Cookie`/`JWT`/`body`, validated, tenant `scan->target->project->org` not payload), worker `request_id` NULL (`correlation_id` preserved, separate concepts), transaction `business+audit+commit` same outer tx (savepoint, outer rollback rolls back audit), duplicate guard `_scan_audit_exists` prevents duplicate `SCAN_*` on retry/redeliver, `FINDING_CREATED` one per `finding_id`, immutability `GET /api/v1/audit_logs` only (405 for others), no `UPDATE`/`DELETE` for audit, read tenant-enforced, metadata `[REDACTED]`, no `password/JWT/token/cookie` in worker audit.
+- **Audit UI (6H):** Viewer-only GET /api/v1/audit_logs (udit.read), tenant WHERE organization_id (super_admin all, org_admin org), project_id validated 
+equire_project_access cannot bypass, ctor/
+esource filters ANDed, pagination bounded, sorting fixed created_at DESC, no UPDATE/DELETE for audit (405), metadata [REDACTED] already, UI never sends organization_id as security, no Authorization/Cookie/password/secret/	oken/private_key/
+equest body/scanner output/uploaded content/cross-tenant display, 
+equest_id/correlation_id not secrets, copy via 
+avigator.clipboard, least privilege.
 - **Future:** Retention, RLS, etc. ID middleware, audit read API, remaining events (auth/authz-denied), retention (Phase 6E+). `SCAN_CANCELLED` exists but not wired — no cancellation implementation found.
 
 ## API Security
