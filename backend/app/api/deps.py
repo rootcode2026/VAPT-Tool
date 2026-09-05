@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,23 @@ bearer_scheme = HTTPBearer(auto_error=False)
 SESSION_EXPIRED_DETAIL = "Your session has expired. Please sign in again."
 
 
+def _audit_event(db: Session, **kwargs):
+    """Best-effort audit; never breaks auth. Persists even when caller raises HTTPException."""
+    try:
+        from app.services.audit import AuditService
+
+        AuditService.record(db, **kwargs)
+        try:
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
@@ -21,6 +38,17 @@ def get_current_user(
         or credentials.scheme.lower() != "bearer"
         or not credentials.credentials
     ):
+        _audit_event(
+            db,
+            event_type="AUTH_TOKEN_FAILURE",
+            action="AUTH_TOKEN_FAILURE",
+            result="FAILURE",
+            actor_user_id=None,
+            organization_id=None,
+            resource_type="authentication",
+            resource_id=None,
+            metadata={"failure": "missing_token"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=SESSION_EXPIRED_DETAIL,
@@ -29,7 +57,21 @@ def get_current_user(
 
     try:
         user_id = decode_access_token(credentials.credentials)
-    except TokenError:
+    except TokenError as exc:
+        # Use failure category without logging token
+        msg = str(exc).lower()
+        failure = "expired_token" if "expired" in msg else "invalid_token"
+        _audit_event(
+            db,
+            event_type="AUTH_TOKEN_FAILURE",
+            action="AUTH_TOKEN_FAILURE",
+            result="FAILURE",
+            actor_user_id=None,
+            organization_id=None,
+            resource_type="authentication",
+            resource_id=None,
+            metadata={"failure": failure},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=SESSION_EXPIRED_DETAIL,
@@ -38,6 +80,17 @@ def get_current_user(
 
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
+        _audit_event(
+            db,
+            event_type="AUTH_TOKEN_FAILURE",
+            action="AUTH_TOKEN_FAILURE",
+            result="FAILURE",
+            actor_user_id=None,
+            organization_id=None,
+            resource_type="authentication",
+            resource_id=None,
+            metadata={"failure": "invalid_user"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=SESSION_EXPIRED_DETAIL,
@@ -162,6 +215,35 @@ def require_org_membership(
         return "super_admin"
     role = _effective_org_role(current_user, organization_id, db)
     if role is None:
+        # Distinguish cross-tenant vs not-found without leaking existence
+        try:
+            exists = db.query(Organization).filter(Organization.id == str(organization_id).strip()).first() is not None
+        except Exception:
+            exists = False
+        if exists:
+            _audit_event(
+                db,
+                event_type="CROSS_TENANT_ACCESS_DENIED",
+                action="CROSS_TENANT_ACCESS_DENIED",
+                result="DENIED",
+                actor_user_id=getattr(current_user, "id", None),
+                organization_id=getattr(current_user, "organization_id", None),
+                resource_type="organization",
+                resource_id=str(organization_id)[:100],
+                metadata={"requested_organization_id": str(organization_id)[:36]},
+            )
+        else:
+            _audit_event(
+                db,
+                event_type="AUTHORIZATION_DENIED",
+                action="AUTHORIZATION_DENIED",
+                result="DENIED",
+                actor_user_id=getattr(current_user, "id", None),
+                organization_id=getattr(current_user, "organization_id", None),
+                resource_type="organization",
+                resource_id=str(organization_id)[:100],
+                metadata={"reason": "organization_not_member"},
+            )
         raise HTTPException(status_code=404, detail="Organization not found")
     return role
 
@@ -185,15 +267,48 @@ def require_project_access(
     if _is_super_admin(current_user):
         proj = db.query(Project).filter(Project.id == pid).first()
         if not proj:
+            _audit_event(
+                db,
+                event_type="AUTHORIZATION_DENIED",
+                action="AUTHORIZATION_DENIED",
+                result="DENIED",
+                actor_user_id=getattr(current_user, "id", None),
+                organization_id=getattr(current_user, "organization_id", None),
+                resource_type="project",
+                resource_id=pid,
+                metadata={"reason": "project_not_found"},
+            )
             raise HTTPException(status_code=404, detail="Project not found")
         return proj
     # Check organization membership via helper (covers legacy User.organization_id)
     # First fetch project to get its organization
     proj = db.query(Project).filter(Project.id == pid).first()
     if not proj:
+        _audit_event(
+            db,
+            event_type="AUTHORIZATION_DENIED",
+            action="AUTHORIZATION_DENIED",
+            result="DENIED",
+            actor_user_id=getattr(current_user, "id", None),
+            organization_id=getattr(current_user, "organization_id", None),
+            resource_type="project",
+            resource_id=pid,
+            metadata={"reason": "project_not_found"},
+        )
         raise HTTPException(status_code=404, detail="Project not found")
     org_role = _effective_org_role(current_user, proj.organization_id, db)
     if org_role is None:
+        _audit_event(
+            db,
+            event_type="CROSS_TENANT_ACCESS_DENIED",
+            action="CROSS_TENANT_ACCESS_DENIED",
+            result="DENIED",
+            actor_user_id=getattr(current_user, "id", None),
+            organization_id=getattr(current_user, "organization_id", None),
+            resource_type="project",
+            resource_id=pid,
+            metadata={"requested_project_id": pid, "actor_organization_id": getattr(current_user, "organization_id", None)},
+        )
         raise HTTPException(status_code=404, detail="Project not found")
     return proj
 
@@ -210,6 +325,17 @@ def require_org_role(required_roles: list[str]):
             return current_user
         role = _effective_org_role(current_user, organization_id, db)
         if role not in required_roles:
+            _audit_event(
+                db,
+                event_type="AUTHORIZATION_DENIED",
+                action="AUTHORIZATION_DENIED",
+                result="DENIED",
+                actor_user_id=getattr(current_user, "id", None),
+                organization_id=str(organization_id)[:36],
+                resource_type="organization",
+                resource_id=str(organization_id)[:100],
+                metadata={"required_roles": ",".join(required_roles)[:200], "actual_role": str(role)[:50]},
+            )
             raise HTTPException(status_code=403, detail="Insufficient organization permissions")
         return current_user
 
@@ -228,6 +354,18 @@ def require_project_role(required_roles: list[str]):
             return current_user
         role = _effective_project_role(current_user, project_id, db)
         if role not in required_roles:
+            _audit_event(
+                db,
+                event_type="AUTHORIZATION_DENIED",
+                action="AUTHORIZATION_DENIED",
+                result="DENIED",
+                actor_user_id=getattr(current_user, "id", None),
+                organization_id=getattr(current_user, "organization_id", None),
+                project_id=str(project_id)[:36],
+                resource_type="project",
+                resource_id=str(project_id)[:100],
+                metadata={"required_roles": ",".join(required_roles)[:200], "actual_role": str(role)[:50]},
+            )
             raise HTTPException(status_code=403, detail="Insufficient project permissions")
         return current_user
 
@@ -236,6 +374,7 @@ def require_project_role(required_roles: list[str]):
 
 def require_super_admin(current_user: User = Depends(get_current_user)) -> User:
     if not _is_super_admin(current_user):
+        # Best-effort audit without DB (no db here) — skip if no db available
         raise HTTPException(status_code=403, detail="Super-admin access required")
     return current_user
 
@@ -267,6 +406,16 @@ def require_permission(permission: str, project_id: str | None = None, organizat
         if project_id is not None:
             role = _effective_project_role(current_user, project_id, db)
             if role is None:
+                # Distinguish cross-tenant vs not-found
+                try:
+                    from app.models.project import Project as _P
+                    _proj = db.query(_P).filter(_P.id == str(project_id).strip()).first()
+                    if _proj is not None:
+                        _audit_event(db, event_type="CROSS_TENANT_ACCESS_DENIED", action="CROSS_TENANT_ACCESS_DENIED", result="DENIED", actor_user_id=getattr(current_user, "id", None), organization_id=getattr(current_user, "organization_id", None), project_id=str(project_id)[:36], resource_type="project", resource_id=str(project_id)[:100], metadata={"permission": permission[:100]})
+                    else:
+                        _audit_event(db, event_type="AUTHORIZATION_DENIED", action="AUTHORIZATION_DENIED", result="DENIED", actor_user_id=getattr(current_user, "id", None), organization_id=getattr(current_user, "organization_id", None), resource_type="project", resource_id=str(project_id)[:100], metadata={"permission": permission[:100], "reason": "project_not_found"})
+                except Exception:
+                    pass
                 raise HTTPException(status_code=404, detail="Project not found")
             perms = PROJECT_ROLE_PERMISSIONS.get(role, set())
             # org_admin also implies broader perms; check org perms as supplement
@@ -279,15 +428,24 @@ def require_permission(permission: str, project_id: str | None = None, organizat
                     perms = perms.union(ORG_ROLE_PERMISSIONS.get(org_role, set()))
             if permission in perms:
                 return current_user
+            _audit_event(db, event_type="AUTHORIZATION_DENIED", action="AUTHORIZATION_DENIED", result="DENIED", actor_user_id=getattr(current_user, "id", None), organization_id=getattr(current_user, "organization_id", None), project_id=str(project_id)[:36], resource_type="project", resource_id=str(project_id)[:100], metadata={"permission": permission[:100], "role": str(role)[:50]})
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
         # Organization-scoped permission
         if organization_id is not None:
             role = _effective_org_role(current_user, organization_id, db)
             if role is None:
+                try:
+                    from app.models.organization import Organization as _O
+                    _exists = db.query(_O).filter(_O.id == str(organization_id).strip()).first() is not None
+                    evt = "CROSS_TENANT_ACCESS_DENIED" if _exists else "AUTHORIZATION_DENIED"
+                except Exception:
+                    evt = "AUTHORIZATION_DENIED"
+                _audit_event(db, event_type=evt, action=evt, result="DENIED", actor_user_id=getattr(current_user, "id", None), organization_id=str(organization_id)[:36], resource_type="organization", resource_id=str(organization_id)[:100], metadata={"permission": permission[:100]})
                 raise HTTPException(status_code=404, detail="Organization not found")
             if permission in ORG_ROLE_PERMISSIONS.get(role, set()):
                 return current_user
+            _audit_event(db, event_type="AUTHORIZATION_DENIED", action="AUTHORIZATION_DENIED", result="DENIED", actor_user_id=getattr(current_user, "id", None), organization_id=str(organization_id)[:36], resource_type="organization", resource_id=str(organization_id)[:100], metadata={"permission": permission[:100], "role": str(role)[:50]})
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
         # No scope — check if any of the user's memberships grant it (conservative: deny)

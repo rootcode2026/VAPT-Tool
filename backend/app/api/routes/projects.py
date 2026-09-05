@@ -15,9 +15,11 @@ from app.api.deps import (
 from app.core.permissions import PERM_PROJECT_CREATE, PERM_PROJECT_DELETE
 from app.db.database import get_db
 from app.services.audit import (
+    EVENT_AUTHZ_DENIED,
     EVENT_PROJECT_CREATED,
     EVENT_PROJECT_DELETED,
     RESOURCE_PROJECT,
+    RESULT_DENIED,
     RESULT_SUCCESS,
     AuditService,
 )
@@ -63,6 +65,24 @@ def create_project(
     if not _is_super_admin(current_user):
         org_role = _effective_org_role(current_user, current_user.organization_id, db)
         if org_role != "org_admin":
+            try:
+                AuditService.record(
+                    db,
+                    event_type=EVENT_AUTHZ_DENIED,
+                    action=EVENT_AUTHZ_DENIED,
+                    result=RESULT_DENIED,
+                    actor_user_id=current_user.id,
+                    organization_id=current_user.organization_id,
+                    resource_type=RESOURCE_PROJECT,
+                    resource_id=None,
+                    metadata={"reason": "insufficient_permissions", "actual_role": str(org_role)[:50]},
+                )
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             raise HTTPException(status_code=403, detail="Insufficient permissions: requires org_admin to create projects")
     project = Project(
         id=str(uuid.uuid4()),
@@ -179,6 +199,24 @@ def delete_project(
     if not _is_super_admin(current_user):
         org_role = _effective_org_role(current_user, current_user.organization_id, db)
         if org_role != "org_admin":
+            try:
+                AuditService.record(
+                    db,
+                    event_type=EVENT_AUTHZ_DENIED,
+                    action=EVENT_AUTHZ_DENIED,
+                    result=RESULT_DENIED,
+                    actor_user_id=current_user.id,
+                    organization_id=current_user.organization_id,
+                    resource_type=RESOURCE_PROJECT,
+                    resource_id=project_id,
+                    metadata={"reason": "insufficient_permissions", "actual_role": str(org_role)[:50]},
+                )
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             raise HTTPException(status_code=403, detail="Insufficient permissions: requires org_admin to delete projects")
     project = (
         db.query(Project)

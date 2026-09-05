@@ -15,9 +15,11 @@ from app.models.target import Target
 from app.models.user import User
 from app.schemas.target import TargetCreate, TargetResponse
 from app.services.audit import (
+    EVENT_AUTHZ_DENIED,
     EVENT_TARGET_CREATED,
     EVENT_TARGET_DELETED,
     RESOURCE_TARGET,
+    RESULT_DENIED,
     RESULT_SUCCESS,
     AuditService,
 )
@@ -44,6 +46,27 @@ def create_target(
     if not _is_super_admin(current_user):
         role = _effective_project_role(current_user, data.project_id, db)
         if role not in ("analyst", "project_admin"):
+            try:
+                proj = db.query(Project).filter(Project.id == data.project_id).first()
+                org_id = proj.organization_id if proj else current_user.organization_id
+                AuditService.record(
+                    db,
+                    event_type=EVENT_AUTHZ_DENIED,
+                    action=EVENT_AUTHZ_DENIED,
+                    result=RESULT_DENIED,
+                    actor_user_id=current_user.id,
+                    organization_id=org_id,
+                    project_id=data.project_id,
+                    resource_type=RESOURCE_TARGET,
+                    resource_id=None,
+                    metadata={"reason": "insufficient_permissions", "required": "analyst/project_admin", "actual_role": str(role)[:50]},
+                )
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             raise HTTPException(status_code=403, detail="Insufficient permissions: requires analyst or project_admin to create targets")
 
     target = Target(
@@ -146,6 +169,27 @@ def delete_target(
     if not _is_super_admin(current_user):
         role = _effective_project_role(current_user, target.project_id, db)
         if role not in ("analyst", "project_admin"):
+            try:
+                proj = db.query(Project).filter(Project.id == target.project_id).first()
+                org_id = proj.organization_id if proj else current_user.organization_id
+                AuditService.record(
+                    db,
+                    event_type=EVENT_AUTHZ_DENIED,
+                    action=EVENT_AUTHZ_DENIED,
+                    result=RESULT_DENIED,
+                    actor_user_id=current_user.id,
+                    organization_id=org_id,
+                    project_id=target.project_id,
+                    resource_type=RESOURCE_TARGET,
+                    resource_id=target.id,
+                    metadata={"reason": "insufficient_permissions", "actual_role": str(role)[:50]},
+                )
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             raise HTTPException(status_code=403, detail="Insufficient permissions: requires project_admin to delete targets")
 
     # Audit before deletion — survives via SET NULL FK
