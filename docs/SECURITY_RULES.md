@@ -101,6 +101,7 @@ Applies to `secrets` scanner and any future credential-handling code:
 - **Future RLS will be defense-in-depth.** Helper `backend/app/db/rls.py` remains `RLS_ENABLED=false`; future `BEGIN → set_tenant_context(org, project, user) → RLS USING (...)` after verified membership.
 
 - **Membership management is privileged.** `POST /organizations/{id}/members` and `/projects/{id}/members` require `org_admin` or `project_admin`/`org_admin` respectively; validate target user exists, duplicate 409, role assignment security (cannot grant higher than own, cannot grant `super_admin`, self-escalation blocked), cross-org 403, last-active-org_admin protection (409). No membership API can modify `User.role` platform `super_admin`.
+- **Strict RBAC cutover:** `RBAC_STRICT_MODE=false` (transitional). Per-project strict when explicit `project_membership` exists (`missing → DENIED`), otherwise fallback `org→project` for backward compat. `RBAC_STRICT_MODE=true` enforces strict for all. Backfill `project_backfill.py` is dry-run by default, idempotent, never fabricates. Inactive `status != active` memberships are denied.
 
 ## API Security
 

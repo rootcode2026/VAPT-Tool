@@ -184,7 +184,12 @@ Only authorization is established in this phase; rate limiting is separate.
 - No `super_admin` silently granted — only `users.role == 'super_admin'` is platform super_admin.
 - Existing legitimate access (org member reading own org projects) remains functional; cross-tenant still 404.
 
-## 14. RLS Compatibility
+## 14. Strict RBAC Cutover (Per-Project Strict + RBAC_STRICT_MODE)
+
+- **Default:** `RBAC_STRICT_MODE=false` (transitional). `backend/app/api/deps.py::_effective_project_role` now checks: if project has any explicit `project_membership` rows, missing membership → `None` (DENIED) — per-project strict. If project has zero explicit rows, fallback `org member → analyst` / `org_admin → project_admin` is used (backward compat). If `RBAC_STRICT_MODE=true`, fallback is disabled for all projects (missing → DENIED globally).
+- **Backfill:** `backend/app/services/project_backfill.py` (`backfill_project_memberships(dry_run=True)`) classifies each project as `ALREADY_BACKFILLED` (has explicit), `SAFE_TO_BACKFILL` (authoritative evidence — currently 0 because creator not stored), `AMBIGUOUS` (has targets/scans/assets but no creator), `NO_EVIDENCE` (no activity). It is deterministic, idempotent (`unique` constraint prevents duplicates), supports `--dry-run` (default) and `--apply` (only creates for `SAFE`, currently 0). Existing projects are `AMBIGUOUS`/`NO_EVIDENCE` and are **not** fabricated — manual assignment required. New projects get explicit `project_admin` for creator and are immediately strict.
+
+## 15. RLS Compatibility
 
 `RLS_ENABLED=false`, no policies, no `ENABLE ROW LEVEL SECURITY` (verified via `grep`). Future flow:
 
