@@ -27,6 +27,7 @@ from app.schemas.scan import (
     ScanProgressResponse,
     ScannerExecutionSummary,
 )
+from app.core.request_id import get_correlation_id, get_request_id
 from app.scans.observability import progress_snapshot, scanner_names
 from app.services.audit import (
     EVENT_AUTHZ_DENIED,
@@ -144,6 +145,17 @@ def create_scan(
     db.commit()
     db.refresh(scan)
 
+    # Propagate safe correlation context to worker (not Authorization/Cookie/body)
+    # Keep request_id (per HTTP) and correlation_id (logical operation) separate;
+    # worker will preserve correlation_id and keep request_id NULL (HTTP-only)
+    _corr = get_correlation_id()
+    try:
+        from app.core.request_id import MAX_ID_LENGTH, SAFE_ID_RE
+
+        if _corr and (len(_corr) > MAX_ID_LENGTH or not SAFE_ID_RE.match(_corr)):
+            _corr = None
+    except Exception:
+        pass
     try:
         celery_app.send_task(
             "app.tasks.execute_scan",
@@ -153,6 +165,7 @@ def create_scan(
                 target.value,
                 scan.profile,
             ],
+            kwargs={"correlation_id": _corr} if _corr else {},
         )
 
     except Exception as exc:
