@@ -100,6 +100,8 @@ Applies to `secrets` scanner and any future credential-handling code:
 - **Cross-tenant is 404, not 403.** Use 404 for not-found vs cross-tenant to avoid enumeration; 403 for insufficient permissions within same tenant.
 - **Future RLS will be defense-in-depth.** Helper `backend/app/db/rls.py` remains `RLS_ENABLED=false`; future `BEGIN → set_tenant_context(org, project, user) → RLS USING (...)` after verified membership.
 
+- **Membership management is privileged.** `POST /organizations/{id}/members` and `/projects/{id}/members` require `org_admin` or `project_admin`/`org_admin` respectively; validate target user exists, duplicate 409, role assignment security (cannot grant higher than own, cannot grant `super_admin`, self-escalation blocked), cross-org 403, last-active-org_admin protection (409). No membership API can modify `User.role` platform `super_admin`.
+
 ## API Security
 
 Current conventions (verified in `backend/app/api/`):
