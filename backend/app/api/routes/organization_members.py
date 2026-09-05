@@ -14,6 +14,14 @@ from app.schemas.membership import (
     OrganizationMemberResponse,
     OrganizationMemberUpdate,
 )
+from app.services.audit import (
+    EVENT_ORG_MEMBER_ADDED,
+    EVENT_ORG_MEMBER_REMOVED,
+    EVENT_ORG_MEMBER_UPDATED,
+    RESOURCE_ORG_MEMBERSHIP,
+    RESULT_SUCCESS,
+    AuditService,
+)
 
 router = APIRouter(prefix="/api/v1/organizations", tags=["Organization Members"])
 
@@ -126,6 +134,19 @@ def add_organization_member(
         updated_at=datetime.utcnow(),
     )
     db.add(membership)
+    # Audit — same transaction, server-controlled tenant/actor
+    AuditService.record(
+        db,
+        event_type=EVENT_ORG_MEMBER_ADDED,
+        action=EVENT_ORG_MEMBER_ADDED,
+        result=RESULT_SUCCESS,
+        actor_user_id=current_user.id,
+        organization_id=organization_id,
+        target_user_id=data.user_id,
+        resource_type=RESOURCE_ORG_MEMBERSHIP,
+        resource_id=membership.id,
+        metadata={"role": data.role, "status": data.status or "active"},
+    )
     db.commit()
     db.refresh(membership)
     user = db.query(User).filter(User.id == membership.user_id).first()
@@ -188,11 +209,35 @@ def update_organization_member(
         if other_admins == 0:
             raise HTTPException(status_code=409, detail="Cannot demote or deactivate the last active org_admin")
 
+    old_role = membership.role
+    old_status = membership.status
     if data.role is not None:
         membership.role = data.role
     if data.status is not None:
         membership.status = data.status
     membership.updated_at = datetime.utcnow()
+    # Audit — include old/new role for lifecycle traceability
+    meta: dict = {}
+    if data.role is not None and data.role != old_role:
+        meta["old_role"] = old_role
+        meta["new_role"] = membership.role
+    if data.status is not None and data.status != old_status:
+        meta["old_status"] = old_status
+        meta["new_status"] = membership.status
+    if not meta:
+        meta = {"role": membership.role, "status": membership.status}
+    AuditService.record(
+        db,
+        event_type=EVENT_ORG_MEMBER_UPDATED,
+        action=EVENT_ORG_MEMBER_UPDATED,
+        result=RESULT_SUCCESS,
+        actor_user_id=current_user.id,
+        organization_id=organization_id,
+        target_user_id=user_id,
+        resource_type=RESOURCE_ORG_MEMBERSHIP,
+        resource_id=membership.id,
+        metadata=meta,
+    )
     db.commit()
     db.refresh(membership)
     user = db.query(User).filter(User.id == membership.user_id).first()
@@ -240,6 +285,19 @@ def remove_organization_member(
             raise HTTPException(status_code=409, detail="Cannot remove the last active org_admin")
 
     # Prevent self-removal from leaving org without admin? Already handled
+    # Audit before deletion — capture server-controlled context
+    AuditService.record(
+        db,
+        event_type=EVENT_ORG_MEMBER_REMOVED,
+        action=EVENT_ORG_MEMBER_REMOVED,
+        result=RESULT_SUCCESS,
+        actor_user_id=current_user.id,
+        organization_id=organization_id,
+        target_user_id=user_id,
+        resource_type=RESOURCE_ORG_MEMBERSHIP,
+        resource_id=membership.id,
+        metadata={"role": membership.role, "status": membership.status},
+    )
     db.delete(membership)
     db.commit()
     return None

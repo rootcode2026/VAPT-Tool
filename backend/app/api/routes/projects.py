@@ -14,6 +14,13 @@ from app.api.deps import (
 )
 from app.core.permissions import PERM_PROJECT_CREATE, PERM_PROJECT_DELETE
 from app.db.database import get_db
+from app.services.audit import (
+    EVENT_PROJECT_CREATED,
+    EVENT_PROJECT_DELETED,
+    RESOURCE_PROJECT,
+    RESULT_SUCCESS,
+    AuditService,
+)
 from app.models.asset import Asset
 from app.models.finding import Finding
 from app.models.project import Project
@@ -86,6 +93,19 @@ def create_project(
                 status="active",
             )
         )
+    # Audit — same transaction, server-controlled tenant context
+    AuditService.record(
+        db,
+        event_type=EVENT_PROJECT_CREATED,
+        action=EVENT_PROJECT_CREATED,
+        result=RESULT_SUCCESS,
+        actor_user_id=current_user.id,
+        organization_id=project.organization_id,
+        project_id=project.id,
+        resource_type=RESOURCE_PROJECT,
+        resource_id=project.id,
+        metadata={"name": project.name},
+    )
     db.commit()
     db.refresh(project)
 
@@ -199,9 +219,23 @@ def delete_project(
         )
 
     # -----------------------------------------------------
-    # Delete project
+    # Delete project — audit before deletion so record survives via SET NULL
     # -----------------------------------------------------
-
+    audit_org_id = project.organization_id
+    audit_project_id = project.id
+    actor_id = current_user.id
+    AuditService.record(
+        db,
+        event_type=EVENT_PROJECT_DELETED,
+        action=EVENT_PROJECT_DELETED,
+        result=RESULT_SUCCESS,
+        actor_user_id=actor_id,
+        organization_id=audit_org_id,
+        project_id=audit_project_id,
+        resource_type=RESOURCE_PROJECT,
+        resource_id=audit_project_id,
+        metadata={"name": project.name},
+    )
     db.delete(project)
     db.commit()
 

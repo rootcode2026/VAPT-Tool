@@ -10,6 +10,14 @@ from app.db.database import get_db
 from app.models.project_membership import ProjectMembership
 from app.models.user import User
 from app.schemas.membership import ProjectMemberCreate, ProjectMemberResponse, ProjectMemberUpdate
+from app.services.audit import (
+    EVENT_PROJECT_MEMBER_ADDED,
+    EVENT_PROJECT_MEMBER_REMOVED,
+    EVENT_PROJECT_MEMBER_UPDATED,
+    RESOURCE_PROJECT_MEMBERSHIP,
+    RESULT_SUCCESS,
+    AuditService,
+)
 
 router = APIRouter(prefix="/api/v1/projects", tags=["Project Members"])
 
@@ -148,6 +156,20 @@ def add_project_member(
         updated_at=datetime.utcnow(),
     )
     db.add(membership)
+    # Audit — organization_id derived from project's actual owning org (server-controlled)
+    AuditService.record(
+        db,
+        event_type=EVENT_PROJECT_MEMBER_ADDED,
+        action=EVENT_PROJECT_MEMBER_ADDED,
+        result=RESULT_SUCCESS,
+        actor_user_id=current_user.id,
+        organization_id=proj.organization_id,
+        project_id=project_id,
+        target_user_id=data.user_id,
+        resource_type=RESOURCE_PROJECT_MEMBERSHIP,
+        resource_id=membership.id,
+        metadata={"role": data.role, "status": data.status or "active"},
+    )
     db.commit()
     db.refresh(membership)
     user = db.query(User).filter(User.id == membership.user_id).first()
@@ -207,11 +229,40 @@ def update_project_member(
     # Last admin protection: for project, we do NOT enforce strict last project_admin because org_admin can manage
     # Documented as not required. So we allow demotion/removal even if last project_admin.
 
+    old_role = membership.role
+    old_status = membership.status
     if data.role is not None:
         membership.role = data.role
     if data.status is not None:
         membership.status = data.status
     membership.updated_at = datetime.utcnow()
+    # Resolve owning org for tenant isolation
+    from app.models.project import Project as _Proj
+
+    _proj = db.query(_Proj).filter(_Proj.id == project_id).first()
+    _org_id = _proj.organization_id if _proj else None
+    meta: dict = {}
+    if data.role is not None and data.role != old_role:
+        meta["old_role"] = old_role
+        meta["new_role"] = membership.role
+    if data.status is not None and data.status != old_status:
+        meta["old_status"] = old_status
+        meta["new_status"] = membership.status
+    if not meta:
+        meta = {"role": membership.role, "status": membership.status}
+    AuditService.record(
+        db,
+        event_type=EVENT_PROJECT_MEMBER_UPDATED,
+        action=EVENT_PROJECT_MEMBER_UPDATED,
+        result=RESULT_SUCCESS,
+        actor_user_id=current_user.id,
+        organization_id=_org_id,
+        project_id=project_id,
+        target_user_id=user_id,
+        resource_type=RESOURCE_PROJECT_MEMBERSHIP,
+        resource_id=membership.id,
+        metadata=meta,
+    )
     db.commit()
     db.refresh(membership)
     user = db.query(User).filter(User.id == membership.user_id).first()
@@ -245,6 +296,24 @@ def remove_project_member(
         raise HTTPException(status_code=404, detail="Membership not found")
 
     # No last admin protection for project (org_admin fallback ensures manageability)
+    # Audit before deletion — server-controlled tenant context
+    from app.models.project import Project as _Proj2
+
+    _proj2 = db.query(_Proj2).filter(_Proj2.id == project_id).first()
+    _org_id2 = _proj2.organization_id if _proj2 else None
+    AuditService.record(
+        db,
+        event_type=EVENT_PROJECT_MEMBER_REMOVED,
+        action=EVENT_PROJECT_MEMBER_REMOVED,
+        result=RESULT_SUCCESS,
+        actor_user_id=current_user.id,
+        organization_id=_org_id2,
+        project_id=project_id,
+        target_user_id=user_id,
+        resource_type=RESOURCE_PROJECT_MEMBERSHIP,
+        resource_id=membership.id,
+        metadata={"role": membership.role, "status": membership.status},
+    )
     db.delete(membership)
     db.commit()
     return None
