@@ -366,6 +366,14 @@ JWT → authenticated user → org membership → project membership → permiss
 
 Helper `backend/app/db/rls.py` remains `RLS_ENABLED=false` and not wired; will be called after `require_project_access` inside `with db.begin()` in enforcement phase.
 
+### Audit Logging Foundation (Enterprise, Append-Only)
+
+- **Model:** `audit_logs` (`id` UUID PK, `organization_id`/`project_id`/`actor_user_id`/`target_user_id` nullable FK `SET NULL` (survives user deletion), `event_type`/`action`/`resource_type`/`resource_id`/`result`, `request_id`/`correlation_id`, `ip_address`/`user_agent`, `metadata` JSONB, `created_at`, indexes on `organization_id`, `project_id`, `actor_user_id`, `target_user_id`, `event_type`, `resource_type+resource_id`, `created_at`)
+- **Service:** `backend/app/services/audit.py` — `AuditService.record(db, event_type, action, result, actor_user_id, organization_id, project_id, resource_type, resource_id, target_user_id, request_id, correlation_id, ip_address, user_agent, metadata)` — server-controlled context, sanitizes `metadata` via `sanitize_metadata` (redacts `password`, `secret`, `token`, etc., nested, size-bounded to `AUDIT_METADATA_MAX_BYTES=4096` from `config.py`), append-only (no update/delete API), uses same DB transaction as business mutation for consistency (`db.flush()` not `commit`).
+- **Taxonomies:** Centralized `EVENT_*` (auth, org/project/member, target, scan, finding, ingestion, cloud, authz denied), `RESULT_*` (`SUCCESS`/`FAILURE`/`DENIED`/`PARTIAL`), `RESOURCE_*` (organization, project, target, scan, etc.) — not scattered.
+- **Tenant context:** Every audit carries `organization_id`/`project_id` derived from authorized resource, not client input; platform events may have `NULL` for pre-tenant failures. `RLS_ENABLED=false` still.
+- **Future wiring:** Membership, project, target, scan, ingestion, cloud routes will call `AuditService.record` within same `db` transaction as business mutation; background Celery tasks will preserve `organization_id`/`project_id`/`correlation_id` via explicit task context. Read API and request/correlation ID middleware are Phase 6B.
+
 ### Membership Management APIs (Strict-ish Enforcement)
 
 - **Organization members:** `backend/app/api/routes/organization_members.py` (`GET/POST/PATCH/DELETE /organizations/{org_id}/members`) — requires `org_admin`, validates user exists, duplicate 409, role assignment security (cannot grant `super_admin`, member cannot grant `org_admin`), cross-org 403, last-active-org_admin protection (409 if last), `backend/app/schemas/membership.py`.

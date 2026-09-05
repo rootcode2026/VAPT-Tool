@@ -46,6 +46,9 @@ class Settings:
     # get explicit membership for creator and are strict when they have at least one explicit row.
     RBAC_STRICT_MODE: bool = os.getenv("RBAC_STRICT_MODE", "false").lower() == "true"
 
+    # Audit logging — metadata size limit to prevent storage DoS
+    AUDIT_METADATA_MAX_BYTES: int = int(os.getenv("AUDIT_METADATA_MAX_BYTES", "4096"))
+
     # ---------------------------------------------------------
     # Authentication
     # ---------------------------------------------------------

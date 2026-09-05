@@ -13,6 +13,7 @@ from app.models import (
     Asset,
     AssetChangeEvent,
     AssetRelationship,
+    AuditLog,
     Finding,
     Organization,
     OrganizationMembership,
