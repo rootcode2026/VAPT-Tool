@@ -10,15 +10,18 @@ from app.db.base import Base
 
 # Import all models so Alembic can detect them
 from app.models import (
-    Organization,
-    User,
-    Project,
-    Target,
-    Scan,
-    ScanResult,
     Asset,
+    AssetChangeEvent,
     AssetRelationship,
     Finding,
+    Organization,
+    OrganizationMembership,
+    Project,
+    ProjectMembership,
+    Scan,
+    ScanResult,
+    Target,
+    User,
 )
 
 config = context.config

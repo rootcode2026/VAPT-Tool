@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_project_access
+from app.api.deps import (
+    _effective_org_role,
+    _is_super_admin,
+    get_current_user,
+    require_project_access,
+)
+from app.core.permissions import PERM_PROJECT_CREATE, PERM_PROJECT_DELETE
 from app.db.database import get_db
 from app.models.asset import Asset
 from app.models.finding import Finding
@@ -46,6 +52,11 @@ def create_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Project creation requires org_admin (enterprise tenancy).
+    if not _is_super_admin(current_user):
+        org_role = _effective_org_role(current_user, current_user.organization_id, db)
+        if org_role != "org_admin":
+            raise HTTPException(status_code=403, detail="Insufficient permissions: requires org_admin to create projects")
     project = Project(
         id=str(uuid.uuid4()),
         organization_id=current_user.organization_id,
@@ -123,6 +134,11 @@ def delete_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Destructive — requires org_admin (or project_admin via membership, but org_admin is canonical).
+    if not _is_super_admin(current_user):
+        org_role = _effective_org_role(current_user, current_user.organization_id, db)
+        if org_role != "org_admin":
+            raise HTTPException(status_code=403, detail="Insufficient permissions: requires org_admin to delete projects")
     project = (
         db.query(Project)
         .filter(

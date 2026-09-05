@@ -1,6 +1,6 @@
 # VAPT Platform — Project State
 
-> Last verified: 2026-09-04 (P12.1 Cloud Security Foundation — provider-neutral cloud asset plane, mock discovery, checks, FindingEngine integration)
+> Last verified: 2026-09-05 (P12.1 Cloud Security Foundation + RLS Foundation (disabled) + API Security Inventory (6 critical fixes) + RBAC Foundation (transitional org/project membership, permission model))
 > Source of truth: file system + `worker/app/scanner/registry.py`, `profiles.py`, `scanners/*.py`, `scanners/*/Dockerfile`, `worker/app/ingestion/*`, `worker/app/asset_intel/*`, `worker/app/cloud/*`, `backend/app/api/routes/cloud.py`, `.env.example`, `worker/tests/`, `backend/alembic/versions/`, `docker-compose.yml`.
 > Do not mark a phase COMPLETE merely because files exist — use tests + live verification evidence.
 
@@ -153,6 +153,7 @@ Verified from code, tests, and working-tree state:
 | Ingestion | `worker/app/ingestion/` + `backend/app/api/routes/ingestions.py` | Secure archive extraction (ZIP/TAR/TGZ), artifact detection (11 langs, 14 manifests), scanner routing, project-scoped workspace |
 | Cloud Foundation | `worker/app/cloud/` + `backend/app/api/routes/cloud.py` | Provider-neutral `CloudProvider`/`CloudAccount`/`CloudResource`/`CloudDiscoveryResult`/`CloudSecurityCheck`, `cloud_account`/`cloud_resource` assets, mock discovery, `FindingEngine` integration |
 | RLS Foundation | `backend/app/db/rls.py` + `RLS_ENABLED=false` | Preparation only — transaction-local `set_config(..., true)` helper (`is_rls_enabled`, `validate_context_value`, `set_tenant_context`, `clear_tenant_context`, `get_current_tenant_context`), UUID validation, pool-safe (`with db.begin()`), no table has `ENABLE RLS`, no policies, no migration; `backend/tests/test_rls.py` |
+| RBAC Foundation | `backend/app/models/organization_membership.py` + `project_membership.py` + `backend/app/core/permissions.py` + `backend/app/api/deps.py` + `9f8e7d6c5b4a` | Transitional — `organization_memberships`/`project_memberships` (`unique`, FK CASCADE, indexes), `RLS_ENABLED=false` still, permission model (org: member/org_admin, project: viewer/analyst/project_admin, platform super_admin), `require_org_role`/`require_project_role`/`require_permission`/`require_super_admin`, `POST /projects` & `DELETE /projects` require `org_admin`, `POST /targets`/`POST /scans` require `analyst`/`project_admin` (via `_effective_project_role` fallback), `docs/RBAC_MODEL.md` + `backend/tests/test_rbac.py` (24 tests) |
 
 ## Testing Baseline
 

@@ -1,23 +1,27 @@
+from app.models.asset import Asset
+from app.models.asset_change_event import AssetChangeEvent
+from app.models.asset_relationship import AssetRelationship
+from app.models.finding import Finding
 from app.models.organization import Organization
-from app.models.user import User
+from app.models.organization_membership import OrganizationMembership
 from app.models.project import Project
-from app.models.target import Target
+from app.models.project_membership import ProjectMembership
 from app.models.scan import Scan
 from app.models.scan_result import ScanResult
-from app.models.asset import Asset
-from app.models.asset_relationship import AssetRelationship
-from app.models.asset_change_event import AssetChangeEvent
-from app.models.finding import Finding
+from app.models.target import Target
+from app.models.user import User
 
 __all__ = [
+    "Asset",
+    "AssetChangeEvent",
+    "AssetRelationship",
+    "Finding",
     "Organization",
-    "User",
+    "OrganizationMembership",
     "Project",
-    "Target",
+    "ProjectMembership",
     "Scan",
     "ScanResult",
-    "Asset",
-    "AssetRelationship",
-    "AssetChangeEvent",
-    "Finding",
+    "Target",
+    "User",
 ]

@@ -5,7 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_project_access
+from app.api.deps import (
+    _effective_project_role,
+    _is_super_admin,
+    get_current_user,
+    require_project_access,
+)
 from app.core.celery import celery_app
 from app.db.database import get_db
 from app.models.project import Project
@@ -54,6 +59,11 @@ def create_scan(
     )
     if target:
         require_project_access(target.project_id, db, current_user)
+        # RBAC: scan.execute requires analyst or project_admin
+        if not _is_super_admin(current_user):
+            role = _effective_project_role(current_user, target.project_id, db)
+            if role not in ("analyst", "project_admin"):
+                raise HTTPException(status_code=403, detail="Insufficient permissions: requires analyst to execute scans")
 
     if not target:
         raise HTTPException(

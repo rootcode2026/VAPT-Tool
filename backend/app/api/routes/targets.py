@@ -3,7 +3,12 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_project_access
+from app.api.deps import (
+    _effective_project_role,
+    _is_super_admin,
+    get_current_user,
+    require_project_access,
+)
 from app.db.database import get_db
 from app.models.project import Project
 from app.models.target import Target
@@ -28,6 +33,11 @@ def create_target(
 ):
     # Verify target is placed into a project the caller may access.
     require_project_access(data.project_id, db, current_user)
+    # RBAC: target.create requires analyst or project_admin (org_admin via fallback).
+    if not _is_super_admin(current_user):
+        role = _effective_project_role(current_user, data.project_id, db)
+        if role not in ("analyst", "project_admin"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions: requires analyst or project_admin to create targets")
 
     target = Target(
         id=str(uuid.uuid4()),
@@ -110,6 +120,11 @@ def delete_target(
             detail="Target not found",
         )
     require_project_access(target.project_id, db, current_user)
+    # RBAC: target.delete requires project_admin (transitional: also allow analyst for backward compat, future will be project_admin only).
+    if not _is_super_admin(current_user):
+        role = _effective_project_role(current_user, target.project_id, db)
+        if role not in ("analyst", "project_admin"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions: requires project_admin to delete targets")
 
     db.delete(target)
     db.commit()
