@@ -511,3 +511,35 @@ Do not claim RBAC is complete for endpoints not yet migrated (ingestion, cloud m
 ---
 
 *Generated from direct `Read` of listed sources; no claim beyond verified code. Next step: implement P0 fixes and `test_authz_targets_dashboard.py`, then commit as `security(api): audit endpoint authorization and tenant isolation`.*
+
+---
+
+## 21. Update — RBAC Membership Enforcement (feat/rbac-membership-enforcement)
+
+> **Status:** Strict-ish enforcement with membership management APIs, ingestion gap fixed, fallback preserved for existing projects.
+
+### Membership APIs — Implemented
+
+| Method | Endpoint | Auth | Permission | Enforcement |
+|---|---|---|---|---|
+| GET | `/api/v1/organizations/{org_id}/members` | org_admin | `organization.manage_members` | `_require_org_admin` (org_admin or super_admin) |
+| POST | `/api/v1/organizations/{org_id}/members` | org_admin | `organization.manage_members` | Validate user exists, duplicate 409, role assignment security (cannot grant super_admin, member cannot grant org_admin), cross-org 403 |
+| PATCH | `/api/v1/organizations/{org_id}/members/{user_id}` | org_admin | `organization.manage_members` | Last-admin protection (409 if last active org_admin) |
+| DELETE | `/api/v1/organizations/{org_id}/members/{user_id}` | org_admin | `organization.manage_members` | Same last-admin protection |
+| GET | `/api/v1/projects/{project_id}/members` | project_admin/org_admin | `project.manage_members` | `_require_project_manage` (project_admin or org_admin) |
+| POST | `/api/v1/projects/{project_id}/members` | project_admin/org_admin | `project.manage_members` | Validate target user in same org (403 if not), duplicate 409, viewer/analyst cannot grant project_admin, cross-org 403 |
+| PATCH | `/api/v1/projects/{project_id}/members/{user_id}` | project_admin/org_admin | `project.manage_members` | Similar role checks, no strict last project_admin (org_admin fallback ensures manageability) |
+| DELETE | `/api/v1/projects/{project_id}/members/{user_id}` | project_admin/org_admin | `project.manage_members` | No last project_admin enforcement (documented) |
+
+### Ingestion Gap — Fixed
+
+`POST /api/v1/ingestions/prepare` now checks `_effective_project_role` → `analyst`/`project_admin` (viewer → 403) after `require_project_access`, before file processing. Verified via `test_membership.py::test_ingestion_viewer_denied_analyst_allowed`.
+
+### Fallback Status
+
+- `org member → analyst` / `org_admin → project_admin` fallback **preserved** for existing projects without explicit `project_membership` rows (creator not stored). New projects get explicit `project_admin` membership for creator. Future strict-deny (missing membership → DENIED) requires backfill of explicit memberships for all existing projects — not done in this phase, documented as transitional.
+
+### Remaining Transitional Gaps
+
+- `GET /projects`, `GET /targets`, `GET /scans`, `GET /assets`, `GET /findings`, `GET /dashboard` still rely on `require_project_access` fallback, not strict `viewer` check — will be tightened when explicit project memberships are backfilled.
+- No UI for membership management; no audit log yet.

@@ -360,3 +360,9 @@ JWT → authenticated user → org membership → project membership → permiss
 ```
 
 Helper `backend/app/db/rls.py` remains `RLS_ENABLED=false` and not wired; will be called after `require_project_access` inside `with db.begin()` in enforcement phase.
+
+### Membership Management APIs (Strict-ish Enforcement)
+
+- **Organization members:** `backend/app/api/routes/organization_members.py` (`GET/POST/PATCH/DELETE /organizations/{org_id}/members`) — requires `org_admin`, validates user exists, duplicate 409, role assignment security (cannot grant `super_admin`, member cannot grant `org_admin`), cross-org 403, last-active-org_admin protection (409 if last), `backend/app/schemas/membership.py`.
+- **Project members:** `backend/app/api/routes/project_members.py` (`GET/POST/PATCH/DELETE /projects/{project_id}/members`) — requires `project_admin` or `org_admin` (`_require_project_manage`), validates target user in same org, viewer/analyst cannot grant `project_admin`, cross-org 403, duplicate 409, no strict last project_admin (org_admin fallback ensures manageability).
+- **Ingestion gap fixed:** `POST /ingestions/prepare` now requires `analyst`/`project_admin` (viewer → 403) after `require_project_access`.

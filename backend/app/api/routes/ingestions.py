@@ -7,7 +7,12 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_project_access
+from app.api.deps import (
+    _effective_project_role,
+    _is_super_admin,
+    get_current_user,
+    require_project_access,
+)
 from app.db.database import get_db
 from app.models.user import User
 
@@ -70,8 +75,12 @@ async def prepare_ingestion(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Project isolation
+    # Project isolation + ingestion.create permission (analyst/project_admin)
     require_project_access(project_id, db, current_user)
+    if not _is_super_admin(current_user):
+        role = _effective_project_role(current_user, project_id, db)
+        if role not in ("analyst", "project_admin"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions: requires analyst to create ingestions")
 
     filename = file.filename or "archive"
     data = await file.read()

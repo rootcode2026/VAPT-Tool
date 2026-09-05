@@ -12,6 +12,8 @@ from app.api.routes.cloud import router as cloud_router
 from app.api.routes.dashboard import router as dashboard_router
 from app.api.routes.findings import router as findings_router
 from app.api.routes.ingestions import router as ingestions_router
+from app.api.routes.organization_members import router as organization_members_router
+from app.api.routes.project_members import router as project_members_router
 from app.api.routes.projects import router as projects_router
 from app.api.routes.scanners import router as scanners_router
 from app.api.routes.scans import router as scans_router
@@ -72,6 +74,8 @@ app.include_router(scanners_router, dependencies=protected)
 app.include_router(dashboard_router, dependencies=protected)
 app.include_router(ingestions_router, dependencies=protected)
 app.include_router(cloud_router, dependencies=protected)
+app.include_router(organization_members_router, dependencies=protected)
+app.include_router(project_members_router, dependencies=protected)
 
 
 @app.get("/")

@@ -65,6 +65,27 @@ def create_project(
     )
 
     db.add(project)
+    db.flush()
+
+    # Creator receives project_admin membership (server-side, not client-chosen)
+    from app.models.project_membership import ProjectMembership
+
+    # Avoid duplicate if already exists (should not)
+    existing = (
+        db.query(ProjectMembership)
+        .filter(ProjectMembership.project_id == project.id, ProjectMembership.user_id == current_user.id)
+        .first()
+    )
+    if not existing:
+        db.add(
+            ProjectMembership(
+                id=str(uuid.uuid4()),
+                project_id=project.id,
+                user_id=current_user.id,
+                role="project_admin",
+                status="active",
+            )
+        )
     db.commit()
     db.refresh(project)
 
