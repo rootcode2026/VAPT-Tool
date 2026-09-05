@@ -131,12 +131,15 @@ def get_assets_summary(
     if pid:
         require_project_access(pid, db, current_user)
         return get_project_security_intelligence_summary(db, pid)
-    # No project: aggregate across all assets via intelligence summary helper
-    # Fallback: compute across all projects (still project-scoped per asset)
-    # Reuse same helper by iterating distinct project_ids
-    # For simplicity, if no pid, return empty summary (avoid cross-project aggregation)
-    # Alternatively compute across all assets
-    assets = db.query(Asset).all()
+    # No project: aggregate across the caller's organization (org-scoped)
+    from app.models.project import Project
+
+    assets = (
+        db.query(Asset)
+        .join(Project, Project.id == Asset.project_id)
+        .filter(Project.organization_id == current_user.organization_id)
+        .all()
+    )
     if not assets:
         return ProjectSecurityIntelligenceSummary()
     # Use same intelligence logic across all assets (grouped)
