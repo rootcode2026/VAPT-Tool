@@ -163,6 +163,8 @@ Verified from code, tests, and working-tree state:
 
 | Audit Auth + Authorization (6E) | ackend/app/api/routes/auth.py + ackend/app/api/deps.py + ackend/tests/test_audit_auth_authorization.py | **COMPLETE / READY** — AUTH_LOGIN_SUCCESS/FAILURE, AUTH_LOGOUT, AUTH_TOKEN_FAILURE, AUTHORIZATION_DENIED, CROSS_TENANT_ACCESS_DENIED via savepoint, tenant server-controlled, no secrets, request context NULL deferred to 6F. Tests: **17 passed** |
 
+| Audit Context + Read API (6F) | `backend/app/core/request_id.py` + `backend/app/middleware/request_id.py` + `backend/app/api/routes/audit_logs.py` + `backend/tests/test_audit_context_read_api.py` | **COMPLETE / READY** — Request ID / Correlation ID middleware (bounded 64 safe chars, uuid4 hex fallback, ContextVar, returned in response, CORS expose), IP via `request.client.host` (not XFF, documented), User-Agent bounded 500, AuditService auto-fills context, `GET /api/v1/audit_logs` requires `audit.read`, tenant-isolated (org filter or super_admin all), project filter validated via `require_project_access`, filters bounded/validated, pagination page>=1 page_size 1-100 default 50, sorting `created_at DESC` fixed, response 15 fields sanitized, no sensitive headers. Tests: **26 passed** |
+
 ## Testing Baseline
 
 Do not invent numbers. Verify with `python -m pytest` from `worker/` (`pytest.ini`: `testpaths=tests`, `pythonpath=.`) and `backend/`:
