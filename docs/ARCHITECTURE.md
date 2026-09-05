@@ -312,3 +312,51 @@ Future policies must enforce `USING (organization_id = current_setting('app.curr
 or `USING (project_id = current_setting('app.current_project_id', true)::uuid)` with
 `WITH CHECK` mirrors, role-aware where required, and `FORCE RLS` for table owners. Never
 `USING (true)` (bypasses isolation). Policies remain **not created** in this phase.
+
+## Enterprise Multi-Tenancy + RBAC Foundation (Transitional)
+
+> **Status:** Membership tables + permission model implemented; enforcement is transitional (org fallback preserves existing access). Full strict enforcement is **TARGET**, not yet current.
+
+### Tenancy Model
+
+- **Organizations:** `organizations` (id, name, slug)
+- **Users:** `users` (id, `organization_id` legacy primary org, `email`, `role` platform `super_admin`/`admin`/`member`)
+- **OrganizationMemberships:** `organization_memberships` (`unique(organization_id, user_id)`, `role` ∈ {`member`, `org_admin`}, `status`, timestamps, FK CASCADE, indexes)
+- **Projects:** `projects` (`organization_id` FK)
+- **ProjectMemberships:** `project_memberships` (`unique(project_id, user_id)`, `role` ∈ {`viewer`, `analyst`, `project_admin`}, `status`, timestamps, FK CASCADE, indexes)
+
+Migration `9f8e7d6c5b4a` creates both tables and populates `organization_memberships` from existing `users` (`admin`→`org_admin`, else `member`); `project_memberships` not auto-populated (creator not stored) — fallback preserves access (org member → `analyst`, org_admin → `project_admin` on existing projects).
+
+### Roles & Permissions
+
+- **Platform:** `super_admin` (via `users.role`, bypass, future platform visibility with audit)
+- **Organization:** `member` (read), `org_admin` (manage + all member perms + project.create/delete)
+- **Project:** `viewer` (read), `analyst` (viewer + target.create, scan.execute, ingestion.create), `project_admin` (analyst + target.delete, project.delete/manage)
+
+Centralized in `backend/app/core/permissions.py` (`ORG_ROLE_PERMISSIONS`, `PROJECT_ROLE_PERMISSIONS`, `SUPER_ADMIN_PERMISSIONS`).
+
+### Authorization Flow
+
+```
+JWT → get_current_user → _is_super_admin? → bypass
+  → _effective_org_role (OrganizationMembership or fallback User.organization_id)
+  → _effective_project_role (ProjectMembership or fallback org→project mapping)
+  → Permission check (role's permission set contains required permission) → 403 or allow
+  → require_project_access (Project.organization_id == user.org via membership) → 404
+  → WHERE project_id / organization_id predicate
+```
+
+`backend/app/api/deps.py` now exports `_is_super_admin`, `_effective_org_role`, `_effective_project_role`, `require_org_membership`, `require_project_role`, `require_permission`, `require_super_admin` plus legacy `require_project_access` updated to use membership fallback.
+
+Transitional enforcement:
+- `POST /projects` and `DELETE /projects/{id}` require `org_admin`
+- `POST /targets` and `POST /scans` require `analyst`/`project_admin`
+- Other reads still via `require_project_access` fallback (viewer can read)
+
+### Future RLS Wiring (not yet)
+
+```
+JWT → authenticated user → org membership → project membership → permission → verified tenant context (UUID) → BEGIN → set_tenant_context(db, org, project, user) → RLS USING (...) → rows
+```
+
+Helper `backend/app/db/rls.py` remains `RLS_ENABLED=false` and not wired; will be called after `require_project_access` inside `with db.begin()` in enforcement phase.

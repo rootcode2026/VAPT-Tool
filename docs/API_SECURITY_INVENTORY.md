@@ -479,4 +479,35 @@ Do not claim platform is fully multi-tenant, RBAC-complete, or RLS-enforced — 
 
 ---
 
+## 20. Post-Inventory Update — Enterprise Multi-Tenancy + RBAC Foundation (feat/multitenancy-rbac-foundation)
+
+> **Current:** Transitional RBAC foundation implemented (membership tables, permission model, org_admin gating).
+> **Target:** Full RBAC with explicit project membership enforcement and RLS defense-in-depth.
+
+### Endpoint Classifications — Updated
+
+| Method | Endpoint | Previous Class | New Class | Permission | Enforcement |
+|---|---|---|---|---|---|
+| POST | `/api/v1/projects` | PROJECT_SCOPED | ORGANIZATION_SCOPED (`org_admin`) | `project.create` → `org_admin` | **Enforced** via `_effective_org_role` check in `projects.py` (member → 403) |
+| DELETE | `/api/v1/projects/{id}` | ORGANIZATION_SCOPED | ORGANIZATION_SCOPED (`org_admin`) | `project.delete` → `org_admin` | **Enforced** |
+| POST | `/api/v1/targets` | PROJECT_SCOPED | PROJECT_SCOPED (`analyst`+) | `target.create` → `analyst`/`project_admin` | **Enforced** via `_effective_project_role` (viewer → 403) |
+| DELETE | `/api/v1/targets/{id}` | PROJECT_SCOPED | PROJECT_SCOPED (`project_admin` transitional `analyst`+) | `target.delete` → `project_admin` (currently `analyst` also allowed for backward compat) | **Enforced** (transitional) |
+| POST | `/api/v1/scans` | PROJECT_SCOPED | PROJECT_SCOPED (`analyst`+) | `scan.execute` → `analyst`/`project_admin` | **Enforced** |
+| Others (`GET /projects`, `/targets`, `/scans`, `/assets`, `/findings`, `/dashboard`, `/cloud`, `/ingestions`) | PROJECT_SCOPED / ORGANIZATION_SCOPED | Same | `project.read`/`asset.read` etc. → `viewer`+ | **Transitional** — still via `require_project_access` + org fallback; not yet strict `viewer` check |
+| `GET /scanners` | AUTHENTICATED | AUTHENTICATED | `scanner.manage` future | No change |
+
+### Authorization Model — CURRENT / TRANSITIONAL / TARGET
+
+- **CURRENT (after 6 fixes, before RBAC):** `get_current_user` → `User.organization_id` → `require_project_access` (`Project.organization_id == user.org`) → `WHERE project_id`.
+- **TRANSITIONAL (this foundation):** Membership tables exist, `RLS_ENABLED=false`, permission model defined, `organization_memberships` populated from `users`, `project_memberships` explicit where created, fallback `org_member → analyst` / `org_admin → project_admin` preserves existing access. Project creation/deletion and target/scan creation now check `org_admin`/`analyst` roles. Other reads still use `require_project_access` fallback.
+- **TARGET (future RBAC + RLS):** Explicit `project_membership` required for every project access (no fallback), `viewer`/`analyst`/`project_admin` strictly enforced per endpoint, `super_admin` platform visibility with audit, `BEGIN → set_tenant_context(org, project, user) → RLS USING (project_id = current_setting(...))`.
+
+### Resource Ownership — Updated
+
+Project creation now uses `current_user.organization_id` (not client `organization_id`) — body `organization_id` is ignored (existing schema still requires it but handler does not trust it). Organization membership is authoritative.
+
+Do not claim RBAC is complete for endpoints not yet migrated (ingestion, cloud manage, dashboard, etc. remain transitional).
+
+---
+
 *Generated from direct `Read` of listed sources; no claim beyond verified code. Next step: implement P0 fixes and `test_authz_targets_dashboard.py`, then commit as `security(api): audit endpoint authorization and tenant isolation`.*

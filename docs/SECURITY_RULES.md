@@ -86,6 +86,20 @@ Applies to `secrets` scanner and any future credential-handling code:
   or `USING (project_id = current_setting('app.current_project_id', true)::uuid)` with `WITH CHECK` mirrors,
   `FORCE RLS` where needed. Never `USING (true)` — that bypasses isolation. Policies remain **not created** this phase.
 
+## RBAC & Tenancy Security (Enterprise Foundation)
+
+> **Foundation implemented** — membership tables + permission model, transitional enforcement. See `docs/RBAC_MODEL.md`.
+
+- **Organization membership is authoritative.** `organization_memberships` (`unique(organization_id, user_id)`, `role` member/org_admin) is the source for org access; fallback `User.organization_id` only for backward compat with existing data. `require_project_access` now verifies via `_effective_org_role`.
+- **Project membership is authoritative (transitional fallback).** `project_memberships` (`unique(project_id, user_id)`, `role` viewer/analyst/project_admin) is the source for project access; fallback `org_member → analyst`, `org_admin → project_admin` preserves existing projects without explicit rows. Future will require explicit membership (no fallback).
+- **Platform super_admin is separate.** `User.role == 'super_admin'` bypasses org/project checks via `_is_super_admin`; never grant via org/project membership. `require_super_admin` exists but no route currently requires it. No dashboard built yet; super_admin actions must be auditable (future).
+- **Permissions are centralized.** `backend/app/core/permissions.py` defines `ALL_PERMISSIONS` and `ORG_ROLE_PERMISSIONS`/`PROJECT_ROLE_PERMISSIONS`; `backend/app/api/deps.py` exports `_effective_org_role`, `_effective_project_role`, `require_permission`, `require_org_role`, `require_project_role`, `require_super_admin`. Do not scatter `if user.role == ...` checks in handlers.
+- **Never trust client tenant IDs.** `organization_id`/`project_id` from body/query is validated via `require_project_access` (checks `Project.organization_id == current_user.org` via membership) before permission check. Client cannot change own role or assign higher role — no membership API exists yet.
+- **Project creation is org_admin only.** `POST /projects` now checks `_effective_org_role == 'org_admin'` (member → 403). Transitional mapping `User.role admin → org_admin` preserves existing admin users.
+- **Destructive & expensive ops are role-gated.** `DELETE /projects` → `org_admin`, `POST /targets`/`POST /scans` → `analyst`/`project_admin`, `DELETE /targets` → `analyst`/`project_admin` (future will be `project_admin` only). Other reads still via `require_project_access` fallback (viewer can read).
+- **Cross-tenant is 404, not 403.** Use 404 for not-found vs cross-tenant to avoid enumeration; 403 for insufficient permissions within same tenant.
+- **Future RLS will be defense-in-depth.** Helper `backend/app/db/rls.py` remains `RLS_ENABLED=false`; future `BEGIN → set_tenant_context(org, project, user) → RLS USING (...)` after verified membership.
+
 ## API Security
 
 Current conventions (verified in `backend/app/api/`):
