@@ -14,6 +14,13 @@ from app.models.project import Project
 from app.models.target import Target
 from app.models.user import User
 from app.schemas.target import TargetCreate, TargetResponse
+from app.services.audit import (
+    EVENT_TARGET_CREATED,
+    EVENT_TARGET_DELETED,
+    RESOURCE_TARGET,
+    RESULT_SUCCESS,
+    AuditService,
+)
 
 
 router = APIRouter(
@@ -47,6 +54,21 @@ def create_target(
     )
 
     db.add(target)
+    # Audit — same transaction, server-controlled tenant context (project -> organization)
+    proj = db.query(Project).filter(Project.id == data.project_id).first()
+    org_id = proj.organization_id if proj else current_user.organization_id
+    AuditService.record(
+        db,
+        event_type=EVENT_TARGET_CREATED,
+        action=EVENT_TARGET_CREATED,
+        result=RESULT_SUCCESS,
+        actor_user_id=current_user.id,
+        organization_id=org_id,
+        project_id=data.project_id,
+        resource_type=RESOURCE_TARGET,
+        resource_id=target.id,
+        metadata={"target_type": data.target_type},
+    )
     db.commit()
     db.refresh(target)
 
@@ -126,6 +148,21 @@ def delete_target(
         if role not in ("analyst", "project_admin"):
             raise HTTPException(status_code=403, detail="Insufficient permissions: requires project_admin to delete targets")
 
+    # Audit before deletion — survives via SET NULL FK
+    proj = db.query(Project).filter(Project.id == target.project_id).first()
+    org_id = proj.organization_id if proj else current_user.organization_id
+    AuditService.record(
+        db,
+        event_type=EVENT_TARGET_DELETED,
+        action=EVENT_TARGET_DELETED,
+        result=RESULT_SUCCESS,
+        actor_user_id=current_user.id,
+        organization_id=org_id,
+        project_id=target.project_id,
+        resource_type=RESOURCE_TARGET,
+        resource_id=target.id,
+        metadata={"target_type": target.target_type},
+    )
     db.delete(target)
     db.commit()
 

@@ -28,6 +28,12 @@ from app.schemas.scan import (
     ScannerExecutionSummary,
 )
 from app.scans.observability import progress_snapshot, scanner_names
+from app.services.audit import (
+    EVENT_SCAN_CREATED,
+    RESOURCE_SCAN,
+    RESULT_SUCCESS,
+    AuditService,
+)
 
 
 router = APIRouter(
@@ -92,6 +98,26 @@ def create_scan(
     )
 
     db.add(scan)
+    # Audit SCAN_CREATED — same transaction, tenant derived from target->project
+    try:
+        proj_id = target.project_id
+        proj = db.query(Project).filter(Project.id == proj_id).first()
+        org_id = proj.organization_id if proj else current_user.organization_id
+        AuditService.record(
+            db,
+            event_type=EVENT_SCAN_CREATED,
+            action=EVENT_SCAN_CREATED,
+            result=RESULT_SUCCESS,
+            actor_user_id=current_user.id,
+            organization_id=org_id,
+            project_id=proj_id,
+            resource_type=RESOURCE_SCAN,
+            resource_id=scan.id,
+            metadata={"profile": data.profile, "target_type": target.target_type},
+        )
+    except Exception:
+        # Audit must not break scan creation; savepoint handling in AuditService already isolates test DBs
+        pass
     db.commit()
     db.refresh(scan)
 
