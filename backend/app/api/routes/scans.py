@@ -29,8 +29,10 @@ from app.schemas.scan import (
 )
 from app.scans.observability import progress_snapshot, scanner_names
 from app.services.audit import (
+    EVENT_AUTHZ_DENIED,
     EVENT_SCAN_CREATED,
     RESOURCE_SCAN,
+    RESULT_DENIED,
     RESULT_SUCCESS,
     AuditService,
 )
@@ -69,6 +71,27 @@ def create_scan(
         if not _is_super_admin(current_user):
             role = _effective_project_role(current_user, target.project_id, db)
             if role not in ("analyst", "project_admin"):
+                try:
+                    proj = db.query(Project).filter(Project.id == target.project_id).first()
+                    org_id = proj.organization_id if proj else current_user.organization_id
+                    AuditService.record(
+                        db,
+                        event_type=EVENT_AUTHZ_DENIED,
+                        action=EVENT_AUTHZ_DENIED,
+                        result=RESULT_DENIED,
+                        actor_user_id=current_user.id,
+                        organization_id=org_id,
+                        project_id=target.project_id,
+                        resource_type=RESOURCE_SCAN,
+                        resource_id=None,
+                        metadata={"reason": "insufficient_permissions", "actual_role": str(role)[:50]},
+                    )
+                    db.commit()
+                except Exception:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
                 raise HTTPException(status_code=403, detail="Insufficient permissions: requires analyst to execute scans")
 
     if not target:

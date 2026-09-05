@@ -15,10 +15,12 @@ from app.schemas.membership import (
     OrganizationMemberUpdate,
 )
 from app.services.audit import (
+    EVENT_AUTHZ_DENIED,
     EVENT_ORG_MEMBER_ADDED,
     EVENT_ORG_MEMBER_REMOVED,
     EVENT_ORG_MEMBER_UPDATED,
     RESOURCE_ORG_MEMBERSHIP,
+    RESULT_DENIED,
     RESULT_SUCCESS,
     AuditService,
 )
@@ -31,6 +33,24 @@ def _require_org_admin(organization_id: str, db: Session, current_user: User):
         return
     role = _effective_org_role(current_user, organization_id, db)
     if role != "org_admin":
+        try:
+            AuditService.record(
+                db,
+                event_type=EVENT_AUTHZ_DENIED,
+                action=EVENT_AUTHZ_DENIED,
+                result=RESULT_DENIED,
+                actor_user_id=current_user.id,
+                organization_id=str(organization_id)[:36],
+                resource_type="organization",
+                resource_id=str(organization_id)[:100],
+                metadata={"reason": "insufficient_permissions", "actual_role": str(role)[:50]},
+            )
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
         raise HTTPException(status_code=403, detail="Insufficient permissions: requires org_admin")
 
 

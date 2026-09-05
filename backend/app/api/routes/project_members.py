@@ -11,10 +11,12 @@ from app.models.project_membership import ProjectMembership
 from app.models.user import User
 from app.schemas.membership import ProjectMemberCreate, ProjectMemberResponse, ProjectMemberUpdate
 from app.services.audit import (
+    EVENT_AUTHZ_DENIED,
     EVENT_PROJECT_MEMBER_ADDED,
     EVENT_PROJECT_MEMBER_REMOVED,
     EVENT_PROJECT_MEMBER_UPDATED,
     RESOURCE_PROJECT_MEMBERSHIP,
+    RESULT_DENIED,
     RESULT_SUCCESS,
     AuditService,
 )
@@ -36,6 +38,25 @@ def _require_project_manage(project_id: str, db: Session, current_user: User):
         return
     role = _effective_project_role(current_user, project_id, db)
     if role != "project_admin":
+        try:
+            AuditService.record(
+                db,
+                event_type=EVENT_AUTHZ_DENIED,
+                action=EVENT_AUTHZ_DENIED,
+                result=RESULT_DENIED,
+                actor_user_id=current_user.id,
+                organization_id=proj.organization_id,
+                project_id=str(project_id)[:36],
+                resource_type="project",
+                resource_id=str(project_id)[:100],
+                metadata={"reason": "insufficient_permissions", "actual_role": str(role)[:50]},
+            )
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
         raise HTTPException(status_code=403, detail="Insufficient permissions: requires project_admin or org_admin")
 
 
