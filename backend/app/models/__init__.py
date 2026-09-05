@@ -1,6 +1,7 @@
 from app.models.asset import Asset
 from app.models.asset_change_event import AssetChangeEvent
 from app.models.asset_relationship import AssetRelationship
+from app.models.audit_log import AuditLog
 from app.models.finding import Finding
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
@@ -15,6 +16,7 @@ __all__ = [
     "Asset",
     "AssetChangeEvent",
     "AssetRelationship",
+    "AuditLog",
     "Finding",
     "Organization",
     "OrganizationMembership",

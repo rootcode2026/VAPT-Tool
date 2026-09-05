@@ -103,6 +103,13 @@ Applies to `secrets` scanner and any future credential-handling code:
 - **Membership management is privileged.** `POST /organizations/{id}/members` and `/projects/{id}/members` require `org_admin` or `project_admin`/`org_admin` respectively; validate target user exists, duplicate 409, role assignment security (cannot grant higher than own, cannot grant `super_admin`, self-escalation blocked), cross-org 403, last-active-org_admin protection (409). No membership API can modify `User.role` platform `super_admin`.
 - **Strict RBAC cutover:** `RBAC_STRICT_MODE=false` (transitional). Per-project strict when explicit `project_membership` exists (`missing → DENIED`), otherwise fallback `org→project` for backward compat. `RBAC_STRICT_MODE=true` enforces strict for all. Backfill `project_backfill.py` is dry-run by default, idempotent, never fabricates. Inactive `status != active` memberships are denied.
 
+## Audit Logging (Foundation, Append-Only)
+
+- **Model:** `audit_logs` append-only, `SET NULL` on user/org/project delete so history survives, no `UPDATE`/`DELETE` API, indexed for tenant/time/event queries, `metadata` JSONB bounded to `AUDIT_METADATA_MAX_BYTES=4096` (configurable, truncation).
+- **Service:** `backend/app/services/audit.py` — centralized `AuditService.record` with server-controlled `actor_user_id`/`organization_id`/`project_id`, sanitizes `metadata` (redacts `password`, `secret`, `token`, `api_key`, `authorization`, `cookie`, `private_key`, `client_secret`, `credential` nested, size-bounded), never stores passwords/JWTs/API keys/cloud credentials/private keys/cookies/source code/file contents/scanner stdout/stderr/bodies/connection strings. `request_id`/`correlation_id`/`ip_address`/`user_agent` captured where available, same DB transaction as business mutation for consistency (`db.flush()` not `commit` until business commits).
+- **Taxonomies:** Centralized `EVENT_*` (auth, org/project/member, target, scan, finding, ingestion, cloud, authz denied), `RESULT_*` (`SUCCESS`/`FAILURE`/`DENIED`), `RESOURCE_*` — not scattered.
+- **Tenant isolation:** Every audit carries `organization_id`/`project_id` from authorized resource; cross-tenant read is denied (future read API will enforce `audit.read`).
+
 ## API Security
 
 Current conventions (verified in `backend/app/api/`):
