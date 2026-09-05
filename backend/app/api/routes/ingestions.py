@@ -14,7 +14,16 @@ from app.api.deps import (
     require_project_access,
 )
 from app.db.database import get_db
+from app.models.project import Project
 from app.models.user import User
+from app.services.audit import (
+    EVENT_INGESTION_CREATED,
+    EVENT_INGESTION_FAILED,
+    RESOURCE_INGESTION,
+    RESULT_FAILURE,
+    RESULT_SUCCESS,
+    AuditService,
+)
 
 router = APIRouter(prefix="/api/v1/ingestions", tags=["Ingestions"])
 
@@ -294,6 +303,32 @@ async def prepare_ingestion(
 
         ingestion_id = str(uuid.uuid4())
 
+        # Audit INGESTION_CREATED — safe metadata only (no file contents)
+        try:
+            proj = db.query(Project).filter(Project.id == project_id).first()
+            org_id = proj.organization_id if proj else current_user.organization_id
+            AuditService.record(
+                db,
+                event_type=EVENT_INGESTION_CREATED,
+                action=EVENT_INGESTION_CREATED,
+                result=RESULT_SUCCESS,
+                actor_user_id=current_user.id,
+                organization_id=org_id,
+                project_id=project_id,
+                resource_type=RESOURCE_INGESTION,
+                resource_id=ingestion_id,
+                metadata={
+                    "source_type": arch_type,
+                    "file_count": file_count,
+                    "recommended_scanners": recommended,
+                },
+            )
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
         # Cleanup workspace after (for P11.1 foundation, we return metadata and clean up; real scan would keep it)
         # For this API, we clean up immediately to avoid disk leak
         import shutil
@@ -325,7 +360,31 @@ async def prepare_ingestion(
             "warnings": [],
         }
 
-    except HTTPException:
+    except HTTPException as http_exc:
+        # Audit INGESTION_FAILED for validation/terminal failures (sanitized)
+        try:
+            proj = db.query(Project).filter(Project.id == project_id).first()
+            org_id = proj.organization_id if proj else getattr(current_user, "organization_id", None)
+            # Only audit if we have a project context
+            if project_id:
+                AuditService.record(
+                    db,
+                    event_type=EVENT_INGESTION_FAILED,
+                    action=EVENT_INGESTION_FAILED,
+                    result=RESULT_FAILURE,
+                    actor_user_id=getattr(current_user, "id", None),
+                    organization_id=org_id,
+                    project_id=project_id,
+                    resource_type=RESOURCE_INGESTION,
+                    resource_id=str(uuid.uuid4()),
+                    metadata={"source_type": filename[:50] if 'filename' in locals() else "unknown", "error": str(http_exc.detail)[:500] if hasattr(http_exc, "detail") else "validation failed"},
+                )
+                db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
         # Cleanup on HTTP error
         import shutil
         try:
@@ -334,6 +393,29 @@ async def prepare_ingestion(
             pass
         raise
     except Exception as e:
+        # Audit generic failure
+        try:
+            proj = db.query(Project).filter(Project.id == project_id).first()
+            org_id = proj.organization_id if proj else getattr(current_user, "organization_id", None)
+            if project_id:
+                AuditService.record(
+                    db,
+                    event_type=EVENT_INGESTION_FAILED,
+                    action=EVENT_INGESTION_FAILED,
+                    result=RESULT_FAILURE,
+                    actor_user_id=getattr(current_user, "id", None),
+                    organization_id=org_id,
+                    project_id=project_id,
+                    resource_type=RESOURCE_INGESTION,
+                    resource_id=str(uuid.uuid4()),
+                    metadata={"error": str(e)[:500]},
+                )
+                db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
         import shutil
         try:
             shutil.rmtree(workspace, ignore_errors=True)
