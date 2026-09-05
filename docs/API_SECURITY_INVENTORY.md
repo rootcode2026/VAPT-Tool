@@ -541,5 +541,10 @@ Do not claim RBAC is complete for endpoints not yet migrated (ingestion, cloud m
 
 ### Remaining Transitional Gaps
 
-- `GET /projects`, `GET /targets`, `GET /scans`, `GET /assets`, `GET /findings`, `GET /dashboard` still rely on `require_project_access` fallback, not strict `viewer` check — will be tightened when explicit project memberships are backfilled.
+- `GET /projects`, `GET /targets`, `GET /scans`, `GET /assets`, `GET /findings`, `GET /dashboard` still rely on `require_project_access` fallback for projects without explicit memberships, not strict `viewer` check — will be tightened when explicit project memberships are backfilled. Projects with explicit memberships are now strict (`missing → DENIED`).
 - No UI for membership management; no audit log yet.
+
+### Strict Cutover — Implemented
+
+- `RBAC_STRICT_MODE=false` (transitional). Per-project strict: if `project_memberships` exists for project, missing → `403/404`; else fallback `org→project`. Global strict when `RBAC_STRICT_MODE=true`.
+- Backfill: `backend/app/services/project_backfill.py` dry-run reports `SAFE=0`, `AMBIGUOUS`/`NO_EVIDENCE` for existing projects, no fabrication, idempotent.

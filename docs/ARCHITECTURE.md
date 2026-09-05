@@ -327,6 +327,11 @@ or `USING (project_id = current_setting('app.current_project_id', true)::uuid)` 
 
 Migration `9f8e7d6c5b4a` creates both tables and populates `organization_memberships` from existing `users` (`admin`→`org_admin`, else `member`); `project_memberships` not auto-populated (creator not stored) — fallback preserves access (org member → `analyst`, org_admin → `project_admin` on existing projects).
 
+### Strict Cutover (Per-Project Strict + RBAC_STRICT_MODE)
+
+- `backend/app/core/config.py:RBAC_STRICT_MODE=false` (default transitional). `backend/app/api/deps.py::_effective_project_role` now per-project strict: if project has any explicit `project_membership` rows, missing membership → `None` (DENIED) without fallback; if project has zero explicit rows, fallback `org→project` is used unless `RBAC_STRICT_MODE=true` (global strict). New projects get explicit `project_admin` for creator and are immediately strict.
+- Backfill: `backend/app/services/project_backfill.py` (`backfill_project_memberships(dry_run=True)`) classifies `ALREADY_BACKFILLED` / `SAFE_TO_BACKFILL` (0, no creator) / `AMBIGUOUS` (has activity) / `NO_EVIDENCE`, idempotent, supports `--dry-run`/`--apply`, reports for manual assignment. No fabrication for existing projects.
+
 ### Roles & Permissions
 
 - **Platform:** `super_admin` (via `users.role`, bypass, future platform visibility with audit)

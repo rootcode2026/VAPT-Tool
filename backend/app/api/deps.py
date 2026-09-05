@@ -99,7 +99,13 @@ def _effective_org_role(user: User, organization_id: str, db: Session) -> str | 
 
 
 def _effective_project_role(user: User, project_id: str, db: Session) -> str | None:
-    """Return project role, or fallback via organization membership."""
+    """Return project role, or fallback via organization membership (transitional).
+
+    Strict cutover: if the project has at least one explicit membership, missing
+    membership is DENIED (no fallback). If no explicit membership exists, fallback
+    is used for backward compat unless RBAC_STRICT_MODE is true, in which case
+    missing is also DENIED.
+    """
     if _is_super_admin(user):
         return None
     try:
@@ -116,6 +122,18 @@ def _effective_project_role(user: User, project_id: str, db: Session) -> str | N
         )
         if m is not None:
             return m.role
+        # Check if project has any explicit memberships at all — if so, strict
+        has_explicit = db.query(ProjectMembership).filter(ProjectMembership.project_id == project_id).first() is not None
+        if has_explicit:
+            return None
+    except Exception:
+        pass
+    # Global strict mode: no fallback
+    try:
+        from app.core.config import settings
+
+        if getattr(settings, "RBAC_STRICT_MODE", False):
+            return None
     except Exception:
         pass
     # Fallback: if user has org access to the project's organization, treat as analyst/viewer
