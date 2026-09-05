@@ -69,6 +69,165 @@ DATABASE_URL = os.getenv(
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 
+# ---------------------------------------------------------------------------
+# Audit logging for scan lifecycle (Phase 6C) — reuses existing taxonomy,
+# append-only, redacted, bounded, tenant-derived from DB.
+# ---------------------------------------------------------------------------
+
+_AUDIT_EVENT_SCAN_CREATED = "SCAN_CREATED"
+_AUDIT_EVENT_SCAN_STARTED = "SCAN_STARTED"
+_AUDIT_EVENT_SCAN_COMPLETED = "SCAN_COMPLETED"
+_AUDIT_EVENT_SCAN_FAILED = "SCAN_FAILED"
+_AUDIT_EVENT_SCAN_CANCELLED = "SCAN_CANCELLED"
+_AUDIT_RESOURCE_SCAN = "scan"
+_AUDIT_RESULT_SUCCESS = "SUCCESS"
+_AUDIT_RESULT_FAILURE = "FAILURE"
+_AUDIT_METADATA_MAX_BYTES = 4096
+_AUDIT_SENSITIVE_KEYS = {
+    "password", "passwd", "secret", "token", "access_token", "refresh_token",
+    "api_key", "apikey", "authorization", "cookie", "private_key",
+    "client_secret", "credential",
+}
+
+
+def _sanitize_audit_metadata(metadata: dict | None) -> dict | None:
+    if metadata is None:
+        return None
+    if not isinstance(metadata, dict):
+        return {"value": str(metadata)[:500]}
+    sanitized: dict = {}
+    for k, v in metadata.items():
+        sk = str(k)[:100]
+        lk = sk.lower()
+        is_sensitive = lk in _AUDIT_SENSITIVE_KEYS or any(s in lk for s in ("password", "secret", "token", "api_key", "private_key", "credential"))
+        if is_sensitive:
+            sanitized[sk] = "[REDACTED]"
+            continue
+        if isinstance(v, dict):
+            sanitized[sk] = _sanitize_audit_metadata(v)
+        elif isinstance(v, list):
+            sanitized[sk] = [str(x)[:500] if isinstance(x, str) else x for x in v[:20]]
+        elif isinstance(v, str) and len(v) > 500:
+            sanitized[sk] = v[:500]
+        else:
+            sanitized[sk] = v
+    import json as _json
+    try:
+        enc = _json.dumps(sanitized).encode("utf-8")
+        if len(enc) > _AUDIT_METADATA_MAX_BYTES:
+            truncated = {}
+            for k, v in sanitized.items():
+                truncated[k] = v
+                if len(_json.dumps(truncated).encode("utf-8")) > _AUDIT_METADATA_MAX_BYTES - 100:
+                    truncated[k] = "[TRUNCATED]"
+                    break
+            sanitized = truncated
+            if len(_json.dumps(sanitized).encode("utf-8")) > _AUDIT_METADATA_MAX_BYTES:
+                return {"truncated": True, "keys": list(sanitized.keys())[:10]}
+    except Exception:
+        return {"error": "metadata serialization failed"}
+    return sanitized
+
+
+def _get_scan_tenant(db, target_id: str) -> tuple[str | None, str | None]:
+    """Derive (organization_id, project_id) from target -> project. Returns (org, proj) or (None, None)."""
+    try:
+        proj_id = get_project_id(db, target_id)
+        if not proj_id:
+            return None, None
+        row = db.execute(text("SELECT organization_id FROM projects WHERE id = :pid"), {"pid": proj_id}).fetchone()
+        org_id = row[0] if row else None
+        return org_id, proj_id
+    except Exception:
+        return None, None
+
+
+def _audit_scan_event(
+    db,
+    *,
+    scan_id: str,
+    target_id: str,
+    event_type: str,
+    result: str,
+    metadata: dict | None = None,
+    actor_user_id: str | None = None,
+) -> None:
+    """Insert audit_logs row for scan lifecycle. Uses a savepoint so missing table does not abort outer scan transaction."""
+    nested = None
+    try:
+        org_id, proj_id = _get_scan_tenant(db, target_id)
+        safe_meta = _sanitize_audit_metadata(metadata)
+        meta_json = None
+        if safe_meta is not None:
+            import json as _json
+            meta_json = _json.dumps(safe_meta)
+        try:
+            nested = db.begin_nested()
+        except Exception:
+            nested = None
+        # Use CAST only on Postgres; SQLite fixture tests use plain JSON/text
+        try:
+            dialect = db.get_bind().dialect.name if hasattr(db, "get_bind") else "postgresql"
+        except Exception:
+            dialect = "postgresql"
+        use_cast = dialect != "sqlite"
+        meta_sql = "CAST(:meta AS JSONB)" if use_cast else ":meta"
+        # SQLite NOW() is not available; use CURRENT_TIMESTAMP
+        ts_sql = "NOW()" if use_cast else "CURRENT_TIMESTAMP"
+        insert_sql = f"""
+                    INSERT INTO audit_logs
+                    (id, organization_id, project_id, actor_user_id, target_user_id, event_type, action, resource_type, resource_id, result, request_id, correlation_id, ip_address, user_agent, metadata, created_at)
+                    VALUES
+                    (:id, :org, :proj, :actor, NULL, :evt, :act, :rtype, :rid, :res, NULL, NULL, NULL, NULL, {meta_sql}, {ts_sql})
+                    """
+        if nested is not None:
+            db.execute(
+                text(insert_sql),
+                {
+                    "id": str(uuid.uuid4()),
+                    "org": org_id,
+                    "proj": proj_id,
+                    "actor": actor_user_id,
+                    "evt": event_type,
+                    "act": event_type,
+                    "rtype": _AUDIT_RESOURCE_SCAN,
+                    "rid": scan_id,
+                    "res": result,
+                    "meta": meta_json,
+                },
+            )
+            try:
+                db.flush()
+                nested.commit()
+            except Exception as e:
+                try:
+                    nested.rollback()
+                except Exception:
+                    pass
+                if "no such table" in str(e).lower() and "audit_logs" in str(e).lower():
+                    return
+                raise
+        else:
+            db.execute(
+                text(insert_sql),
+                {
+                    "id": str(uuid.uuid4()),
+                    "org": org_id,
+                    "proj": proj_id,
+                    "actor": actor_user_id,
+                    "evt": event_type,
+                    "act": event_type,
+                    "rtype": _AUDIT_RESOURCE_SCAN,
+                    "rid": scan_id,
+                    "res": result,
+                    "meta": meta_json,
+                },
+            )
+            db.flush()
+    except Exception:
+        # Audit must never break scan execution
+        pass
+
 
 def _update_scan_phase(db, scan_id: str, phase: str) -> None:
     db.execute(
@@ -214,6 +373,15 @@ def execute_scan(
                 "progress": 0,
                 "scan_id": scan_id,
             },
+        )
+        # SCAN_STARTED — background worker event, actor NULL (no HTTP user), tenant from DB
+        _audit_scan_event(
+            db,
+            scan_id=scan_id,
+            target_id=target_id,
+            event_type=_AUDIT_EVENT_SCAN_STARTED,
+            result=_AUDIT_RESULT_SUCCESS,
+            metadata={"profile": profile},
         )
         db.commit()
 
@@ -482,6 +650,15 @@ def execute_scan(
                     "scan_id": scan_id,
                 },
             )
+            # SCAN_FAILED — terminal failure only after retries exhausted, sanitized
+            _audit_scan_event(
+                db,
+                scan_id=scan_id,
+                target_id=target_id,
+                event_type=_AUDIT_EVENT_SCAN_FAILED,
+                result=_AUDIT_RESULT_FAILURE,
+                metadata={"profile": profile, "scanners": scanners, "finding_count": len(all_findings)},
+            )
             db.commit()
             print(f"Scan failed: {scan_id}")
             return {
@@ -530,6 +707,15 @@ def execute_scan(
                 "scan_id": scan_id,
             },
         )
+        # SCAN_COMPLETED — terminal success, safe metadata only (no stdout/stderr)
+        _audit_scan_event(
+            db,
+            scan_id=scan_id,
+            target_id=target_id,
+            event_type=_AUDIT_EVENT_SCAN_COMPLETED,
+            result=_AUDIT_RESULT_SUCCESS,
+            metadata={"profile": profile, "scanners": scanners, "finding_count": len(all_findings), "risk_score": risk_assessment["score"]},
+        )
         db.commit()
 
         print(f"Scan completed: {scan_id}")
@@ -572,6 +758,14 @@ def execute_scan(
                     "phase": "failed",
                     "scan_id": scan_id,
                 },
+            )
+            _audit_scan_event(
+                db,
+                scan_id=scan_id,
+                target_id=target_id,
+                event_type=_AUDIT_EVENT_SCAN_FAILED,
+                result=_AUDIT_RESULT_FAILURE,
+                metadata={"profile": profile, "error": str(exc)[:500]},
             )
             db.commit()
         except Exception as status_error:
