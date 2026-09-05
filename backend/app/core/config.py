@@ -35,6 +35,11 @@ class Settings:
         "postgresql://security:security_password@postgres:5432/security_saas",
     )
 
+    # Row-Level Security (RLS) — defense-in-depth, preparation only.
+    # When false (default), the RLS helper is a no-op and application
+    # authorization remains authoritative. No table has RLS enabled yet.
+    RLS_ENABLED: bool = os.getenv("RLS_ENABLED", "false").lower() == "true"
+
     # ---------------------------------------------------------
     # Authentication
     # ---------------------------------------------------------
