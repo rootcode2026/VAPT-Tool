@@ -62,6 +62,30 @@ Applies to `secrets` scanner and any future credential-handling code:
 - **Safe metadata.** `sanitize_metadata` / `_sanitize_value` enforce `MAX_METADATA_BYTES=16384`, string cap 4000 chars, list cap 100 items, and `BLOCKED_METADATA_KEYS` / `SECRET_KEY_FRAGMENTS` filtering. Do not write unsanitized `finding["metadata"]` to `findings.metadata` JSONB.
 - **No plaintext secrets in JSONB.** Even if `sanitize_metadata` would already drop a secret-bearing key, the secrets scanner must have redacted before reaching persistence. Treat persistence sanitization as a second barrier, not the first.
 
+### Row-Level Security Foundation (Defense-in-Depth, Disabled — Preparation Only)
+
+> **Foundation implemented** — `backend/app/db/rls.py` + `RLS_ENABLED=false`.
+> **Enforcement NOT enabled** — no `ALTER TABLE ... ENABLE ROW LEVEL SECURITY`, no `CREATE POLICY`, no migration.
+> Application authorization remains authoritative.
+
+- **Helpers only.** `backend/app/db/rls.py` exposes `is_rls_enabled()`, `validate_context_value()`,
+  `set_tenant_context(db, organization_id, project_id?, user_id?)`, `clear_tenant_context()`,
+  `get_current_tenant_context()`. No global wiring in this phase.
+- **Transaction-local, never session-scoped.** Uses `SELECT set_config(:k, :v, true)` (`is_local=true`,
+  equivalent to `SET LOCAL`). GUCs `app.current_organization_id` / `app.current_project_id` /
+  `app.current_user_id`. Must be called inside `with db.begin():` — otherwise raises `RuntimeError`
+  on PostgreSQL. `COMMIT`/`ROLLBACK` clears context, so `QueuePool` reuse cannot inherit Company A context.
+- **Never interpolate tenant values.** Keys are trusted constants; values are bound parameters (`:k`, `:v`).
+  Never `f"SET LOCAL ... = '{org_id}'"`.
+- **Validate before setting.** `validate_context_value` enforces UUID v4 strict (`uuid.UUID(..., version=4)`);
+  rejects empty, non-UUID, and injection strings (`'; SET LOCAL ... --`). Do not accept raw
+  `organization_id`/`project_id` from query/body — authoritative source is `get_current_user` +
+  `require_project_access` verified membership.
+- **Dialect-safe.** No-op on non-PostgreSQL (SQLite in tests) after validation; `RLS_ENABLED=false` is no-op everywhere.
+- **Future policies (deferred).** Will enforce `USING (organization_id = current_setting('app.current_organization_id', true)::uuid)`
+  or `USING (project_id = current_setting('app.current_project_id', true)::uuid)` with `WITH CHECK` mirrors,
+  `FORCE RLS` where needed. Never `USING (true)` — that bypasses isolation. Policies remain **not created** this phase.
+
 ## API Security
 
 Current conventions (verified in `backend/app/api/`):

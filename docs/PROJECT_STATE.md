@@ -152,6 +152,7 @@ Verified from code, tests, and working-tree state:
 | Scanner images | Per-family Dockerfiles in `scanners/` | `scanners/sast/Dockerfile`, `scanners/sca/Dockerfile`, `scanners/secrets/Dockerfile` (Gitleaks digest-pinned), `scanners/container/Dockerfile` (Trivy `0.66.0` digest-pinned), `scanners/iac/Dockerfile` (Checkov `3.3.16` digest-pinned), `scanners/api/Dockerfile` (Python 3.11-slim digest-pinned + `api_scan.py`) |
 | Ingestion | `worker/app/ingestion/` + `backend/app/api/routes/ingestions.py` | Secure archive extraction (ZIP/TAR/TGZ), artifact detection (11 langs, 14 manifests), scanner routing, project-scoped workspace |
 | Cloud Foundation | `worker/app/cloud/` + `backend/app/api/routes/cloud.py` | Provider-neutral `CloudProvider`/`CloudAccount`/`CloudResource`/`CloudDiscoveryResult`/`CloudSecurityCheck`, `cloud_account`/`cloud_resource` assets, mock discovery, `FindingEngine` integration |
+| RLS Foundation | `backend/app/db/rls.py` + `RLS_ENABLED=false` | Preparation only — transaction-local `set_config(..., true)` helper (`is_rls_enabled`, `validate_context_value`, `set_tenant_context`, `clear_tenant_context`, `get_current_tenant_context`), UUID validation, pool-safe (`with db.begin()`), no table has `ENABLE RLS`, no policies, no migration; `backend/tests/test_rls.py` |
 
 ## Testing Baseline
 

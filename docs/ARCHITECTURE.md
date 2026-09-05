@@ -255,3 +255,60 @@ Backend routes serving the frontend: `backend/app/api/routes/` — `auth`, `proj
 - **Secret handling:** See `SECURITY_RULES.md` — early redaction in scanner, repeated at persistence/tasks, `[REDACTED]` + `_secret_hash` (SHA-256 32 hex), never plaintext in DB/logs/API/AI.
 - **Network:** AppSec scanners run offline (`semgrep p/security-audit --metrics off`, `osv-scanner --offline`, `gitleaks --no-git --config` bundled rules); no mandatory external API calls, no third-party data upload.
 - **Project isolation:** All persistence queries are `WHERE project_id = :project_id`; `get_project_id` validates `target_id` ownership; findings/assets/relationships are project-scoped.
+
+## Row-Level Security Foundation (Defense-in-Depth, Disabled — Preparation Only)
+
+> Status: **FOUNDATION IMPLEMENTED** — `backend/app/db/rls.py` helper + `RLS_ENABLED=false` config.
+> Enforcement: **NOT ENABLED** — no table has `ENABLE ROW LEVEL SECURITY`, no policies created, no migration.
+> Application authorization (`get_current_user` + `require_project_access`) remains authoritative.
+
+### Purpose
+
+Provide a safe, reusable PostgreSQL-level defense-in-depth for organization/project
+tenant isolation that can later complement (not replace) application-layer checks.
+
+### Layers
+
+```
+Application authorization:  user -> organization -> project -> resource
+        (get_current_user, require_project_access, WHERE project_id / organization_id)
+                                |
+RLS defense-in-depth (future):  authenticated/authorized request
+                                -> verified tenant context (UUID-validated)
+                                -> transaction: BEGIN
+                                -> SELECT set_config('app.current_organization_id', :oid, true)
+                                   SELECT set_config('app.current_project_id', :pid, true)
+                                -> queries (policies use current_setting('app.current_organization_id', true))
+                                -> COMMIT/ROLLBACK (context disappears)
+                                -> database rows
+```
+
+### Helper
+
+- **Location:** `backend/app/db/rls.py` — `is_rls_enabled()`, `validate_context_value()`,
+  `set_tenant_context(db, organization_id, project_id?, user_id?)`, `clear_tenant_context()`,
+  `get_current_tenant_context()`.
+- **Mechanism:** `SELECT set_config(:k, :v, true)` with `is_local=true` (transaction-local,
+  equivalent to `SET LOCAL`). GUCs: `app.current_organization_id`, `app.current_project_id`,
+  `app.current_user_id`. Keys are trusted constants; values are bound parameters — never
+  string-interpolated.
+- **Validation:** UUID v4 strict via `uuid.UUID(..., version=4)`; rejects empty, non-UUID,
+  and injection strings like `'; SET LOCAL ... --`.
+- **Pool safety:** Requires explicit transaction (`with db.begin(): set_tenant_context(...)`);
+  otherwise raises `RuntimeError` on PostgreSQL. `COMMIT`/`ROLLBACK` clears context, so
+  `QueuePool` reuse cannot leak Company A context to the next request. No `SET` (session-scoped).
+- **Dialect-safe:** No-op on non-PostgreSQL (SQLite in tests) after validation; `RLS_ENABLED=false`
+  makes it a no-op everywhere.
+
+### Future scope (not yet protected)
+
+When enforcement is wired (deferred to RBAC phase), RLS will eventually protect tenant-owned
+resources: **projects, scans, assets, findings, evidence, repositories, cloud accounts,
+integrations, reports, jobs, audit logs**. No claim is made that these tables are RLS-protected yet.
+
+### Policy design (deferred, not created)
+
+Future policies must enforce `USING (organization_id = current_setting('app.current_organization_id', true)::uuid)`
+or `USING (project_id = current_setting('app.current_project_id', true)::uuid)` with
+`WITH CHECK` mirrors, role-aware where required, and `FORCE RLS` for table owners. Never
+`USING (true)` (bypasses isolation). Policies remain **not created** in this phase.
