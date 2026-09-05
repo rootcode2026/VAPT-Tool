@@ -120,3 +120,22 @@ export function IconSearch(props) {
     </svg>
   );
 }
+
+export function IconAudit(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M9 5.5h6a1.5 1.5 0 0 1 1.5 1.5v11a1.5 1.5 0 0 1-1.5 1.5H9a1.5 1.5 0 0 1-1.5-1.5v-11A1.5 1.5 0 0 1 9 5.5Z" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M9 9h6M9 12h6M9 15h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <circle cx="12" cy="4.5" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function IconCopy(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <rect x="9" y="9" width="10" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M5 15V7a1.5 1.5 0 0 1 1.5-1.5H14" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  );
+}
