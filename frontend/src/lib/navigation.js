@@ -7,6 +7,8 @@ import {
   IconProjects,
   IconScans,
   IconSettings,
+  IconShield,
+  IconUsers,
 } from "@/components/icons";
 
 export const PRIMARY_NAV = [
@@ -23,6 +25,15 @@ export const SECONDARY_NAV = [
   { name: "Settings", href: "/settings", icon: IconSettings },
 ];
 
+export const ADMIN_NAV = [
+  { name: "Admin Dashboard", href: "/admin", icon: IconShield },
+  { name: "Organizations", href: "/admin/organizations", icon: IconProjects },
+  { name: "Users", href: "/admin/users", icon: IconUsers },
+  { name: "Scanner Fleet", href: "/admin/scanners", icon: IconScans },
+  { name: "System Health", href: "/admin/system", icon: IconDashboard },
+  { name: "Audit", href: "/audit", icon: IconAudit },
+];
+
 export const PAGE_TITLES = {
   "/dashboard": "Dashboard",
   "/projects": "Projects",
@@ -31,6 +42,11 @@ export const PAGE_TITLES = {
   "/assets": "Assets",
   "/attack-surface": "Attack Surface",
   "/audit": "Audit",
+  "/admin": "Admin",
+  "/admin/organizations": "Organizations",
+  "/admin/users": "Users",
+  "/admin/scanners": "Scanner Fleet",
+  "/admin/system": "System Health",
   "/settings": "Settings",
   "/targets": "Targets",
 };

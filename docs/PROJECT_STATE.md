@@ -172,6 +172,8 @@ equest_id/correlation_id, Super Admin Platform Audit vs Org Admin Organization A
 pm run lint 0 errors, 
 pm run build compiled successfully, backend audit regression **96 passed**. |
 
+| Admin Platform Foundation (7A) | `backend/app/api/routes/admin.py` + `frontend/src/app/(app)/admin/*` + `frontend/src/lib/api/admin.js` + `backend/tests/test_admin_dashboard.py` | **COMPLETE / READY** — Backend `GET /api/v1/admin/dashboard/summary` + `GET /api/v1/admin/organizations/summary` (super_admin `require_super_admin`, tenant platform-wide, safe aggregates `organizations/users/projects/scans/findings/assets/scanners/audit_events` + `system_health` `SELECT 1` for DB, `Unknown` for Redis/RabbitMQ/Worker, no passwords/tokens/evidence, pagination `page`/`page_size` 1-100, scanner fleet 14 baseline), Frontend `/(app)/admin` Super Admin Dashboard (KPIs, posture, scanner fleet, system health, org inventory 5, audit link), `/(app)/admin/organizations` (paginated table), `/(app)/admin/users|scanners|system` placeholders, enhanced `/(app)/dashboard` Org Admin (Code Security card, Cloud Security no accounts, Recent Audit 5, existing posture/risk/asset/attack-path/scans/findings). Navigation `Administration` (super_admin only, `ADMIN_NAV` 6 links), audit read `audit.read` remains, tenant isolation `organization_id==current_user.organization_id` for org, super_admin all, data minimization, no RLS/JWT. Tests: `backend/tests/test_admin_dashboard.py` **11 passed** + `npm run lint` 0 errors + `npm run build` 19 pages (incl. `/admin*`). |
+
 ## Testing Baseline
 
 Do not invent numbers. Verify with `python -m pytest` from `worker/` (`pytest.ini`: `testpaths=tests`, `pythonpath=.`) and `backend/`:

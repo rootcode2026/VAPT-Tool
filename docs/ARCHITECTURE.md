@@ -366,6 +366,12 @@ JWT → authenticated user → org membership → project membership → permiss
 
 Helper `backend/app/db/rls.py` remains `RLS_ENABLED=false` and not wired; will be called after `require_project_access` inside `with db.begin()` in enforcement phase.
 
+### Admin Platform (7A)
+- **Backend:** `admin.py` (`GET /admin/dashboard/summary` + `GET /admin/organizations/summary`, `require_super_admin`, platform-wide aggregates `func.count` for orgs/users/projects/scans/findings/assets/audit, `system_health` `SELECT 1`, scanner count via `ScannerRegistry` fallback 14, `ORGANIZATION`+`PROJECT`+`USER` safe fields, pagination, no evidence).
+- **Frontend:** `/(app)/admin` (Super Admin Dashboard 12 KPIs, posture 6 severities, scanner fleet 14 + categories, system health 5, org inventory 5, audit link), `/(app)/admin/organizations` (paginated 20), placeholders for users/scanners/system, enhanced `/(app)/dashboard` (Code Security `sast/sca/secrets` counts, Cloud `No cloud accounts`, Recent Audit 5 via `listAuditLogs`), `lib/api/admin.js` (`api.get` with `Authorization`), `navigation.js` `ADMIN_NAV` 6, `Sidebar.jsx` super_admin `Administration` section, `icons.jsx` `IconUsers`+`IconShield`.
+
+### Audit Logging Foundation
+
 ### Audit Logging Foundation (Enterprise, Append-Only)
 
 - **Model:** `audit_logs` (`id` UUID PK, `organization_id`/`project_id`/`actor_user_id`/`target_user_id` nullable FK `SET NULL` (survives user deletion/project deletion), `event_type`/`action`/`resource_type`/`resource_id`/`result`, `request_id`/`correlation_id`, `ip_address`/`user_agent`, `metadata` JSONB, `created_at`, indexes on `organization_id`, `project_id`, `actor_user_id`, `target_user_id`, `event_type`, `resource_type+resource_id`, `created_at`)
