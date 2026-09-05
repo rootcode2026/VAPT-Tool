@@ -142,6 +142,66 @@ def _get_scan_tenant(db, target_id: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _get_finding_tenant(db, target_id: str) -> tuple[str | None, str | None]:
+    """Derive tenant for finding via target_id (same as scan)."""
+    return _get_scan_tenant(db, target_id)
+
+
+def _audit_finding_event(
+    db,
+    *,
+    finding_id: str,
+    target_id: str,
+    event_type: str,
+    result: str,
+    metadata: dict | None = None,
+) -> None:
+    """Audit FINDING_* events. Tenant derived from target, actor NULL (system). Savepoint-isolated."""
+    nested = None
+    try:
+        org_id, proj_id = _get_finding_tenant(db, target_id)
+        safe_meta = _sanitize_audit_metadata(metadata)
+        meta_json = None
+        if safe_meta is not None:
+            import json as _json
+            meta_json = _json.dumps(safe_meta)
+        try:
+            dialect = db.get_bind().dialect.name if hasattr(db, "get_bind") else "postgresql"
+        except Exception:
+            dialect = "postgresql"
+        use_cast = dialect != "sqlite"
+        meta_sql = "CAST(:meta AS JSONB)" if use_cast else ":meta"
+        ts_sql = "NOW()" if use_cast else "CURRENT_TIMESTAMP"
+        insert_sql = f"""
+                    INSERT INTO audit_logs
+                    (id, organization_id, project_id, actor_user_id, target_user_id, event_type, action, resource_type, resource_id, result, request_id, correlation_id, ip_address, user_agent, metadata, created_at)
+                    VALUES
+                    (:id, :org, :proj, NULL, NULL, :evt, :act, :rtype, :rid, :res, NULL, NULL, NULL, NULL, {meta_sql}, {ts_sql})
+                    """
+        try:
+            nested = db.begin_nested()
+        except Exception:
+            nested = None
+        if nested is not None:
+            db.execute(text(insert_sql), {"id": str(uuid.uuid4()), "org": org_id, "proj": proj_id, "evt": event_type, "act": event_type, "rtype": "finding", "rid": finding_id, "res": result, "meta": meta_json})
+            try:
+                db.flush()
+                nested.commit()
+            except Exception as e:
+                try:
+                    nested.rollback()
+                except Exception:
+                    pass
+                if "no such table" in str(e).lower() and "audit_logs" in str(e).lower():
+                    return
+                raise
+        else:
+            db.execute(text(insert_sql), {"id": str(uuid.uuid4()), "org": org_id, "proj": proj_id, "evt": event_type, "act": event_type, "rtype": "finding", "rid": finding_id, "res": result, "meta": meta_json})
+            db.flush()
+    except Exception:
+        pass
+
+
 def _audit_scan_event(
     db,
     *,
@@ -257,6 +317,7 @@ def _persist_findings(
     created_at,
 ) -> None:
     for finding in findings:
+        fid = str(uuid.uuid4())
         db.execute(
             text(
                 """
@@ -301,7 +362,7 @@ def _persist_findings(
                 """
             ),
             {
-                "id": str(uuid.uuid4()),
+                "id": fid,
                 "scan_id": scan_id,
                 "target_id": target_id,
                 "asset_id": match_asset_id(
@@ -333,6 +394,22 @@ def _persist_findings(
                 "created_at": created_at,
             },
         )
+        # FINDING_CREATED — system actor NULL, tenant derived from target, safe metadata only
+        try:
+            _audit_finding_event(
+                db,
+                finding_id=fid,
+                target_id=target_id,
+                event_type="FINDING_CREATED",
+                result="SUCCESS",
+                metadata={
+                    "severity": finding.get("severity"),
+                    "scanner": finding.get("scanner") or scanner_name,
+                    "status": finding.get("status"),
+                },
+            )
+        except Exception:
+            pass
 
 
 def _refresh_progress(db, scan_id: str, statuses: list[str], total: int) -> int:
