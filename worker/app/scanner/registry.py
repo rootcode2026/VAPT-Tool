@@ -10,6 +10,7 @@ from app.scanner.scanners.nuclei import NucleiScanner
 from app.scanner.scanners.sast import SASTScanner
 from app.scanner.scanners.sca import SCAScanner
 from app.scanner.scanners.secrets import SecretsScanner
+from app.scanner.scanners.sqlmap import SQLMapScanner
 from app.scanner.scanners.subdomain import SubdomainScanner
 from app.scanner.scanners.tls import TLSScanner
 from app.scanner.scanners.zap import ZAPScanner
@@ -41,6 +42,7 @@ class ScannerRegistry:
         self.register(ContainerScanner())
         self.register(IacScanner())
         self.register(ApiScanner())
+        self.register(SQLMapScanner())
 
     def register(self, scanner: BaseScanner):
         if not scanner.name:

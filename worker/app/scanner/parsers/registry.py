@@ -11,6 +11,7 @@ from app.scanner.parsers.sast_parser import SASTParser
 from app.scanner.parsers.sarif_parser import SarifParser
 from app.scanner.parsers.sca_parser import SCAParser
 from app.scanner.parsers.secrets_parser import SecretsParser
+from app.scanner.parsers.sqlmap_parser import SQLMapParser
 from app.scanner.parsers.subdomain_parser import SubdomainParser
 from app.scanner.parsers.tls_parser import TLSParser
 from app.scanner.parsers.zap_parser import ZAPParser
@@ -42,6 +43,7 @@ class ParserRegistry:
         self.register(ContainerParser())
         self.register(IacParser())
         self.register(ApiParser())
+        self.register(SQLMapParser())
 
     def register(self, parser: BaseParser):
         if not parser.scanner_name:
