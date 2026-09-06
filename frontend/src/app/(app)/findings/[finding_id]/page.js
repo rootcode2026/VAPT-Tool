@@ -7,6 +7,7 @@ import { useParams } from "next/navigation";
 import { API_BASE_URL as API_URL, apiFetch } from "@/lib/api/client";
 import { severityClassName, severityLabel } from "@/lib/severity";
 import FindingWorkflow from "@/components/findings/FindingWorkflow";
+import FindingLifecycle from "@/components/findings/FindingLifecycle";
 
 function getMeta(finding) {
   return (finding?.metadata && typeof finding.metadata === "object" ? finding.metadata : {}) || {};
@@ -326,6 +327,8 @@ export default function FindingDetailsPage() {
         </section>
 
         <FindingWorkflow findingId={findingId} initial={finding} onChanged={(updated) => setFinding((prev) => ({ ...prev, ...updated }))} />
+
+        <FindingLifecycle findingId={findingId} />
 
         <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-between">
           <Link href="/findings" className="rounded-lg border border-slate-700 px-5 py-3 text-center text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:bg-slate-900 hover:text-white">← Back to Findings</Link>
