@@ -42,5 +42,6 @@ htmlcov/
 # Local scanner output
 scan-results/
 reports/
+!frontend/src/app/(app)/reports/
 artifacts/
 "@ | Set-Content .gitignore
