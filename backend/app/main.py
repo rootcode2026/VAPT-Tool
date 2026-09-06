@@ -37,6 +37,7 @@ from app.core.config import settings
 from app.core.request_id import CORRELATION_ID_HEADER, REQUEST_ID_HEADER
 from app.db.database import SessionLocal, get_db
 from app.middleware.request_id import RequestContextMiddleware
+from app.middleware.security import RateLimitMiddleware, SecurityHeadersMiddleware
 
 
 @asynccontextmanager
@@ -69,6 +70,8 @@ cors_origins = {
 if settings.FRONTEND_URL:
     cors_origins.add(settings.FRONTEND_URL.rstrip("/"))
 
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestContextMiddleware)
 
 app.add_middleware(

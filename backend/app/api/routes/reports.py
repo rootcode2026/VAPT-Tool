@@ -113,7 +113,7 @@ def create_report(payload: dict, db: Session = Depends(get_db), current_user: Us
         except Exception:
             pass
         db.commit()
-        raise HTTPException(status_code=500, detail="Report generation failed")
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)[:200]}")
     db.refresh(report)
     return {"id": report.id, "report_type": report.report_type, "title": report.title, "status": report.status, "organization_id": report.organization_id, "project_id": report.project_id, "created_at": report.created_at.isoformat() if report.created_at else None}
 
