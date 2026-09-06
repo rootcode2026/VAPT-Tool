@@ -204,5 +204,16 @@ class Settings:
         "",
     )
 
+    # ---------------------------------------------------------
+    # Scanner Control Plane
+    # ---------------------------------------------------------
+
+    SCANNER_CONTROL_PLANE_ENABLED: bool = os.getenv("SCANNER_CONTROL_PLANE_ENABLED", "true").lower() == "true"
+    SCANNER_HEALTH_CHECK_TIMEOUT: int = int(os.getenv("SCANNER_HEALTH_CHECK_TIMEOUT", "30"))
+    SCANNER_CANARY_ENABLED: bool = os.getenv("SCANNER_CANARY_ENABLED", "true").lower() == "true"
+    SCANNER_CANARY_HEALTH_THRESHOLD: int = int(os.getenv("SCANNER_CANARY_HEALTH_THRESHOLD", "1"))
+    SCANNER_ALLOWED_REGISTRIES: str = os.getenv("SCANNER_ALLOWED_REGISTRIES", "")
+    SCANNER_AUTO_UPDATE_ENABLED: bool = os.getenv("SCANNER_AUTO_UPDATE_ENABLED", "false").lower() == "true"
+
 
 settings = Settings()

@@ -40,12 +40,20 @@ def _system_health(db: Session):
     except Exception:
         database = "Unavailable"
     # Redis/RabbitMQ/Worker: no cheap safe probe without extra deps, return Unknown
+    # Scanner fleet health if control plane available
+    try:
+        from app.services.scanner_control import fleet_summary
+        fleet = fleet_summary(db)
+        scanner_health = f"{fleet['scanners']['healthy']} healthy / {fleet['scanners']['unhealthy']} unhealthy" if fleet else "Unknown"
+    except Exception:
+        scanner_health = "Unknown"
     return {
         "backend": backend,
         "database": database,
         "redis": "Unknown",
         "rabbitmq": "Unknown",
         "worker": "Unknown",
+        "scanner_fleet": scanner_health,
     }
 
 
