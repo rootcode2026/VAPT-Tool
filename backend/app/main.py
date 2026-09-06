@@ -14,6 +14,7 @@ from app.api.routes.cloud_security import router as cloud_security_router
 from app.api.routes.code_security import router as code_security_router
 from app.api.routes.compliance import router as compliance_router
 from app.api.routes.dast import router as dast_router
+from app.api.routes.metrics import router as metrics_router
 from app.api.routes.reports import router as reports_router
 from app.api.routes.repository_connections import router as repo_connections_router
 from app.api.routes.repository_connections import webhook_router as webhook_router
@@ -36,6 +37,7 @@ from app.core.bootstrap import bootstrap_auth_user
 from app.core.config import settings
 from app.core.request_id import CORRELATION_ID_HEADER, REQUEST_ID_HEADER
 from app.db.database import SessionLocal, get_db
+from app.middleware.logging import StructuredLoggingMiddleware
 from app.middleware.request_id import RequestContextMiddleware
 from app.middleware.security import RateLimitMiddleware, SecurityHeadersMiddleware
 
@@ -70,6 +72,7 @@ cors_origins = {
 if settings.FRONTEND_URL:
     cors_origins.add(settings.FRONTEND_URL.rstrip("/"))
 
+app.add_middleware(StructuredLoggingMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestContextMiddleware)
@@ -112,6 +115,7 @@ app.include_router(reports_router, dependencies=protected)
 app.include_router(compliance_router, dependencies=protected)
 app.include_router(dast_router, dependencies=protected)
 app.include_router(ai_router)
+app.include_router(metrics_router, dependencies=protected)
 
 
 @app.get("/")
