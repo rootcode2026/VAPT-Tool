@@ -10,4 +10,7 @@ pytest
 httpx
 PyJWT
 bcrypt
+argon2-cffi
+cryptography
+reportlab
 python-multipart
