@@ -66,6 +66,21 @@ class Asset(Base):
         index=True,
     )
 
+    criticality: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+        index=True,
+    )
+
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     extra_data: Mapped[dict] = mapped_column(
         "metadata",
         JSONB,

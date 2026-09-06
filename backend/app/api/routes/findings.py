@@ -70,7 +70,25 @@ def _finding_context(finding: Finding, db: Session):
     scan = db.query(Scan).filter(Scan.id == finding.scan_id).first()
     target = db.query(Target).filter(Target.id == scan.target_id).first() if scan else None
     project = db.query(Project).filter(Project.id == target.project_id).first() if target else None
-    asset = db.query(Asset).filter(Asset.id == finding.asset_id).first() if finding.asset_id else None
+    asset = None
+    if finding.asset_id:
+        try:
+            asset = db.query(Asset).filter(Asset.id == finding.asset_id).first()
+        except Exception as exc:
+            if "no such column" in str(exc).lower() and "assets." in str(exc).lower():
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                try:
+                    from app.services.attack_surface import ensure_asset_workflow_columns
+
+                    ensure_asset_workflow_columns(db)
+                except Exception:
+                    pass
+                asset = db.query(Asset).filter(Asset.id == finding.asset_id).first()
+            else:
+                raise
     return scan, target, project, asset
 
 

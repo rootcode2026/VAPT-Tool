@@ -62,6 +62,12 @@ def get_assets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
     query = db.query(Asset)
     selected_project = (project or project_id or "").strip() or None
 
@@ -126,6 +132,12 @@ def get_assets_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
     # Extended D6.2 intelligence summary — additive, preserves old fields
     pid = (project_id or project or "").strip() or None
     if pid:
@@ -197,6 +209,12 @@ def get_security_intelligence_summary(
 ):
     # Clearly named sibling endpoint per D6.2 — preserves /summary
     require_project_access(project_id, db, current_user)
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
     return get_project_security_intelligence_summary(db, project_id)
 
 
@@ -215,6 +233,12 @@ def get_attack_paths(
     # Project-scoped deterministic attack path foundation — on-demand, no persistence
     # If persistence not yet available, this constructs input from persisted assets/relationships/findings.
     require_project_access(project_id, db, current_user)
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
     # If asset filter supplied, verify it belongs to project (prevents cross-project probing)
     if asset_id:
         from app.models.asset import Asset as _Asset
@@ -260,6 +284,12 @@ def get_asset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
 
     if not asset:
@@ -315,6 +345,12 @@ def get_asset_relationships(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")

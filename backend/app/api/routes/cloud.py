@@ -12,6 +12,15 @@ from app.models.user import User
 router = APIRouter(prefix="/api/v1/cloud", tags=["Cloud"])
 
 
+def _ensure_columns(db: Session) -> None:
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
+
+
 @router.get("/providers")
 def list_providers(
     db: Session = Depends(get_db),
@@ -43,6 +52,7 @@ def list_cloud_accounts(
     current_user: User = Depends(get_current_user),
 ):
     require_project_access(project_id, db, current_user)
+    _ensure_columns(db)
     q = db.query(Asset).filter(Asset.project_id == project_id, Asset.asset_type == "cloud_account")
     if provider:
         provider = provider.strip().lower()
@@ -77,6 +87,7 @@ def list_cloud_assets(
     current_user: User = Depends(get_current_user),
 ):
     require_project_access(project_id, db, current_user)
+    _ensure_columns(db)
     q = db.query(Asset).filter(Asset.project_id == project_id)
     if asset_type:
         if asset_type not in ("cloud_account", "cloud_resource"):
@@ -110,6 +121,7 @@ def get_cloud_asset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _ensure_columns(db)
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -131,6 +143,7 @@ def get_related_assets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _ensure_columns(db)
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")

@@ -25,6 +25,7 @@ import {
 import { useProjectContext } from "@/lib/project-context";
 import { listAuditLogs } from "@/lib/api/audit";
 import { getProjectSLASummary } from "@/lib/api/findings";
+import { getAttackSurfaceSummary, listMonitoringConfigs } from "@/lib/api/assets";
 
 function formatWhen(value) {
   if (!value) return "—";
@@ -71,6 +72,8 @@ export default function DashboardPage() {
   const [recentAudit, setRecentAudit] = useState({ items: [], loaded: false, error: null });
   const [codeFindings, setCodeFindings] = useState({ critical: 0, high: 0, total: 0, loaded: false });
   const [slaSummary, setSlaSummary] = useState(null);
+  const [attackSummary, setAttackSummary] = useState(null);
+  const [monitoring, setMonitoring] = useState({ total: 0, enabled: 0, loaded: false });
 
   const loadData = useCallback(async (projectId) => {
     if (!projectId) {
@@ -126,6 +129,23 @@ export default function DashboardPage() {
       } catch {
         if (requestRef.current === requestId) {
           setSlaSummary(null);
+        }
+      }
+      // Attack surface + monitoring (best-effort)
+      try {
+        const [asSummary, monitors] = await Promise.all([
+          getAttackSurfaceSummary(projectId),
+          listMonitoringConfigs(projectId).catch(() => ({ items: [] })),
+        ]);
+        if (requestRef.current === requestId) {
+          setAttackSummary(asSummary);
+          const items = monitors.items || [];
+          setMonitoring({ total: items.length, enabled: items.filter((m) => m.enabled).length, loaded: true });
+        }
+      } catch {
+        if (requestRef.current === requestId) {
+          setAttackSummary(null);
+          setMonitoring({ total: 0, enabled: 0, loaded: false });
         }
       }
     } catch (err) {
@@ -595,6 +615,31 @@ export default function DashboardPage() {
             </div>
           </div>
           <p className="mt-2 text-xs text-muted">Remediation and retest are managed per finding. SLA policy defaults: critical 24h, high 72h, medium 168h, low 336h, info 720h.</p>
+        </DashboardSection>
+      ) : null}
+
+      {/* Attack Surface & Monitoring */}
+      {(attackSummary || monitoring.loaded) ? (
+        <DashboardSection title="Attack Surface & Monitoring" action={<SectionLink href="/attack-surface">View attack surface</SectionLink>}>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">Total Assets</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums">{attackSummary?.total_assets ?? "—"}</p>
+            </div>
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">Internet Exposed</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-critical">{attackSummary?.internet_exposed ?? "—"}</p>
+            </div>
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">Recent Changes</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums">{attackSummary?.recent_changes ?? "—"}</p>
+            </div>
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">Monitors</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums">{monitoring.loaded ? `${monitoring.enabled}/${monitoring.total}` : "—"}</p>
+              <p className="text-xs text-muted">enabled / total</p>
+            </div>
+          </div>
         </DashboardSection>
       ) : null}
 
