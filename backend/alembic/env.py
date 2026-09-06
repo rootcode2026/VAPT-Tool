@@ -29,6 +29,7 @@ from app.models import (
     User,
     WorkerPool,
 )
+from app.models.connector import CloudConnection, ConnectorSecret, RepositoryConnection, WebhookDelivery
 
 config = context.config
 

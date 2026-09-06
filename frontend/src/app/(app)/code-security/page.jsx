@@ -10,6 +10,7 @@ import SeverityBadge from "@/components/ui/SeverityBadge";
 import StatusBadge from "@/components/ui/StatusBadge";
 import { useProjectContext } from "@/lib/project-context";
 import { getCodeSecuritySummary, listCodeFindings } from "@/lib/api/codeSecurity";
+import { listRepoConnections, createRepoConnection, validateRepoConnection } from "@/lib/api/connectors";
 
 function Stat({ label, value, hint }) {
   return (
@@ -28,18 +29,23 @@ export default function CodeSecurityPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState({ scanner: "", severity: "" });
+  const [repoConns, setRepoConns] = useState([]);
+  const [newRepo, setNewRepo] = useState({ provider: "github", display_name: "", credential: "" });
+  const [repoMsg, setRepoMsg] = useState("");
 
   const load = useCallback(async () => {
     if (!selectedProjectId) return;
     setLoading(true);
     setError("");
     try {
-      const [s, f] = await Promise.all([
+      const [s, f, rc] = await Promise.all([
         getCodeSecuritySummary(selectedProjectId),
         listCodeFindings(selectedProjectId, { page: 1, page_size: 20, scanner: filter.scanner || undefined, severity: filter.severity || undefined }),
+        listRepoConnections(selectedProjectId).catch(() => ({ connections: [] })),
       ]);
       setSummary(s);
       setFindings(f);
+      setRepoConns(rc.connections || []);
     } catch (e) {
       setError(e.message || "Unable to load code security.");
     } finally {
@@ -87,6 +93,29 @@ export default function CodeSecurityPage() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">Repository Connections</h3>
+        <p className="text-xs text-muted">GitHub, GitLab, Bitbucket, Azure DevOps — project-scoped, credential never returned (KMS/Vault-backed reference only). Use isolated snapshots (no code execution, hooks disabled).</p>
+        <div className="mt-3 space-y-2">
+          {repoConns.length === 0 ? <p className="text-xs text-muted">No repository connections.</p> : repoConns.map((c) => (
+            <div key={c.id} className="flex items-center justify-between rounded border bg-canvas px-3 py-2">
+              <div><p className="text-sm font-medium">{c.provider} • {c.display_name}</p><p className="text-xs text-muted">{c.status} {c.last_validation_at ? `• validated ${new Date(c.last_validation_at).toLocaleString()}` : ""}</p></div>
+              <button type="button" onClick={async () => { try { await validateRepoConnection(selectedProjectId, c.id); setRepoMsg(`Validated ${c.display_name}`); load(); } catch (e) { setRepoMsg(e.message);} }} className="rounded border px-2 py-1 text-xs">Validate</button>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <select value={newRepo.provider} onChange={(e) => setNewRepo((r) => ({ ...r, provider: e.target.value }))} className="rounded border bg-canvas px-2 py-1 text-sm">
+            <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option><option value="azure_devops">Azure DevOps</option>
+          </select>
+          <input placeholder="Display name" value={newRepo.display_name} onChange={(e) => setNewRepo((r) => ({ ...r, display_name: e.target.value }))} className="rounded border bg-canvas px-2 py-1 text-sm" />
+          <input type="password" placeholder="Token/PAT (never stored plaintext)" value={newRepo.credential} onChange={(e) => setNewRepo((r) => ({ ...r, credential: e.target.value }))} className="rounded border bg-canvas px-2 py-1 text-sm" />
+          <button type="button" onClick={async () => { setRepoMsg(""); try { await createRepoConnection(selectedProjectId, { provider: newRepo.provider, display_name: newRepo.display_name, credential: newRepo.credential }); setRepoMsg("Connection created"); setNewRepo({ provider: "github", display_name: "", credential: ""}); load(); } catch (e) { setRepoMsg(e.message);} }} className="rounded bg-primary px-3 py-1 text-sm font-medium text-primary-foreground">Connect</button>
+        </div>
+        {repoMsg ? <p className="mt-2 text-xs text-muted">{repoMsg}</p> : null}
+        <p className="mt-2 text-xs text-muted">Requires project_admin. Webhooks are signature-verified and idempotent.</p>
       </div>
 
       <div className="rounded-md border bg-surface p-4">

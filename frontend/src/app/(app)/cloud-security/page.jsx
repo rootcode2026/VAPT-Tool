@@ -9,6 +9,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import SeverityBadge from "@/components/ui/SeverityBadge";
 import { useProjectContext } from "@/lib/project-context";
 import { getCloudSecuritySummary, listCloudChecks } from "@/lib/api/codeSecurity";
+import { listCloudConnections, createCloudConnection, validateCloudConnection, discoverCloudResources } from "@/lib/api/connectors";
 
 function Stat({ label, value, hint }) {
   return (
@@ -24,6 +25,9 @@ export default function CloudSecurityPage() {
   const { selectedProjectId, selectedProject, status } = useProjectContext();
   const [summary, setSummary] = useState(null);
   const [checks, setChecks] = useState([]);
+  const [conns, setConns] = useState([]);
+  const [newConn, setNewConn] = useState({ provider: "aws", account_id: "", credential: "" });
+  const [connMsg, setConnMsg] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -32,12 +36,14 @@ export default function CloudSecurityPage() {
     setLoading(true);
     setError("");
     try {
-      const [s, c] = await Promise.all([
+      const [s, c, cc] = await Promise.all([
         getCloudSecuritySummary(selectedProjectId),
         listCloudChecks(selectedProjectId).catch(() => ({ checks: [] })),
+        listCloudConnections(selectedProjectId).catch(() => ({ connections: [] })),
       ]);
       setSummary(s);
       setChecks(c.checks || c || []);
+      setConns(cc.connections || []);
     } catch (e) {
       setError(e.message || "Unable to load cloud security.");
     } finally {
@@ -72,6 +78,27 @@ export default function CloudSecurityPage() {
             <p className="text-sm font-medium">{v} resources</p>
           </div>
         ))}
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">Cloud Connections</h3>
+        <p className="text-xs text-muted">AWS, GCP, Azure — project-scoped, read-only least-privilege (role ARN / service account), credential never returned (KMS/Vault reference).</p>
+        <div className="mt-3 space-y-2">
+          {conns.length === 0 ? <p className="text-xs text-muted">No cloud connections.</p> : conns.map((c) => (
+            <div key={c.id} className="flex flex-wrap items-center justify-between gap-2 rounded border bg-canvas px-3 py-2">
+              <div><p className="text-sm font-medium">{c.provider} • {c.account_id}</p><p className="text-xs text-muted">{c.status}</p></div>
+              <div className="flex gap-1"><button type="button" onClick={async () => { try { await validateCloudConnection(selectedProjectId, c.id); setConnMsg(`Validated ${c.account_id}`); load(); } catch (e) { setConnMsg(e.message);} }} className="rounded border px-2 py-1 text-xs">Validate</button><button type="button" onClick={async () => { try { await discoverCloudResources(selectedProjectId, c.id); setConnMsg(`Discovered ${c.account_id}`); load(); } catch (e) { setConnMsg(e.message);} }} className="rounded border px-2 py-1 text-xs">Discover</button></div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <select value={newConn.provider} onChange={(e) => setNewConn((r) => ({ ...r, provider: e.target.value }))} className="rounded border bg-canvas px-2 py-1 text-sm"><option value="aws">AWS</option><option value="gcp">GCP</option><option value="azure">Azure</option></select>
+          <input placeholder="Account/Sub/Project ID" value={newConn.account_id} onChange={(e) => setNewConn((r) => ({ ...r, account_id: e.target.value }))} className="rounded border bg-canvas px-2 py-1 text-sm" />
+          <input type="password" placeholder="Credential (role ARN / SA — never stored plaintext)" value={newConn.credential} onChange={(e) => setNewConn((r) => ({ ...r, credential: e.target.value }))} className="rounded border bg-canvas px-2 py-1 text-sm" />
+          <button type="button" onClick={async () => { setConnMsg(""); try { await createCloudConnection(selectedProjectId, { provider: newConn.provider, account_id: newConn.account_id, credential: newConn.credential }); setConnMsg("Connection created (read-only, rate-limited)"); setNewConn({ provider: "aws", account_id: "", credential: ""}); load(); } catch (e) { setConnMsg(e.message);} }} className="rounded bg-primary px-3 py-1 text-sm font-medium text-primary-foreground">Connect</button>
+        </div>
+        {connMsg ? <p className="mt-2 text-xs text-muted">{connMsg}</p> : null}
+        <p className="mt-2 text-xs text-muted">Requires project_admin. Discovery is bounded (max 500), rate-limited, read-only.</p>
       </div>
 
       <div className="rounded-md border bg-surface p-4">

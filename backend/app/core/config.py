@@ -215,5 +215,13 @@ class Settings:
     SCANNER_ALLOWED_REGISTRIES: str = os.getenv("SCANNER_ALLOWED_REGISTRIES", "")
     SCANNER_AUTO_UPDATE_ENABLED: bool = os.getenv("SCANNER_AUTO_UPDATE_ENABLED", "false").lower() == "true"
 
+    # ---------------------------------------------------------
+    # Connectors (Phase 11)
+    # ---------------------------------------------------------
+    CONNECTOR_ENCRYPTION_KEY: str = os.getenv("CONNECTOR_ENCRYPTION_KEY", "")
+    MAX_REPO_SIZE_MB: int = int(os.getenv("MAX_REPO_SIZE_MB", "500"))
+    MAX_CLOUD_RESOURCES: int = int(os.getenv("MAX_CLOUD_RESOURCES", "500"))
+    WEBHOOK_MAX_PAYLOAD_BYTES: int = int(os.getenv("WEBHOOK_MAX_PAYLOAD_BYTES", str(1024 * 1024)))
+
 
 settings = Settings()
