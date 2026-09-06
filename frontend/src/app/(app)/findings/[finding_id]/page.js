@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 
 import { API_BASE_URL as API_URL, apiFetch } from "@/lib/api/client";
 import { severityClassName, severityLabel } from "@/lib/severity";
+import FindingWorkflow from "@/components/findings/FindingWorkflow";
 
 function getMeta(finding) {
   return (finding?.metadata && typeof finding.metadata === "object" ? finding.metadata : {}) || {};
@@ -323,6 +324,8 @@ export default function FindingDetailsPage() {
             <ReferenceCard label="CWE" value={finding.cwe} description="Common Weakness Enumeration" />
           </div>
         </section>
+
+        <FindingWorkflow findingId={findingId} initial={finding} onChanged={(updated) => setFinding((prev) => ({ ...prev, ...updated }))} />
 
         <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-between">
           <Link href="/findings" className="rounded-lg border border-slate-700 px-5 py-3 text-center text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:bg-slate-900 hover:text-white">← Back to Findings</Link>

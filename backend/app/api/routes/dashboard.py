@@ -22,6 +22,13 @@ def get_dashboard_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Backward compat for isolated test DBs without workflow columns
+    try:
+        from app.api.routes.findings import _ensure_finding_workflow_columns
+
+        _ensure_finding_workflow_columns(db)
+    except Exception:
+        pass
     # ---------------------------------------------------------
     # Scan statistics — org-scoped via Scan -> Target -> Project
     # ---------------------------------------------------------
@@ -35,12 +42,33 @@ def get_dashboard_summary(
         )
 
     def _finding_q():
-        return (
-            db.query(Finding)
-            .join(Target, Target.id == Finding.target_id)
-            .join(Project, Project.id == Target.project_id)
-            .filter(Project.organization_id == current_user.organization_id)
-        )
+        try:
+            return (
+                db.query(Finding)
+                .join(Target, Target.id == Finding.target_id)
+                .join(Project, Project.id == Target.project_id)
+                .filter(Project.organization_id == current_user.organization_id)
+            )
+        except Exception as exc:
+            # Backward compat: isolated test DBs without new finding columns
+            if "no such column" in str(exc).lower():
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                try:
+                    from app.api.routes.findings import _ensure_finding_workflow_columns
+
+                    _ensure_finding_workflow_columns(db)
+                except Exception:
+                    pass
+                return (
+                    db.query(Finding)
+                    .join(Target, Target.id == Finding.target_id)
+                    .join(Project, Project.id == Target.project_id)
+                    .filter(Project.organization_id == current_user.organization_id)
+                )
+            raise
 
     total_scans = _scan_q().count() or 0
 

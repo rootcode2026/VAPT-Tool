@@ -445,6 +445,8 @@ def get_project_findings(
     status: str | None = Query(default=None),
     scanner: str | None = Query(default=None),
     asset_id: str | None = Query(default=None),
+    assigned_to: str | None = Query(default=None),
+    tag: str | None = Query(default=None),
     search: str | None = Query(default=None),
     page: int | None = Query(default=None, ge=1),
     page_size: int | None = Query(default=None, ge=1, le=100),
@@ -467,6 +469,14 @@ def get_project_findings(
         q = q.filter(Finding.scanner == scanner.strip().lower())
     if asset_id:
         q = q.filter(Finding.asset_id == asset_id.strip())
+    if assigned_to and assigned_to.strip():
+        q = q.filter(Finding.assigned_to == assigned_to.strip())
+    if tag and tag.strip():
+        from app.models.finding import FindingTag
+
+        q = q.join(FindingTag, FindingTag.finding_id == Finding.id).filter(
+            FindingTag.tag == tag.strip().lower()[:30]
+        )
     if search:
         lookup = search.strip()[:256].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         q = q.filter((Finding.title.ilike(f"%{lookup}%", escape="\\")) | (Finding.description.ilike(f"%{lookup}%", escape="\\")))

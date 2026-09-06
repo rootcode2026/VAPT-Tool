@@ -186,6 +186,11 @@ Cloud foundation must be read-only, non-destructive, and credential-safe:
 - **Tenant isolation:** `admin/dashboard/summary` global counts via `func.count` (no tenant filter for super_admin by design), `admin/organizations/summary` `WHERE organization_id` per org for super_admin view, org dashboard `GET /dashboard/summary` `WHERE organization_id==current_user.organization_id` (existing), cross-tenant impossible via `require_super_admin` + `organization_id` checks.
 - **Organization/user management hardening:** `backend/app/api/routes/admin.py` and `organization_members.py` remain guarded with centralized `require_super_admin`, validation of slug/status fields, duplicate slug rejection, and explicit denial of self-escalation/removal for organization-admin membership paths. This is intentionally bounded to the backend admin control plane; UI and full status enforcement remain explicitly follow-on work.
 
+## Finding Management + Triage (7C)
+- **Tenant:** `finding->scan/target->project->org` via `require_project_access`, never client `organization_id`, cross-tenant 404 + `CROSS_TENANT` audit where applicable, project isolation via `Target.project_id`.
+- **RBAC:** `analyst`/`project_admin`/`org_admin` + super_admin via `_require_finding_manage` + `_effective_project_role`, viewer/member read-only 403, suspended assignee rejected, no `organization_id`/`scan_id`/`evidence` mutation.
+- **Data:** explicit `FindingUpdate` schema only (`status`/`severity_override`/`assigned_to`/`owner`/`tags`/`reason`), tags bounded normalized, comments 2000 plain-text no HTML, history `actor`/`old`/`new`/`reason`, audit `[REDACTED]`, no `password/JWT/token/cookie/stdout/source`.
+
 ## Super Admin Organization + User Management (7B)
 - **Authorization:** `require_super_admin` (`User.role=="super_admin"`) for `GET /admin/*` org/user CRUD, org admin via `organization_membership` `org_admin` + `permissions.py`, every org query `WHERE organization_id` or `require_project_access`, super_admin platform-wide deliberate, no client `organization_id` trust.
 - **Lifecycle:** `active` normal, `suspended`/`archived` blocks normal users (`login` 401 generic, `get_current_user` 401/403) while super_admin retains `GET /admin/organizations/{id}`; `User suspended` blocks auth; no destructive delete, no cascade.
