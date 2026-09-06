@@ -47,7 +47,12 @@ def _check_rate_limit(key: str, max_requests: int, window_seconds: int = 60) -> 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     # Path-based limits — higher in development/test to avoid flaky tests
     LIMITS = {
-        "/api/v1/auth/login": (20, 60),
+        "/api/v1/auth/login": (100, 60),
+        "/api/v1/auth/mfa/verify": (50, 60),
+        "/api/v1/auth/mfa/challenge": (50, 60),
+        "/api/v1/auth/forgot-password": (50, 60),
+        "/api/v1/auth/reset-password": (50, 60),
+        "/api/v1/auth/mfa/setup/verify": (50, 60),
         "/api/v1/ai/": (100, 60),
         "/api/v1/webhooks/": (200, 60),
         "/api/v1/reports": (100, 60),

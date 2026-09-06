@@ -16,8 +16,11 @@ from app.models.scanner_fleet import (
     ScannerVersion,
     WorkerPool,
 )
+from app.models.password_reset_token import PasswordResetToken
+from app.models.recovery_code import MfaRecoveryCode
 from app.models.target import Target
 from app.models.user import User
+from app.models.user_mfa import UserMfaCredential
 
 __all__ = [
     "Asset",
@@ -25,8 +28,10 @@ __all__ = [
     "AssetRelationship",
     "AuditLog",
     "Finding",
+    "MfaRecoveryCode",
     "Organization",
     "OrganizationMembership",
+    "PasswordResetToken",
     "Project",
     "ProjectMembership",
     "Scan",
@@ -37,5 +42,6 @@ __all__ = [
     "ScannerVersion",
     "Target",
     "User",
+    "UserMfaCredential",
     "WorkerPool",
 ]

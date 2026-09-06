@@ -14,3 +14,5 @@ argon2-cffi
 cryptography
 reportlab
 python-multipart
+pyotp
+qrcode[pil]
