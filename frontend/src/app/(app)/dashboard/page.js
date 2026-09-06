@@ -24,6 +24,7 @@ import {
 } from "@/lib/dashboard/loadDashboard";
 import { useProjectContext } from "@/lib/project-context";
 import { listAuditLogs } from "@/lib/api/audit";
+import { getProjectSLASummary } from "@/lib/api/findings";
 
 function formatWhen(value) {
   if (!value) return "—";
@@ -69,6 +70,7 @@ export default function DashboardPage() {
   const requestRef = useRef(0);
   const [recentAudit, setRecentAudit] = useState({ items: [], loaded: false, error: null });
   const [codeFindings, setCodeFindings] = useState({ critical: 0, high: 0, total: 0, loaded: false });
+  const [slaSummary, setSlaSummary] = useState(null);
 
   const loadData = useCallback(async (projectId) => {
     if (!projectId) {
@@ -113,6 +115,17 @@ export default function DashboardPage() {
           } else {
             setRecentAudit({ items: [], loaded: false, error: auditErr.message });
           }
+        }
+      }
+      // SLA summary (best-effort)
+      try {
+        const sla = await getProjectSLASummary(projectId);
+        if (requestRef.current === requestId) {
+          setSlaSummary(sla);
+        }
+      } catch {
+        if (requestRef.current === requestId) {
+          setSlaSummary(null);
         }
       }
     } catch (err) {
@@ -563,6 +576,27 @@ export default function DashboardPage() {
         <EmptyState title="No cloud accounts connected" description="Cloud security covers AWS, GCP, Azure — identity, network, storage, configuration and risk. Connect a cloud account to see posture." />
         <p className="mt-2 text-xs text-muted">Provider-neutral foundation (mock) — live connectors in future phase.</p>
       </DashboardSection>
+
+      {/* SLA & Lifecycle */}
+      {slaSummary ? (
+        <DashboardSection title="SLA & Lifecycle" action={<SectionLink href="/findings">View findings</SectionLink>}>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">Active SLAs</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums">{slaSummary.active ?? "—"}</p>
+            </div>
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">Breached</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-critical">{slaSummary.breached ?? "—"}</p>
+            </div>
+            <div className="rounded-sm border border-border bg-canvas p-3">
+              <p className="text-xs text-muted">Overdue critical</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums">{slaSummary.overdue_critical ?? "—"}</p>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-muted">Remediation and retest are managed per finding. SLA policy defaults: critical 24h, high 72h, medium 168h, low 336h, info 720h.</p>
+        </DashboardSection>
+      ) : null}
 
       {/* Recent Audit */}
       <DashboardSection title="Recent Audit Activity" action={<SectionLink href="/audit">View audit logs</SectionLink>}>

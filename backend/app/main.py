@@ -12,6 +12,7 @@ from app.api.routes.audit_logs import router as audit_logs_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.cloud import router as cloud_router
 from app.api.routes.dashboard import router as dashboard_router
+from app.api.routes.finding_lifecycle import router as finding_lifecycle_router
 from app.api.routes.findings import router as findings_router
 from app.api.routes.ingestions import router as ingestions_router
 from app.api.routes.organization_members import router as organization_members_router
@@ -76,6 +77,7 @@ app.include_router(targets_router, dependencies=protected)
 app.include_router(projects_router, dependencies=protected)
 app.include_router(scans_router, dependencies=protected)
 app.include_router(findings_router, dependencies=protected)
+app.include_router(finding_lifecycle_router, dependencies=protected)
 app.include_router(assets_router, dependencies=protected)
 app.include_router(scanners_router, dependencies=protected)
 app.include_router(dashboard_router, dependencies=protected)
