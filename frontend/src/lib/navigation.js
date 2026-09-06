@@ -18,6 +18,8 @@ export const PRIMARY_NAV = [
   { name: "Findings", href: "/findings", icon: IconFindings },
   { name: "Assets", href: "/assets", icon: IconAssets },
   { name: "Attack Surface", href: "/attack-surface", icon: IconAttackSurface },
+  { name: "Code Security", href: "/code-security", icon: IconShield },
+  { name: "Cloud Security", href: "/cloud-security", icon: IconScans },
   { name: "Audit", href: "/audit", icon: IconAudit },
 ];
 
@@ -41,6 +43,8 @@ export const PAGE_TITLES = {
   "/findings": "Findings",
   "/assets": "Assets",
   "/attack-surface": "Attack Surface",
+  "/code-security": "Code Security",
+  "/cloud-security": "Cloud Security",
   "/audit": "Audit",
   "/admin": "Admin",
   "/admin/organizations": "Organizations",

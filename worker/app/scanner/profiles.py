@@ -37,6 +37,8 @@ SCAN_PROFILES = {
     "container_full": ["container"],
     "iac_full": ["iac"],
     "api_full": ["api"],
+    "code": ["sast", "sca", "secrets", "container", "iac", "api"],
+    "code_full": ["sast", "sca", "secrets", "container", "iac", "api"],
 }
 
 
