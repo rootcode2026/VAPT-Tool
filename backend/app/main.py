@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.api.routes.admin import router as admin_router
 from app.api.routes.assets import router as assets_router
+from app.api.routes.ai import router as ai_router
 from app.api.routes.cloud_connections import router as cloud_connections_router
 from app.api.routes.cloud_security import router as cloud_security_router
 from app.api.routes.code_security import router as code_security_router
@@ -107,6 +108,7 @@ app.include_router(webhook_router)
 app.include_router(reports_router, dependencies=protected)
 app.include_router(compliance_router, dependencies=protected)
 app.include_router(dast_router, dependencies=protected)
+app.include_router(ai_router)
 
 
 @app.get("/")

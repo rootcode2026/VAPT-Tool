@@ -29,6 +29,7 @@ from app.models import (
     User,
     WorkerPool,
 )
+from app.models.ai import AIConversation, AIMessage, AIUsage
 from app.models.compliance import ComplianceControl, ComplianceFramework, ComplianceMapping
 from app.models.connector import CloudConnection, ConnectorSecret, RepositoryConnection, WebhookDelivery
 from app.models.dast import DASTConfig, DASTEndpoint, DASTParameter
