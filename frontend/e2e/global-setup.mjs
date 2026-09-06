@@ -60,13 +60,38 @@ function runSeeder() {
  * backend's login rate limit (20/min/IP).
  */
 async function writeStorageStates() {
-  const { apiLogin, USERS, TOKEN_KEY } = await import(
+  const { apiLogin, USERS, TOKEN_KEY, API_URL } = await import(
     new URL("./support/helpers.mjs", import.meta.url)
   );
   const stateDir = path.join(FRONTEND_ROOT, "test-results");
   mkdirSync(stateDir, { recursive: true });
 
   console.log("[e2e-setup] Pre-generating per-user storage states…");
+  // Ensure MFA is disabled for all fixture users so storageState generation can use simple password login
+  try {
+    const { apiLogin: _apiLogin } = await import(new URL("./support/helpers.mjs", import.meta.url));
+    let superToken;
+    try {
+      superToken = await _apiLogin(USERS.superAdmin.email, USERS.superAdmin.password);
+    } catch (e) {
+      console.log("[e2e-setup] superAdmin login for MFA reset failed", e.message);
+    }
+    if (superToken) {
+      for (const u of Object.values(USERS)) {
+        try {
+          await fetch(`${API_URL}/api/v1/auth/_debug/mfa/reset`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${superToken}` },
+            body: JSON.stringify({ email: u.email }),
+          });
+        } catch {}
+      }
+      console.log("[e2e-setup] MFA reset for fixture users");
+    }
+  } catch (e) {
+    console.log("[e2e-setup] MFA reset skipped", e.message);
+  }
+
   for (const [key, user] of Object.entries(USERS)) {
     const token = await apiLogin(user.email, user.password);
     writeFileSync(

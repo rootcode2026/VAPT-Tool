@@ -15,8 +15,10 @@ from app.models import (
     AssetRelationship,
     AuditLog,
     Finding,
+    MfaRecoveryCode,
     Organization,
     OrganizationMembership,
+    PasswordResetToken,
     Project,
     ProjectMembership,
     Scan,
@@ -27,6 +29,7 @@ from app.models import (
     ScannerVersion,
     Target,
     User,
+    UserMfaCredential,
     WorkerPool,
 )
 from app.models.ai import AIConversation, AIMessage, AIUsage

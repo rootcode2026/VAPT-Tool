@@ -64,6 +64,24 @@ export function AuthProvider({ children }) {
       authRedirect: false,
     });
 
+    if (result.mfa_required) {
+      // Do not set session yet — return challenge token to caller
+      return { mfa_required: true, mfa_token: result.mfa_token };
+    }
+
+    setAccessToken(result.access_token);
+    setUser(result.user);
+    setStatus("authenticated");
+    return result.user;
+  }, []);
+
+  const mfaVerify = useCallback(async (mfaToken, code) => {
+    const result = await apiRequest("/api/v1/auth/mfa/challenge", {
+      method: "POST",
+      body: { mfa_token: mfaToken, code },
+      auth: false,
+      authRedirect: false,
+    });
     setAccessToken(result.access_token);
     setUser(result.user);
     setStatus("authenticated");
@@ -89,11 +107,12 @@ export function AuthProvider({ children }) {
       user,
       isAuthenticated: status === "authenticated",
       login,
+      mfaVerify,
       logout,
       clearSession,
       refresh: loadSession,
     }),
-    [status, user, login, logout, clearSession, loadSession]
+    [status, user, login, mfaVerify, logout, clearSession, loadSession]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

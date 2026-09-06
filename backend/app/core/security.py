@@ -88,5 +88,68 @@ def decode_access_token(token: str) -> str:
     user_id = payload.get("sub")
     if not user_id or payload.get("type") != "access":
         raise TokenError("invalid")
+    # Enforce password_changed_at invalidation (session revocation after password change)
+    # iat from payload must be >= password_changed_at if present
+    try:
+        from app.db.database import SessionLocal
+        from app.models.user import User
 
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == str(user_id)).first()
+            if user is not None and getattr(user, "password_changed_at", None) is not None:
+                iat = payload.get("iat")
+                if isinstance(iat, (int, float)):
+                    iat_dt = datetime.fromtimestamp(iat, tz=timezone.utc)
+                else:
+                    # jwt gives datetime
+                    iat_dt = iat if isinstance(iat, datetime) else None
+                # Allow 2s grace for clock skew / second-precision iat vs microsecond password_changed_at
+                if iat_dt and user.password_changed_at and iat_dt.timestamp() < user.password_changed_at.timestamp() - 2:  # type: ignore
+                    raise TokenError("invalid")
+        finally:
+            db.close()
+    except TokenError:
+        raise
+    except Exception:
+        pass
     return str(user_id)
+
+
+def create_mfa_challenge_token(user_id: str) -> str:
+    from app.core.mfa import MFA_CHALLENGE_EXPIRE_MINUTES
+
+    expire = datetime.now(timezone.utc) + timedelta(minutes=MFA_CHALLENGE_EXPIRE_MINUTES)
+    payload = {
+        "sub": user_id,
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "type": "mfa_challenge",
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_mfa_challenge_token(token: str) -> str:
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    except ExpiredSignatureError as exc:
+        raise TokenError("expired") from exc
+    except InvalidTokenError as exc:
+        raise TokenError("invalid") from exc
+    if payload.get("type") != "mfa_challenge":
+        raise TokenError("invalid")
+    user_id = payload.get("sub")
+    if not user_id:
+        raise TokenError("invalid")
+    return str(user_id)
+
+
+def validate_password_strength(password: str) -> str | None:
+    if not password or not isinstance(password, str):
+        return "Password is required."
+    if len(password) < 8:
+        return "Password must be at least 8 characters."
+    if len(password) > 128:
+        return "Password is too long."
+    # Reject obviously invalid (e.g., same as email not checked here)
+    return None

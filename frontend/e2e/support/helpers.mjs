@@ -12,6 +12,7 @@
  * the user it needs instead of logging in per test.
  */
 import { expect } from "@playwright/test";
+import { createHmac } from "node:crypto";
 
 export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "http://localhost:3000";
 export const API_URL = process.env.PLAYWRIGHT_API_URL || "http://localhost:8000";
@@ -25,6 +26,7 @@ export const USERS = {
   analyst: { email: "e2e.analyst@test.local", password: E2E_PASSWORD },
   viewer: { email: "e2e.viewer@test.local", password: E2E_PASSWORD },
   memberB: { email: "e2e.memberb@test.local", password: E2E_PASSWORD },
+  pwreset: { email: "e2e.pwreset@test.local", password: E2E_PASSWORD },
 };
 
 /**
@@ -39,6 +41,7 @@ export const STATE_FILES = {
   analyst: `${STATE_DIR}/state-analyst.json`,
   viewer: `${STATE_DIR}/state-viewer.json`,
   memberB: `${STATE_DIR}/state-memberB.json`,
+  pwreset: `${STATE_DIR}/state-pwreset.json`,
 };
 
 export const IDS = {
@@ -134,13 +137,82 @@ export async function apiGet(path, token) {
   return { status: response.status, body: await response.json().catch(() => null) };
 }
 
+export async function apiPost(path, token, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${API_URL}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+  return { status: response.status, body: await response.json().catch(() => null), headers: response.headers };
+}
+export async function apiPatch(path, token, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${API_URL}${path}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+  return { status: response.status, body: await response.json().catch(() => null), headers: response.headers };
+}
+
+// MFA helpers
+export async function apiMfaSetup(token) {
+  return apiPost("/api/v1/auth/mfa/setup", token, {});
+}
+export async function apiMfaSetupVerify(token, code) {
+  return apiPost("/api/v1/auth/mfa/setup/verify", token, { code });
+}
+export async function apiMfaDisable(token, password, code) {
+  return apiPost("/api/v1/auth/mfa/disable", token, { password, code });
+}
+export async function apiMfaRegenerate(token, password, code) {
+  return apiPost("/api/v1/auth/mfa/recovery-codes/regenerate", token, { password, code });
+}
+export async function apiMfaStatus(token) {
+  return apiGet("/api/v1/auth/mfa/status", token);
+}
+export async function apiForgotPassword(email) {
+  const res = await fetch(`${API_URL}/api/v1/auth/forgot-password`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+export async function apiResetPassword(token, new_password, confirm_password) {
+  const res = await fetch(`${API_URL}/api/v1/auth/reset-password`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, new_password, confirm_password }) });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+export async function apiChangePassword(token, current_password, new_password, confirm_password) {
+  return apiPost("/api/v1/auth/change-password", token, { current_password, new_password, confirm_password });
+}
+export async function apiLoginRaw(email, password) {
+  const res = await fetch(`${API_URL}/api/v1/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+export async function apiMfaChallenge(mfaToken, code) {
+  const res = await fetch(`${API_URL}/api/v1/auth/mfa/challenge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mfa_token: mfaToken, code }) });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
+// Compute TOTP (RFC 6238, 6 digits, 30s) using Node crypto — for Playwright Node process
+export function totpNow(secret) {
+  const b32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const c of secret.replace(/=+$/, "").toUpperCase()) {
+    const v = b32.indexOf(c);
+    if (v < 0) continue;
+    bits += v.toString(2).padStart(5, "0");
+  }
+  const key = Buffer.alloc(Math.floor(bits.length / 8));
+  for (let i = 0; i < key.length; i++) key[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+  const counter = Math.floor(Date.now() / 30000);
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64BE(BigInt(counter), 0);
+  const hmac = createHmac("sha1", key).update(buf).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const code = ((hmac[offset] & 0x7f) << 24) | ((hmac[offset + 1] & 0xff) << 16) | ((hmac[offset + 2] & 0xff) << 8) | (hmac[offset + 3] & 0xff);
+  return String(code % 1000000).padStart(6, "0");
+}
+
 /**
  * Acquire a backend token directly. Backs off when the backend login rate
  * limiter responds 429 (20/min/IP). Used sparingly by global-setup and
  * cleanup helpers.
  */
 export async function apiLogin(email, password) {
-  const deadline = Date.now() + 75_000;
+  const deadline = Date.now() + 130_000;
   for (;;) {
     const response = await fetch(`${API_URL}/api/v1/auth/login`, {
       method: "POST",
@@ -151,12 +223,18 @@ export async function apiLogin(email, password) {
       if (Date.now() > deadline) {
         throw new Error(`[e2e] Backend login rate limit held for too long (${email})`);
       }
-      // Back off until the limiter (20/min/IP) window rolls over.
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      // Rate limit window is 60s; wait for it to roll over without hammering
+      await new Promise((resolve) => setTimeout(resolve, 65_000));
       continue;
     }
     const body = await response.json().catch(() => ({}));
     if (!response.ok || !body.access_token) {
+      // Handle MFA required case — for storageState we need to complete MFA if user has it enabled
+      // For now, if mfa_required, we cannot return access_token; caller should handle via apiLoginRaw
+      // To keep backward compat, try to detect and fail with clear message
+      if (body.mfa_required) {
+        throw new Error(`[e2e] apiLogin mfa_required for ${email} — use apiLoginRaw + challenge`);
+      }
       throw new Error(`[e2e] apiLogin failed (${response.status}) for ${email}`);
     }
     return body.access_token;
