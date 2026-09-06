@@ -20,6 +20,10 @@ class FindingResponse(BaseModel):
     cve: str | None = None
     cwe: str | None = None
     asset_id: str | None = None
+    assigned_to: str | None = None
+    owner_user_id: str | None = None
+    severity_override: str | None = None
+    updated_at: Any | None = None
     extra_data: dict[str, Any] = Field(
         default_factory=dict,
         exclude=True,

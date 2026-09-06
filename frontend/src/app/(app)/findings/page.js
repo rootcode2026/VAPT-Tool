@@ -89,6 +89,10 @@ export default function FindingsPage() {
   const [status, setStatus] = useState("");
   const [scanner, setScanner] = useState("");
   const [validationFilter, setValidationFilter] = useState("");
+  const [assignee, setAssignee] = useState("");
+  const [tag, setTag] = useState("");
+  const [debouncedAssignee, setDebouncedAssignee] = useState("");
+  const [debouncedTag, setDebouncedTag] = useState("");
 
   const [attackPaths, setAttackPaths] = useState([]);
   const [attackError, setAttackError] = useState("");
@@ -101,8 +105,18 @@ export default function FindingsPage() {
   }, [search]);
 
   useEffect(() => {
+    const a = window.setTimeout(() => setDebouncedAssignee(assignee.trim()), 300);
+    return () => window.clearTimeout(a);
+  }, [assignee]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedTag(tag.trim().toLowerCase()), 300);
+    return () => window.clearTimeout(t);
+  }, [tag]);
+
+  useEffect(() => {
     setPage(1);
-  }, [selectedProjectId, debouncedSearch, severity, status, scanner]);
+  }, [selectedProjectId, debouncedSearch, severity, status, scanner, debouncedAssignee, debouncedTag]);
 
   const loadSummary = useCallback(async (projectId, reqId) => {
     try {
@@ -119,7 +133,7 @@ export default function FindingsPage() {
     }
   }, []);
 
-  const loadFindings = useCallback(async (projectId, p, searchVal, sev, stat, scan, reqId) => {
+  const loadFindings = useCallback(async (projectId, p, searchVal, sev, stat, scan, reqId, assigneeVal, tagVal) => {
     setLoading(true);
     setError("");
     try {
@@ -128,6 +142,8 @@ export default function FindingsPage() {
       if (sev) query.severity = sev;
       if (stat) query.status = stat;
       if (scan) query.scanner = scan;
+      if (assigneeVal) query.assigned_to = assigneeVal;
+      if (tagVal) query.tag = tagVal;
       const data = await listProjectFindings(projectId, query);
       if (requestRef.current !== reqId) return;
       const items = Array.isArray(data) ? data : data.items || [];
@@ -164,16 +180,16 @@ export default function FindingsPage() {
     requestRef.current = reqId;
     await Promise.all([
       loadSummary(selectedProjectId, reqId),
-      loadFindings(selectedProjectId, page, debouncedSearch, severity, status, scanner, reqId),
+      loadFindings(selectedProjectId, page, debouncedSearch, severity, status, scanner, reqId, debouncedAssignee, debouncedTag),
       loadAttackPaths(selectedProjectId, reqId),
     ]);
-  }, [selectedProjectId, projectStatus, page, debouncedSearch, severity, status, scanner, loadSummary, loadFindings, loadAttackPaths]);
+  }, [selectedProjectId, projectStatus, page, debouncedSearch, severity, status, scanner, debouncedAssignee, debouncedTag, loadSummary, loadFindings, loadAttackPaths]);
 
   useEffect(() => {
     if (projectStatus !== "ready") return undefined;
     const id = window.setTimeout(() => { reloadAll(); }, 0);
     return () => window.clearTimeout(id);
-  }, [projectStatus, selectedProjectId, page, debouncedSearch, severity, status, scanner, reloadAll]);
+  }, [projectStatus, selectedProjectId, page, debouncedSearch, severity, status, scanner, debouncedAssignee, debouncedTag, reloadAll]);
 
   const scanners = useMemo(() => {
     const s = [...new Set(findings.map((f) => f.scanner).filter(Boolean))].sort();
@@ -281,8 +297,10 @@ export default function FindingsPage() {
             <option key={v || "all"} value={v}>{v ? v.replaceAll("_", " ") : "All validation"}</option>
           ))}
         </select>
-        {(severity || status || scanner || validationFilter || debouncedSearch) && (
-          <button type="button" onClick={() => { setSearch(""); setSeverity(""); setStatus(""); setScanner(""); setValidationFilter(""); }} className="rounded-sm border border-border px-3 py-1.5 text-sm hover:bg-surface-hover">
+        <input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="Assignee UUID" aria-label="Filter by assignee" className="rounded-sm border border-border bg-canvas px-3 py-2 font-mono text-sm" />
+        <input value={tag} onChange={(e) => setTag(e.target.value)} placeholder="Tag" aria-label="Filter by tag" className="rounded-sm border border-border bg-canvas px-3 py-2 text-sm" />
+        {(severity || status || scanner || validationFilter || debouncedSearch || assignee || tag) && (
+          <button type="button" onClick={() => { setSearch(""); setSeverity(""); setStatus(""); setScanner(""); setValidationFilter(""); setAssignee(""); setTag(""); }} className="rounded-sm border border-border px-3 py-1.5 text-sm hover:bg-surface-hover">
             Clear
           </button>
         )}
@@ -355,6 +373,7 @@ export default function FindingsPage() {
                 { key: "scanner", header: "Scanner", render: (row) => <span className="text-xs">{row.scanner || "—"}</span> },
                 { key: "cve", header: "CVE/CWE", render: (row) => <span className="text-xs">{row.cve || row.cwe || "—"}</span> },
                 { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
+                { key: "assignee", header: "Assignee", render: (row) => (row.assigned_to ? <span className="font-mono text-xs">{String(row.assigned_to).slice(0, 8)}</span> : <span className="text-xs text-muted">—</span>) },
                 { key: "created_at", header: "Created", render: (row) => <span className="text-xs">{formatWhen(row.created_at)}</span> },
               ]}
               rows={filteredFindings}
