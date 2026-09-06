@@ -30,6 +30,8 @@ from app.models import (
     WorkerPool,
 )
 from app.models.connector import CloudConnection, ConnectorSecret, RepositoryConnection, WebhookDelivery
+from app.models.report import Report
+from app.models.compliance import ComplianceControl, ComplianceFramework, ComplianceMapping
 
 config = context.config
 

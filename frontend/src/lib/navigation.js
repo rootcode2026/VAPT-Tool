@@ -20,6 +20,8 @@ export const PRIMARY_NAV = [
   { name: "Attack Surface", href: "/attack-surface", icon: IconAttackSurface },
   { name: "Code Security", href: "/code-security", icon: IconShield },
   { name: "Cloud Security", href: "/cloud-security", icon: IconScans },
+  { name: "Reports", href: "/reports", icon: IconAudit },
+  { name: "Compliance", href: "/compliance", icon: IconShield },
   { name: "Audit", href: "/audit", icon: IconAudit },
 ];
 
@@ -45,6 +47,8 @@ export const PAGE_TITLES = {
   "/attack-surface": "Attack Surface",
   "/code-security": "Code Security",
   "/cloud-security": "Cloud Security",
+  "/reports": "Reports",
+  "/compliance": "Compliance",
   "/audit": "Audit",
   "/admin": "Admin",
   "/admin/organizations": "Organizations",

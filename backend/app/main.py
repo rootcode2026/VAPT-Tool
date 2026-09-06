@@ -11,6 +11,8 @@ from app.api.routes.assets import router as assets_router
 from app.api.routes.cloud_connections import router as cloud_connections_router
 from app.api.routes.cloud_security import router as cloud_security_router
 from app.api.routes.code_security import router as code_security_router
+from app.api.routes.compliance import router as compliance_router
+from app.api.routes.reports import router as reports_router
 from app.api.routes.repository_connections import router as repo_connections_router
 from app.api.routes.repository_connections import webhook_router as webhook_router
 from app.api.routes.scanner_admin import router as scanner_admin_router
@@ -101,6 +103,8 @@ app.include_router(cloud_security_router, dependencies=protected)
 app.include_router(repo_connections_router, dependencies=protected)
 app.include_router(cloud_connections_router, dependencies=protected)
 app.include_router(webhook_router)
+app.include_router(reports_router, dependencies=protected)
+app.include_router(compliance_router, dependencies=protected)
 
 
 @app.get("/")
