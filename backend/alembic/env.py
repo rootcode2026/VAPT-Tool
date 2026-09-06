@@ -21,8 +21,13 @@ from app.models import (
     ProjectMembership,
     Scan,
     ScanResult,
+    ScannerDefinition,
+    ScannerHealth,
+    ScannerRollout,
+    ScannerVersion,
     Target,
     User,
+    WorkerPool,
 )
 
 config = context.config

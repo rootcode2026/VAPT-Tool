@@ -511,6 +511,49 @@ def execute_scan(
         pipeline = ScannerPipeline()
         risk_engine = RiskAssessmentEngine()
         scanners = get_scanners_for_profile(profile)
+        # Control-plane availability filtering (isolated failure): unhealthy/disabled excluded
+        try:
+            # Reuse DB session to check scanner control plane
+            from sqlalchemy import text as _t
+            # Check if scanner_definitions table exists (control plane migrated)
+            db.execute(_t("SELECT 1 FROM scanner_definitions LIMIT 1"))
+            # Inline lightweight filtering: query definitions and health
+            defs = {r.scanner_key: r for r in db.execute(_t("SELECT scanner_key, enabled, current_version FROM scanner_definitions")).mappings().all()} if False else {}
+            # Use catalog helper if available (import without docker deps)
+            try:
+                # Attempt to import scanner_control helper via direct SQL to avoid worker import of backend
+                # Simple: filter disabled/unhealthy via direct queries
+                rows = db.execute(_t("SELECT scanner_key, enabled FROM scanner_definitions")).fetchall()
+                enabled_map = {row[0]: bool(row[1]) for row in rows}
+                # Health: latest status
+                health_rows = db.execute(_t("SELECT definition_id, status FROM scanner_health WHERE id IN (SELECT max(id) FROM scanner_health GROUP BY definition_id)")).fetchall() if False else []
+                # Fallback simple: if definitions exist, filter disabled
+                filtered = []
+                for s in scanners:
+                    if s in enabled_map and not enabled_map[s]:
+                        continue
+                    # Check health via subquery if table has data
+                    try:
+                        h = db.execute(_t("SELECT status FROM scanner_health WHERE definition_id = (SELECT id FROM scanner_definitions WHERE scanner_key=:k) ORDER BY checked_at DESC LIMIT 1"), {"k": s}).fetchone()
+                        if h and h[0] == "unhealthy":
+                            continue
+                    except Exception:
+                        pass
+                    # Check version channel failed
+                    try:
+                        v = db.execute(_t("SELECT channel FROM scanner_versions JOIN scanner_definitions ON scanner_definitions.id = scanner_versions.definition_id WHERE scanner_definitions.scanner_key=:k AND scanner_versions.version = scanner_definitions.current_version"), {"k": s}).fetchone()
+                        if v and v[0] == "failed":
+                            continue
+                    except Exception:
+                        pass
+                    filtered.append(s)
+                # Only apply filtering if definitions were present
+                if enabled_map:
+                    scanners = filtered
+            except Exception:
+                pass
+        except Exception:
+            pass
         max_attempts = get_max_attempts()
 
         print(

@@ -9,6 +9,13 @@ from app.models.project import Project
 from app.models.project_membership import ProjectMembership
 from app.models.scan import Scan
 from app.models.scan_result import ScanResult
+from app.models.scanner_fleet import (
+    ScannerDefinition,
+    ScannerHealth,
+    ScannerRollout,
+    ScannerVersion,
+    WorkerPool,
+)
 from app.models.target import Target
 from app.models.user import User
 
@@ -24,6 +31,11 @@ __all__ = [
     "ProjectMembership",
     "Scan",
     "ScanResult",
+    "ScannerDefinition",
+    "ScannerHealth",
+    "ScannerRollout",
+    "ScannerVersion",
     "Target",
     "User",
+    "WorkerPool",
 ]
