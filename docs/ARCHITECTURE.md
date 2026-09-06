@@ -370,6 +370,13 @@ Helper `backend/app/db/rls.py` remains `RLS_ENABLED=false` and not wired; will b
 - **Backend:** `admin.py` (`GET /admin/dashboard/summary` + `GET /admin/organizations/summary`, `require_super_admin`, platform-wide aggregates `func.count` for orgs/users/projects/scans/findings/assets/audit, `system_health` `SELECT 1`, scanner count via `ScannerRegistry` fallback 14, `ORGANIZATION`+`PROJECT`+`USER` safe fields, pagination, no evidence).
 - **Frontend:** `/(app)/admin` (Super Admin Dashboard 12 KPIs, posture 6 severities, scanner fleet 14 + categories, system health 5, org inventory 5, audit link), `/(app)/admin/organizations` (paginated 20), placeholders for users/scanners/system, enhanced `/(app)/dashboard` (Code Security `sast/sca/secrets` counts, Cloud `No cloud accounts`, Recent Audit 5 via `listAuditLogs`), `lib/api/admin.js` (`api.get` with `Authorization`), `navigation.js` `ADMIN_NAV` 6, `Sidebar.jsx` super_admin `Administration` section, `icons.jsx` `IconUsers`+`IconShield`.
 
+### Super Admin Organization + User Management (7B)
+- **Backend:** `admin.py` (`GET /admin/organizations` search/status/pagination + `POST` create `ORGANIZATION_CREATED` + `GET /{id}` counts+recent audit + `PATCH` update `ORGANIZATION_UPDATED`, `GET /admin/users` org/role/status/search/pagination + `GET /{id}` memberships + `PATCH` status `SECURITY_CONFIGURATION_CHANGED`, all `require_super_admin`, safe payloads, `AuditService` same-tx sanitized).
+- **Models:** `Organization.status` (`active`/`suspended`/`archived`) + `created_at`, `User.status` (`active`/`suspended`) + `created_at`, migration `f7a6b5c4d3e2` (single head, upgrade/downgrade tested via `alembic heads`).
+- **Enforcement:** `deps.py:get_current_user` (suspended user 401, suspended/archived org 403 with super_admin bypass, backward-compat `ALTER TABLE` for isolated SQLite fixtures) + `auth.py:login` (suspended user/org generic 401, no enumeration).
+- **Membership:** existing `organization_members.py` (`org_admin` or super_admin, `super_admin` grant blocked, last-admin 409) preserved; super_admin platform ops via bypass.
+- **Frontend:** `/admin/organizations` (search/status/pagination, View/Edit, Create/Status dialogs) + `/admin/organizations/[id]` (Overview/Members/Projects/Security/Recent) + `/admin/users` (search/org/role/status/pagination, View/Status) + `/admin/users/[id]` (safe details + memberships), `lib/api/admin.js` central `apiRequest` bearer, no `organization_id` bypass.
+
 ### Audit Logging Foundation
 
 ### Audit Logging Foundation (Enterprise, Append-Only)

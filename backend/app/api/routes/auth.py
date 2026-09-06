@@ -69,7 +69,57 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
             detail=INVALID_CREDENTIALS,
         )
 
+    # User status enforcement — suspended users cannot login (generic message, no enumeration)
+    if getattr(user, "status", "active") != "active":
+        _audit(
+            db,
+            event_type="AUTH_LOGIN_FAILURE",
+            action="AUTH_LOGIN_FAILURE",
+            result="FAILURE",
+            actor_user_id=None,
+            organization_id=None,
+            resource_type="authentication",
+            resource_id=None,
+            metadata={"failure": "account_suspended"},
+        )
+        try:
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=INVALID_CREDENTIALS,
+        )
+
     organization = get_user_organization(user, db)
+    # Organization status enforcement — suspended/archived blocks login for non-super_admin
+    if organization and getattr(organization, "status", "active") != "active" and getattr(user, "role", None) != "super_admin":
+        _audit(
+            db,
+            event_type="AUTH_LOGIN_FAILURE",
+            action="AUTH_LOGIN_FAILURE",
+            result="FAILURE",
+            actor_user_id=None,
+            organization_id=None,
+            resource_type="authentication",
+            resource_id=None,
+            metadata={"failure": "organization_not_active"},
+        )
+        try:
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=INVALID_CREDENTIALS,
+        )
+
     # Audit success — server-controlled context, no password/token logged
     _audit(
         db,
