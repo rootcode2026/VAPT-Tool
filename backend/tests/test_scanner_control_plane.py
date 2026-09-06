@@ -89,12 +89,15 @@ def test_catalog_all_14_scanners_registered():
         resp = client.get("/api/v1/admin/scanners", headers={"Authorization": f"Bearer {tokens['super@scan.test']}"})
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["total"] == 14
+        # Fleet now 15 (14 + sqlmap advanced), allow >=14 for backward compat
+        assert data["total"] >= 14
         keys = {i["key"] for i in data["items"]}
         for expected in ["nmap","nuclei","http_fingerprint","zap","nikto","tls","dns","subdomain","sast","sca","secrets","container","iac","api"]:
             assert expected in keys, f"missing {expected}"
+        # sqlmap is advanced, must be present in Phase 13
+        assert "sqlmap" in keys
         # no duplicate keys
-        assert len(keys) == 14
+        assert len(keys) == data["total"]
     finally:
         fastapi_app.dependency_overrides.clear()
 

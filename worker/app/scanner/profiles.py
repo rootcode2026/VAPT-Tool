@@ -39,6 +39,9 @@ SCAN_PROFILES = {
     "api_full": ["api"],
     "code": ["sast", "sca", "secrets", "container", "iac", "api"],
     "code_full": ["sast", "sca", "secrets", "container", "iac", "api"],
+    "api_authenticated": ["api", "zap"],
+    "advanced_dast": ["zap", "nuclei", "nikto", "http_fingerprint", "api"],
+    "database_security": ["sqlmap"],
 }
 
 

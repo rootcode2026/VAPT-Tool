@@ -29,9 +29,10 @@ from app.models import (
     User,
     WorkerPool,
 )
-from app.models.connector import CloudConnection, ConnectorSecret, RepositoryConnection, WebhookDelivery
-from app.models.report import Report
 from app.models.compliance import ComplianceControl, ComplianceFramework, ComplianceMapping
+from app.models.connector import CloudConnection, ConnectorSecret, RepositoryConnection, WebhookDelivery
+from app.models.dast import DASTConfig, DASTEndpoint, DASTParameter
+from app.models.report import Report
 
 config = context.config
 

@@ -7,9 +7,8 @@ capacity). It never imports worker code (which requires Docker at import).
 
 from __future__ import annotations
 
-# Canonical 14-scanner fleet. Capabilities/profiles mirror
+# Canonical 15-scanner fleet (14 + SQLmap advanced). Capabilities/profiles mirror
 # worker/app/scanner/scanners/*.py and worker/app/scanner/profiles.py.
-# Do not add a 15th scanner here; fleet expansion is a separate phase.
 SCANNER_CATALOG: list[dict] = [
     {
         "key": "nmap",
@@ -187,11 +186,24 @@ SCANNER_CATALOG: list[dict] = [
         "family": "api",
         "description": "OpenAPI specification security validation",
         "capabilities": ["api", "openapi", "swagger", "endpoint_discovery", "security_config", "sarif", "vapt-api"],
-        "profiles": ["api", "api_full", "code", "code_full"],
+        "profiles": ["api", "api_full", "code", "code_full", "advanced_dast", "api_authenticated"],
         "requires_workspace": True,
         "execution_type": "docker",
         "timeout_seconds": 120,
         "default_image": "vapt-api:latest",
+    },
+    {
+        "key": "sqlmap",
+        "name": "SQLMap",
+        "category": "database_security",
+        "family": "dast",
+        "description": "SQL injection detection — controlled database security testing",
+        "capabilities": ["sqli_detection", "database_fingerprint", "injection_testing", "dast"],
+        "profiles": ["database_security", "advanced_dast"],
+        "requires_workspace": False,
+        "execution_type": "docker",
+        "timeout_seconds": 300,
+        "default_image": "vapt-sqlmap:latest",
     },
 ]
 
@@ -204,6 +216,7 @@ DOCUMENTED_STABLE_VERSIONS: dict[str, str] = {
     "container": "0.66.0",
     "iac": "3.3.16",
     "api": "1.0.0",
+    "sqlmap": "1.8.5",
 }
 
 PROFILE_SCANNERS: dict[str, list[str]] = {
@@ -218,6 +231,9 @@ PROFILE_SCANNERS: dict[str, list[str]] = {
     "api": ["api"],
     "code": ["sast", "sca", "secrets", "container", "iac", "api"],
     "code_full": ["sast", "sca", "secrets", "container", "iac", "api"],
+    "api_authenticated": ["api", "zap"],
+    "advanced_dast": ["zap", "nuclei", "nikto", "http_fingerprint", "api"],
+    "database_security": ["sqlmap"],
 }
 
 
