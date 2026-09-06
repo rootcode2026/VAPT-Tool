@@ -24,6 +24,7 @@ export const PRIMARY_NAV = [
   { name: "API Security", href: "/api-security", icon: IconShield },
   { name: "Reports", href: "/reports", icon: IconAudit },
   { name: "Compliance", href: "/compliance", icon: IconShield },
+  { name: "AI Analyst", href: "/ai", icon: IconShield },
   { name: "Audit", href: "/audit", icon: IconAudit },
 ];
 
@@ -53,6 +54,7 @@ export const PAGE_TITLES = {
   "/api-security": "API Security",
   "/reports": "Reports",
   "/compliance": "Compliance",
+  "/ai": "AI Analyst",
   "/audit": "Audit",
   "/admin": "Admin",
   "/admin/organizations": "Organizations",

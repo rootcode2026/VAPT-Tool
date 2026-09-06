@@ -189,6 +189,20 @@ class Settings:
     # AI
     # ---------------------------------------------------------
 
+    AI_ENABLED: bool = os.getenv("AI_ENABLED", "false").lower() == "true"
+    AI_PROVIDER: str = os.getenv("AI_PROVIDER", "mock").lower()
+    AI_MODEL: str = os.getenv(
+        "AI_MODEL",
+        "mock-analyst",
+    )
+    AI_BASE_URL: str = os.getenv("AI_BASE_URL", "")
+    AI_API_KEY: str = os.getenv("AI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+    AI_TIMEOUT: int = int(os.getenv("AI_TIMEOUT", "30"))
+    AI_MAX_TOKENS: int = int(os.getenv("AI_MAX_TOKENS", "1000"))
+    AI_TEMPERATURE: float = float(os.getenv("AI_TEMPERATURE", "0.2"))
+    AI_MAX_CONTEXT_FINDINGS: int = int(os.getenv("AI_MAX_CONTEXT_FINDINGS", "20"))
+    AI_MAX_CONTEXT_ASSETS: int = int(os.getenv("AI_MAX_CONTEXT_ASSETS", "10"))
+
     OPENAI_API_KEY: str = os.getenv(
         "OPENAI_API_KEY",
         "",
@@ -196,11 +210,6 @@ class Settings:
 
     OPENROUTER_API_KEY: str = os.getenv(
         "OPENROUTER_API_KEY",
-        "",
-    )
-
-    AI_MODEL: str = os.getenv(
-        "AI_MODEL",
         "",
     )
 
