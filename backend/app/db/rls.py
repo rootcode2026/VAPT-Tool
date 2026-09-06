@@ -1,28 +1,25 @@
 """
-PostgreSQL Row-Level Security (RLS) foundation — preparation only, default-off.
+PostgreSQL Row-Level Security (RLS) — enabled for 9 tenant tables in prod-like.
 
-This module provides a reusable, transaction-local helper for setting tenant
-context via PostgreSQL ``set_config(..., true)`` (equivalent to ``SET LOCAL``).
+This module provides transaction-local helper for setting tenant context via
+``set_config(..., true)`` (SET LOCAL). Policies are permissive when no tenant
+is set (system/migrations), strict when set.
+
+Enabled tables (migration i9a0b1c2d3e4): projects, targets, scans, findings,
+assets, reports, ai_conversations, repository_connections, cloud_connections.
 
 Design goals:
-- Default disabled (RLS_ENABLED=false). When disabled, helper is a no-op and
-  existing application authorization remains authoritative.
-- Transaction-local only: context disappears on COMMIT/ROLLBACK, so pooled
-  connections cannot leak Company A context to the next request.
-- No SQL interpolation: tenant values are bound parameters via set_config().
-- Strict UUID validation: organization_id / project_id / user_id must be UUIDv4.
-- SQLite-safe: helper is a no-op on non-PostgreSQL dialects (tests use sqlite).
+- Default RLS_ENABLED=true in prod-local (.env.prod-local), false in dev (safe).
+- Transaction-local only: context cleared on COMMIT/ROLLBACK, no pool leakage.
+- No SQL interpolation: bound parameters.
+- Strict UUID validation.
+- SQLite-safe: no-op on sqlite (tests).
 
-This phase does NOT enable RLS on any table and does NOT create policies.
-Full request -> verified tenant -> RLS wiring belongs to a later RBAC phase.
-
-Intended future flow (not wired in this phase):
-    authenticated user
-        -> application authorization (get_current_user + require_project_access)
-        -> verified organization/project membership
-        -> transaction: BEGIN; SELECT set_config('app.current_organization_id', :oid, true); ...
-        -> queries (RLS policies use current_setting('app.current_organization_id', true))
-        -> COMMIT (context cleared)
+Flow:
+    authenticated user -> application auth -> verified membership
+    -> BEGIN; SELECT set_config('app.current_organization_id', :oid, true); ...
+    -> queries (RLS: organization_id = current_setting(...))
+    -> COMMIT
 """
 
 from __future__ import annotations

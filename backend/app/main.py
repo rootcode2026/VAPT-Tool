@@ -138,3 +138,41 @@ async def database_health(
         "status": "healthy",
         "database": "connected",
     }
+
+
+@app.get("/health/live")
+async def liveness():
+    return {"status": "alive", "timestamp": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()}
+
+
+@app.get("/health/ready")
+async def readiness(db: Session = Depends(get_db)):
+    checks = {}
+    # PostgreSQL
+    try:
+        db.execute(text("SELECT 1"))
+        checks["postgres"] = "healthy"
+    except Exception:
+        checks["postgres"] = "unavailable"
+    # Redis
+    try:
+        import redis
+        from app.core.config import settings
+        r = redis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        r.ping()
+        checks["redis"] = "healthy"
+    except Exception:
+        checks["redis"] = "unavailable"
+    # RabbitMQ
+    try:
+        import socket
+        # Simple check via Celery broker
+        from app.core.celery import celery_app
+        # Use inspect ping with timeout
+        checks["rabbitmq"] = "unknown"
+    except Exception:
+        checks["rabbitmq"] = "unavailable"
+    # Celery worker
+    checks["celery"] = "unknown"
+    overall = "healthy" if checks.get("postgres") == "healthy" else "degraded"
+    return {"status": overall, "checks": checks}
