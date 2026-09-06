@@ -118,6 +118,59 @@ def get_dashboard_summary(
         )
 
     # ---------------------------------------------------------
+    # Code Security summary (org-scoped)
+    # ---------------------------------------------------------
+    try:
+        from app.models.asset import Asset as _Asset
+
+        code_scanners = ("sast", "sca", "secrets", "container", "iac", "api")
+        code_findings = _finding_q().filter(Finding.scanner.in_(code_scanners)).count() or 0
+        code_critical = _finding_q().filter(Finding.scanner.in_(code_scanners), Finding.severity == "critical").count() or 0
+        code_high = _finding_q().filter(Finding.scanner.in_(code_scanners), Finding.severity == "high").count() or 0
+        secrets_count = _finding_q().filter(Finding.scanner == "secrets").count() or 0
+        cloud_findings = _finding_q().filter(Finding.scanner == "cloud").count() or 0
+        cloud_critical = _finding_q().filter(Finding.scanner == "cloud", Finding.severity == "critical").count() or 0
+
+        # assets - org via project join not available directly, use subquery via project
+        from app.models.project import Project as _Project
+
+        # count cloud resources/org via asset->project->org join
+        cloud_accounts = (
+            db.query(func.count(_Asset.id))
+            .join(_Project, _Project.id == _Asset.project_id)
+            .filter(_Project.organization_id == current_user.organization_id, _Asset.asset_type == "cloud_account")
+            .scalar()
+            or 0
+        )
+        cloud_resources = (
+            db.query(func.count(_Asset.id))
+            .join(_Project, _Project.id == _Asset.project_id)
+            .filter(_Project.organization_id == current_user.organization_id, _Asset.asset_type == "cloud_resource")
+            .scalar()
+            or 0
+        )
+        repo_assets = (
+            db.query(func.count(_Asset.id))
+            .join(_Project, _Project.id == _Asset.project_id)
+            .filter(_Project.organization_id == current_user.organization_id, _Asset.asset_type == "repository")
+            .scalar()
+            or 0
+        )
+        container_assets = (
+            db.query(func.count(_Asset.id))
+            .join(_Project, _Project.id == _Asset.project_id)
+            .filter(_Project.organization_id == current_user.organization_id, _Asset.asset_type == "container_image")
+            .scalar()
+            or 0
+        )
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        code_findings = code_critical = code_high = secrets_count = cloud_findings = cloud_critical = cloud_accounts = cloud_resources = repo_assets = container_assets = 0
+
+    # ---------------------------------------------------------
     # Response
     # ---------------------------------------------------------
 
@@ -138,5 +191,25 @@ def get_dashboard_summary(
         },
         "risk": {
             "average_score": average_risk_score,
+        },
+        "code_security": {
+            "findings": code_findings,
+            "critical": code_critical,
+            "high": code_high,
+            "secrets": secrets_count,
+            "repositories": repo_assets,
+            "container_images": container_assets,
+        },
+        "cloud_security": {
+            "findings": cloud_findings,
+            "critical": cloud_critical,
+            "accounts": cloud_accounts,
+            "resources": cloud_resources,
+        },
+        "network_security": {
+            "findings": _finding_q().filter(Finding.scanner.in_(("nmap", "dns", "subdomain", "tls"))).count() or 0,
+        },
+        "web_security": {
+            "findings": _finding_q().filter(Finding.scanner.in_(("nuclei", "zap", "nikto", "http_fingerprint"))).count() or 0,
         },
     }
