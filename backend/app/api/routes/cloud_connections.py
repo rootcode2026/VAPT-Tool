@@ -12,6 +12,7 @@ from app.models.asset import Asset
 from app.models.asset_relationship import AssetRelationship
 from app.services.audit import AuditService
 from app.services.secret_store import get_secret_store
+import os
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/cloud", tags=["Cloud Connectors"])
 
@@ -125,6 +126,22 @@ def discover_resources(project_id: str, connection_id: str, db: Session = Depend
     conn = db.query(CloudConnection).filter(CloudConnection.id == connection_id, CloudConnection.project_id == project_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail="Connection not found")
+    # Async for real mode
+    mode = os.getenv("CLOUD_PROVIDER_MODE", "").lower() or os.getenv("CLOUD_MODE", "").lower()
+    if mode == "real":
+        try:
+            from app.core.celery import celery_app
+            # Enqueue async discovery
+            task_id = str(uuid.uuid4())
+            celery_app.send_task("app.tasks.cloud_discovery.discover_cloud", args=[conn.id, project_id, conn.provider, conn.account_id])
+            try:
+                AuditService.record(db, event_type="CLOUD_DISCOVERY_QUEUED", action="CLOUD_DISCOVERY_QUEUED", result="SUCCESS", actor_user_id=current_user.id, project_id=project_id, resource_type="cloud_connection", resource_id=conn.id, metadata={"provider": conn.provider})
+                db.commit()
+            except Exception:
+                pass
+            return {"connection_id": conn.id, "status": "queued", "task_id": task_id, "provider": conn.provider}
+        except Exception:
+            pass
     store = get_secret_store(db)
     cred = store.get_secret(conn.credential_reference) if conn.credential_reference else None
     if not cred:

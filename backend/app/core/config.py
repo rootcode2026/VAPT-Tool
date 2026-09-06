@@ -222,6 +222,13 @@ class Settings:
     MAX_REPO_SIZE_MB: int = int(os.getenv("MAX_REPO_SIZE_MB", "500"))
     MAX_CLOUD_RESOURCES: int = int(os.getenv("MAX_CLOUD_RESOURCES", "500"))
     WEBHOOK_MAX_PAYLOAD_BYTES: int = int(os.getenv("WEBHOOK_MAX_PAYLOAD_BYTES", str(1024 * 1024)))
+    REPOSITORY_PROVIDER_MODE: str = os.getenv("REPOSITORY_PROVIDER_MODE", "mock").lower()
+    CLOUD_PROVIDER_MODE: str = os.getenv("CLOUD_PROVIDER_MODE", "mock").lower()
+    PROVIDER_TIMEOUT: int = int(os.getenv("PROVIDER_TIMEOUT", "10"))
+    SECRET_STORE_MODE: str = os.getenv("SECRET_STORE_MODE", "development").lower()
+    MAX_REPOSITORY_CONNECTIONS_PER_PROJECT: int = int(os.getenv("MAX_REPOSITORY_CONNECTIONS_PER_PROJECT", "10"))
+    MAX_CLOUD_CONNECTIONS_PER_PROJECT: int = int(os.getenv("MAX_CLOUD_CONNECTIONS_PER_PROJECT", "5"))
+    MAX_CONCURRENT_CLOUD_DISCOVERY: int = int(os.getenv("MAX_CONCURRENT_CLOUD_DISCOVERY", "3"))
 
 
 settings = Settings()
