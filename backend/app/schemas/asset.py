@@ -46,6 +46,8 @@ class AssetResponse(BaseModel):
     asset_type: str
     value: str
     status: str = "active"
+    criticality: str = "unknown"
+    owner_user_id: str | None = None
     first_seen_scan_id: str | None = None
     last_seen_scan_id: str | None = None
     first_seen_at: datetime | None = None

@@ -403,6 +403,12 @@ def get_project_assets(
     current_user: User = Depends(get_current_user),
 ):
     require_project_access(project_id, db, current_user)
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
     q = db.query(Asset).filter(Asset.project_id == project_id)
     if asset_type:
         q = q.filter(Asset.asset_type == asset_type.strip().lower())
@@ -455,6 +461,12 @@ def get_project_findings(
     current_user: User = Depends(get_current_user),
 ):
     require_project_access(project_id, db, current_user)
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
     q = (
         db.query(Finding)
         .join(Scan, Scan.id == Finding.scan_id)

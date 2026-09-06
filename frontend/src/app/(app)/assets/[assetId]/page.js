@@ -9,7 +9,7 @@ import ErrorState from "@/components/ui/ErrorState";
 import EmptyState from "@/components/ui/EmptyState";
 import SeverityBadge from "@/components/ui/SeverityBadge";
 import StatusBadge from "@/components/ui/StatusBadge";
-import { getAsset } from "@/lib/api/assets";
+import { getAsset, updateAsset } from "@/lib/api/assets";
 
 function formatWhen(value) {
   if (!value) return "—";
@@ -29,6 +29,11 @@ export default function AssetDetailPage() {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [crit, setCrit] = useState("");
+  const [owner, setOwner] = useState("");
+  const [adminMsg, setAdminMsg] = useState("");
+  const [adminError, setAdminError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     if (!assetId) return;
@@ -102,6 +107,56 @@ export default function AssetDetailPage() {
           {detail.metadata && Object.keys(detail.metadata).length > 0 && (
             <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-canvas p-3 text-xs">{JSON.stringify(detail.metadata, null, 2)}</pre>
           )}
+          <div className="mt-4 border-t border-border pt-3">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Administration</h4>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <label className="flex flex-col gap-1 text-xs">
+                <span className="font-medium text-muted">Criticality</span>
+                <select value={crit || detail.criticality || "unknown"} onChange={(e) => setCrit(e.target.value)} className="rounded-sm border border-border bg-canvas px-2 py-1.5 text-sm" aria-label="Asset criticality">
+                  {["critical", "high", "medium", "low", "unknown"].map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-xs">
+                <span className="font-medium text-muted">Owner (user UUID)</span>
+                <input value={owner || detail.owner_user_id || ""} onChange={(e) => setOwner(e.target.value)} placeholder="Clear to unassign" className="rounded-sm border border-border bg-canvas px-2 py-1.5 font-mono text-sm" aria-label="Asset owner" />
+              </label>
+            </div>
+            {adminError ? <p className="mt-2 text-xs text-red-400" role="alert">{adminError}</p> : null}
+            {adminMsg ? <p className="mt-2 text-xs text-emerald-400" role="status">{adminMsg}</p> : null}
+            <button
+              type="button"
+              disabled={saving}
+              onClick={async () => {
+                setAdminError("");
+                setAdminMsg("");
+                setSaving(true);
+                try {
+                  const payload = {};
+                  if (crit && crit !== (detail.criticality || "unknown")) payload.criticality = crit;
+                  const own = owner.trim();
+                  if (own !== (detail.owner_user_id || "")) payload.owner_user_id = own || null;
+                  if (Object.keys(payload).length === 0) {
+                    setAdminError("No changes to save.");
+                    return;
+                  }
+                  const updated = await updateAsset(assetId, payload);
+                  setDetail((d) => ({ ...d, ...updated }));
+                  setCrit("");
+                  setOwner("");
+                  setAdminMsg("Asset updated.");
+                } catch (err) {
+                  setAdminError(err.message || "Unable to update asset.");
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="mt-2 rounded-sm bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground disabled:opacity-60"
+            >
+              {saving ? "Saving..." : "Save criticality / owner"}
+            </button>
+          </div>
         </div>
 
         <div className="rounded-md border border-border bg-surface p-4">

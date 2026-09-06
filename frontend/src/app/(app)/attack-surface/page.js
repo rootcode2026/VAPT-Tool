@@ -20,6 +20,7 @@ import {
   getProjectSecuritySummary,
   listProjectAssets,
 } from "@/lib/api/assets";
+import { AttackSurfaceChanges, MonitoringPanel } from "@/components/attack-surface/AttackSurfaceOps";
 import { listProjectFindings } from "@/lib/api/findings";
 import { useProjectContext } from "@/lib/project-context";
 
@@ -516,6 +517,10 @@ export default function AttackSurfacePage() {
           <button type="button" onClick={() => { setSearch(""); setAssetType(""); setAssetStatus(""); }} className="rounded-sm border border-border px-3 py-1.5 text-sm">Clear</button>
         )}
       </FilterBar>
+
+      <AttackSurfaceChanges projectId={selectedProjectId} />
+
+      <MonitoringPanel projectId={selectedProjectId} />
 
       {/* Findings related to attack surface */}
       <DashboardSection title="Findings related to attack surface" action={<Link href="/findings" className="text-xs font-medium text-primary hover:underline">View findings</Link>}>

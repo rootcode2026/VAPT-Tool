@@ -67,6 +67,12 @@ def _classify_project(db: Session, project: Project) -> ProjectBackfillItem:
         )
 
     # Check for activity: targets, scans, assets
+    try:
+        from app.services.attack_surface import ensure_asset_workflow_columns
+
+        ensure_asset_workflow_columns(db)
+    except Exception:
+        pass
     has_targets = db.query(Target).filter(Target.project_id == project.id).first() is not None
     # For scans: via target
     has_scans = (

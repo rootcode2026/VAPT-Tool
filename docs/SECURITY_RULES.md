@@ -186,6 +186,11 @@ Cloud foundation must be read-only, non-destructive, and credential-safe:
 - **Tenant isolation:** `admin/dashboard/summary` global counts via `func.count` (no tenant filter for super_admin by design), `admin/organizations/summary` `WHERE organization_id` per org for super_admin view, org dashboard `GET /dashboard/summary` `WHERE organization_id==current_user.organization_id` (existing), cross-tenant impossible via `require_super_admin` + `organization_id` checks.
 - **Organization/user management hardening:** `backend/app/api/routes/admin.py` and `organization_members.py` remain guarded with centralized `require_super_admin`, validation of slug/status fields, duplicate slug rejection, and explicit denial of self-escalation/removal for organization-admin membership paths. This is intentionally bounded to the backend admin control plane; UI and full status enforcement remain explicitly follow-on work.
 
+## Attack Surface + Continuous Monitoring (8)
+- **Tenant:** every endpoint `require_project_access(project_id)` server-derived, graph/nodes/edges filtered to project (`allowed_ids`), monitoring config/run verified via `config.project_id`, never client `organization_id`/`project_id`/`actor`, unknown 404, cross-project 404.
+- **RBAC:** read any project member, config CRUD + asset admin `project_admin`/`org_admin`/super_admin via `_require_monitor_manage`, manual run also `analyst`, viewer/member read-only 403, owner same-org active + project access, suspended rejected.
+- **Privacy:** no `stdout`/`stderr`/`source`/`secrets`/`tokens`/`cookies` in change events/run records/audit (`sanitize_change_metadata`, bounded evidence), monitoring scope capped 20 targets, no external telemetry, scheduler recurring deferred (manual runs + persisted config).
+
 ## SLA + Remediation + Retesting (7D)
 - **Tenant:** `finding->scan/target->project->org` via `_require_finding_access` + `require_project_access`, never client `organization_id`/`project_id`/`actor`, cross-tenant 404, unknown 404, assignee same-org active via `_validate_user_in_org`.
 - **RBAC:** `_require_finding_manage` (`analyst`/`project_admin`/`org_admin` + super_admin), viewer/member read-only 403, RA approve separation-of-duties (requester cannot self-approve), manual resolve requires reason + authorized role, no `scan_id`/`evidence` mutation.
