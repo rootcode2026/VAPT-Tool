@@ -180,10 +180,17 @@ Cloud foundation must be read-only, non-destructive, and credential-safe:
 - **Read-only discovery:** Default, never perform destructive operations, never execute arbitrary resource-provided commands
 - **No external calls in tests:** `MockCloudDiscoveryAdapter` with deterministic `provider-resource-{i}` and `contains`/`uses` relationships, no network, no credentials required
 
-## Admin Platform (7A)
+## Admin Platform (7A / 7B)
 - **Authorization:** `require_super_admin` (`User.role=="super_admin"`) for `GET /admin/*`, org admin via existing `organization_membership` + `project_membership` + `permissions.py`, every org-owned query `WHERE organization_id` or `project_id` via `require_project_access`, super_admin platform-wide deliberate (`WHERE` no filter), no client `organization_id` trust.
 - **Data minimization:** Dashboard `organizations`/`users`/`projects`/`scans`/`findings`/`assets` only counts/aggregates, no `password`/`hash`/`JWT`/`token`/`api_key`/`private_key`/`cookie`/`evidence`/`source`, `system_health` never `database URLs`/`credentials`.
 - **Tenant isolation:** `admin/dashboard/summary` global counts via `func.count` (no tenant filter for super_admin by design), `admin/organizations/summary` `WHERE organization_id` per org for super_admin view, org dashboard `GET /dashboard/summary` `WHERE organization_id==current_user.organization_id` (existing), cross-tenant impossible via `require_super_admin` + `organization_id` checks.
+- **Organization/user management hardening:** `backend/app/api/routes/admin.py` and `organization_members.py` remain guarded with centralized `require_super_admin`, validation of slug/status fields, duplicate slug rejection, and explicit denial of self-escalation/removal for organization-admin membership paths. This is intentionally bounded to the backend admin control plane; UI and full status enforcement remain explicitly follow-on work.
+
+## Super Admin Organization + User Management (7B)
+- **Authorization:** `require_super_admin` (`User.role=="super_admin"`) for `GET /admin/*` org/user CRUD, org admin via `organization_membership` `org_admin` + `permissions.py`, every org query `WHERE organization_id` or `require_project_access`, super_admin platform-wide deliberate, no client `organization_id` trust.
+- **Lifecycle:** `active` normal, `suspended`/`archived` blocks normal users (`login` 401 generic, `get_current_user` 401/403) while super_admin retains `GET /admin/organizations/{id}`; `User suspended` blocks auth; no destructive delete, no cascade.
+- **Privilege:** `member`/`org_admin` via membership only, `super_admin` never via membership (`Cannot assign platform super_admin`), self-promotion blocked via `require_org_admin`, last-admin 409 preserved, cross-tenant 403/404 via `require_project_access` + `organization_id` checks.
+- **Data minimization:** Admin `organizations`/`users` only `id`/`name`/`slug`/`status`/`email`/`role`/`counts`, never `password`/`hash`/`JWT`/`token`/`api_key`/`private_key`/`cookie`/`evidence`/`source`, audit `ORGANIZATION_*` + `MEMBER_*` sanitized same-tx.
 
 ## Change Safety
 

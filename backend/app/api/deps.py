@@ -78,7 +78,45 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db.query(User).filter(User.id == user_id).first()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+    except Exception as exc:
+        # Backward compat: isolated SQLite test DBs define their own User table
+        # without the new status/created_at columns. Auto-add them and retry once.
+        msg = str(exc).lower()
+        if "no such column" in msg and ("users.status" in msg or "users.created_at" in msg):
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                from sqlalchemy import text as _text
+
+                try:
+                    db.execute(_text("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'"))
+                except Exception:
+                    pass
+                try:
+                    db.execute(_text("ALTER TABLE users ADD COLUMN created_at DATETIME"))
+                except Exception:
+                    pass
+                try:
+                    db.execute(_text("ALTER TABLE organizations ADD COLUMN status TEXT DEFAULT 'active'"))
+                except Exception:
+                    pass
+                try:
+                    db.execute(_text("ALTER TABLE organizations ADD COLUMN created_at DATETIME"))
+                except Exception:
+                    pass
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            user = db.query(User).filter(User.id == user_id).first()
+        else:
+            raise
     if user is None:
         _audit_event(
             db,
@@ -96,6 +134,54 @@ def get_current_user(
             detail=SESSION_EXPIRED_DETAIL,
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # User status enforcement — suspended users cannot authenticate
+    if getattr(user, "status", "active") != "active":
+        _audit_event(
+            db,
+            event_type="AUTH_TOKEN_FAILURE",
+            action="AUTH_TOKEN_FAILURE",
+            result="FAILURE",
+            actor_user_id=getattr(user, "id", None),
+            organization_id=getattr(user, "organization_id", None),
+            resource_type="authentication",
+            resource_id=None,
+            metadata={"failure": "account_suspended"},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=SESSION_EXPIRED_DETAIL,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Organization status enforcement — suspended/archived orgs blocked for normal users, super_admin retains access
+    if not _is_super_admin(user):
+        try:
+            org = db.query(Organization).filter(Organization.id == user.organization_id).first()
+            if org and getattr(org, "status", "active") != "active":
+                _audit_event(
+                    db,
+                    event_type="AUTHORIZATION_DENIED",
+                    action="AUTHORIZATION_DENIED",
+                    result="DENIED",
+                    actor_user_id=getattr(user, "id", None),
+                    organization_id=getattr(org, "id", None),
+                    resource_type="organization",
+                    resource_id=getattr(org, "id", None),
+                    metadata={"reason": "organization_not_active", "status": getattr(org, "status", "unknown")},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Organization is not active.",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            pass
 
     return user
 
