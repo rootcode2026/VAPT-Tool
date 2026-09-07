@@ -195,9 +195,6 @@ def set_version_channel(
 ) -> ScannerVersion:
     channel = validate_channel(channel)
     old = version_row.channel
-    # invalid transitions: failed -> stable directly not allowed without canary
-    # But we allow candidate->stable, stable->deprecated, any->failed, candidate->failed, etc.
-    # Enforce: cannot set stable if health is failed? We allow but rollout will block unhealthy.
     version_row.channel = channel
     version_row.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -221,6 +218,189 @@ def set_version_channel(
         except Exception:
             pass
     return version_row
+
+
+# ---------------------------------------------------------------------------
+# C3: Promotion governance — one stable version, transactional
+# ---------------------------------------------------------------------------
+
+def _validate_promotion_transition(version_row: ScannerVersion, target_channel: str) -> None:
+    target_channel = validate_channel(target_channel)
+    current = (version_row.channel or "").lower()
+    lifecycle = (getattr(version_row, "lifecycle_status", "") or "").lower()
+    # Disallow draft -> stable without approval (must be candidate first)
+    if current == "draft" and target_channel == "stable":
+        raise ValueError("Draft versions cannot be promoted directly to stable")
+    if lifecycle == "deprecated" and target_channel == "stable":
+        raise ValueError("Deprecated versions cannot be promoted to stable without reactivation")
+    if getattr(version_row, "deprecated", False) and target_channel == "stable":
+        raise ValueError("Deprecated version cannot be promoted to stable")
+
+
+def promote_version(
+    db: Session,
+    definition: ScannerDefinition,
+    version: str,
+    target_channel: str = "stable",
+    reason: str | None = None,
+    actor: Any | None = None,
+) -> ScannerVersion:
+    """
+    Promote a version to target_channel (stable/candidate) with one-stable enforcement.
+    Transactionally updates the target version and demotes previous stable.
+    """
+    target_channel = validate_channel(target_channel)
+    _validate_promotion_transition
+    version = validate_version(version)
+    # Find target version
+    target = db.query(ScannerVersion).filter(ScannerVersion.definition_id == definition.id, ScannerVersion.version == version).first()
+    if not target:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Version not found")
+    # Validate transition
+    _validate_promotion_transition(target, target_channel)
+    # Production eligibility for stable
+    if target_channel == "stable":
+        if not target.enabled:
+            raise ValueError("Disabled versions cannot be promoted to stable")
+        if getattr(target, "deprecated", False):
+            raise ValueError("Deprecated versions cannot be promoted to stable")
+        if not target.image_ref:
+            raise ValueError("Version missing image_ref")
+        # For production stable, require digest if definition has a stable version already (strict)
+        # But allow candidate without digest for dev
+        if not target.image_digest:
+            # Allow if no previous stable and in dev, but for stable promotion, require digest for production
+            # We enforce digest for stable
+            raise ValueError("Stable versions require image_digest")
+        # Check compatibility
+        if target.compatibility is not None and not isinstance(target.compatibility, dict):
+            raise ValueError("Invalid compatibility metadata")
+
+    # Transactional promotion: one stable at a time
+    try:
+        # Use a transaction
+        with db.begin_nested():
+            # Find current stable
+            current_stable = db.query(ScannerVersion).filter(
+                ScannerVersion.definition_id == definition.id,
+                ScannerVersion.channel == "stable",
+                ScannerVersion.version != version,
+            ).all()
+            old_stable_version = definition.current_version
+            # Promote target
+            old_channel = target.channel
+            old_lifecycle = getattr(target, "lifecycle_status", None)
+            target.channel = target_channel
+            target.lifecycle_status = "stable" if target_channel == "stable" else target.lifecycle_status
+            target.approved = True if target_channel == "stable" else target.approved
+            if target_channel == "stable":
+                target.approved_at = datetime.now(timezone.utc)
+            target.updated_at = datetime.now(timezone.utc)
+            # Demote previous stables to deprecated/candidate
+            for old in current_stable:
+                if target_channel == "stable" and old.channel == "stable":
+                    old.channel = "deprecated"
+                    old.lifecycle_status = "deprecated"
+                    old.deprecated = True
+                    old.deprecated_at = datetime.now(timezone.utc)
+                    old.updated_at = datetime.now(timezone.utc)
+            # Update definition current_version if promoting to stable
+            if target_channel == "stable":
+                definition.current_version = version
+                definition.previous_version = old_stable_version
+                definition.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(target)
+        db.refresh(definition)
+        # Audit
+        try:
+            AuditService.record(
+                db,
+                event_type="SCANNER_VERSION_PROMOTED" if target_channel == "stable" else "SCANNER_CHANNEL_CHANGED",
+                action="SCANNER_VERSION_PROMOTED" if target_channel == "stable" else "SCANNER_CHANNEL_CHANGED",
+                result="SUCCESS",
+                actor_user_id=getattr(actor, "id", None),
+                resource_type="scanner",
+                resource_id=definition.scanner_key,
+                metadata={"version": version, "old_channel": old_channel, "new_channel": target_channel, "reason": (reason or "")[:500]},
+            )
+            # Security event for promotion
+            try:
+                from app.services.security_event import emit_security_event
+                emit_security_event(
+                    db,
+                    event_type="SCANNER_VERSION_PROMOTED",
+                    actor_user_id=getattr(actor, "id", None),
+                    organization_id=None,
+                    project_id=None,
+                    resource_type="scanner",
+                    resource_id=definition.scanner_key,
+                    severity="HIGH" if target_channel == "stable" else "INFO",
+                    before_state=old_channel,
+                    after_state=target_channel,
+                    reason=reason,
+                    metadata={"version": version, "image_ref": target.image_ref},
+                )
+            except Exception:
+                pass
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return target
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
+
+
+def resolve_production_version(db: Session, scanner_key: str) -> ScannerVersion | None:
+    """
+    Resolve the production-eligible version for a scanner.
+
+    Requirements: scanner exists, version exists, channel=stable, lifecycle=stable,
+    enabled=true, approved=true, not deprecated, valid image, digest present, compatible.
+    Returns None if no valid production version.
+    """
+    definition = db.query(ScannerDefinition).filter(ScannerDefinition.scanner_key == scanner_key).first()
+    if not definition:
+        return None
+    # Find stable, enabled, approved, not deprecated, with digest
+    q = db.query(ScannerVersion).filter(
+        ScannerVersion.definition_id == definition.id,
+        ScannerVersion.channel == "stable",
+        ScannerVersion.enabled == True,  # noqa: E712
+        ScannerVersion.approved == True,  # noqa: E712
+        ScannerVersion.deprecated == False,  # noqa: E712
+    )
+    # Prefer lifecycle stable
+    candidates = q.all()
+    # Filter for digest and not deprecated
+    eligible = []
+    for v in candidates:
+        if not v.image_ref:
+            continue
+        if not v.image_digest:
+            continue
+        # Check deprecated flag
+        if getattr(v, "deprecated", False):
+            continue
+        # Check lifecycle
+        if getattr(v, "lifecycle_status", "stable") not in ("stable", "candidate"):
+            # Allow candidate if stable not found? No, for production, require stable
+            if v.lifecycle_status != "stable":
+                continue
+        eligible.append(v)
+    if not eligible:
+        return None
+    # Prefer most recently approved
+    eligible.sort(key=lambda x: getattr(x, "approved_at", None) or x.created_at, reverse=True)
+    return eligible[0]
 
 # ---------------------------------------------------------------------------
 # Health

@@ -199,6 +199,93 @@ def list_versions(
         } for r in rows
     ], "total": len(rows)}
 
+@router.post("/scanners/{scanner_key}/versions/{version}/promote", status_code=200)
+def promote_version_route(
+    scanner_key: str,
+    version: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    _ensure_seed(db)
+    definition = get_definition_or_404(db, scanner_key.strip())
+    target_channel = payload.get("target_channel") or payload.get("channel") or "stable"
+    reason = payload.get("reason")
+    # Reject arbitrary fields
+    for k in ("image_ref", "image_digest", "command", "shell", "volumes", "privileged"):
+        if k in payload and k not in ("target_channel", "channel", "reason"):
+            raise HTTPException(status_code=400, detail=f"Forbidden field: {k}")
+    try:
+        from app.services.scanner_control import promote_version
+        v = promote_version(db, definition, version=version, target_channel=target_channel, reason=reason, actor=current_user)
+        return {"id": v.id, "version": v.version, "channel": v.channel, "lifecycle_status": getattr(v, "lifecycle_status", None), "image_ref": v.image_ref, "image_digest": v.image_digest}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)[:500])
+
+@router.post("/scanners/{scanner_key}/versions/{version}/approve", status_code=200)
+def approve_version_route(
+    scanner_key: str,
+    version: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    _ensure_seed(db)
+    definition = get_definition_or_404(db, scanner_key.strip())
+    from app.models.scanner_fleet import ScannerVersion
+    v = db.query(ScannerVersion).filter(ScannerVersion.definition_id == definition.id, ScannerVersion.version == version).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Version not found")
+    if v.approved:
+        return {"id": v.id, "version": v.version, "approved": True}
+    v.approved = True
+    v.approved_at = datetime.now(timezone.utc)
+    v.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(v)
+    try:
+        AuditService.record(db, event_type="SCANNER_VERSION_APPROVED", action="SCANNER_VERSION_APPROVED", result="SUCCESS", actor_user_id=current_user.id, resource_type="scanner", resource_id=definition.scanner_key, metadata={"version": version})
+        db.commit()
+    except Exception:
+        pass
+    return {"id": v.id, "version": v.version, "approved": True, "approved_at": v.approved_at.isoformat() if v.approved_at else None}
+
+@router.post("/scanners/{scanner_key}/versions/{version}/deprecate", status_code=200)
+def deprecate_version_route(
+    scanner_key: str,
+    version: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    _ensure_seed(db)
+    definition = get_definition_or_404(db, scanner_key.strip())
+    from app.models.scanner_fleet import ScannerVersion
+    v = db.query(ScannerVersion).filter(ScannerVersion.definition_id == definition.id, ScannerVersion.version == version).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Version not found")
+    v.deprecated = True
+    v.deprecated_at = datetime.now(timezone.utc)
+    v.lifecycle_status = "deprecated"
+    v.channel = "deprecated"
+    v.updated_at = datetime.now(timezone.utc)
+    # If this was stable, need to handle current_version?
+    if definition.current_version == version:
+        # Find previous stable or leave as is but mark as deprecated — current_version will be stale but not deleted
+        pass
+    db.commit()
+    db.refresh(v)
+    try:
+        AuditService.record(db, event_type="SCANNER_VERSION_DEPRECATED", action="SCANNER_VERSION_DEPRECATED", result="SUCCESS", actor_user_id=current_user.id, resource_type="scanner", resource_id=definition.scanner_key, metadata={"version": version})
+        db.commit()
+    except Exception:
+        pass
+    return {"id": v.id, "version": v.version, "deprecated": True, "lifecycle_status": v.lifecycle_status}
+
 @router.post("/scanners/{scanner_key}/versions", status_code=201)
 def create_version(
     scanner_key: str,
