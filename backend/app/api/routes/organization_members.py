@@ -32,7 +32,8 @@ def _require_org_admin(organization_id: str, db: Session, current_user: User):
     if _is_super_admin(current_user):
         return
     role = _effective_org_role(current_user, organization_id, db)
-    if role != "org_admin":
+    from app.core.permissions import is_org_admin_role
+    if not is_org_admin_role(role):
         try:
             AuditService.record(
                 db,
@@ -212,20 +213,21 @@ def update_organization_member(
     # Last admin protection: if demoting or deactivating an org_admin, ensure another active org_admin remains
     new_role = data.role if data.role is not None else membership.role
     new_status = data.status if data.status is not None else membership.status
-    is_currently_active_admin = membership.role == "org_admin" and membership.status == "active"
-    will_be_active_admin = new_role == "org_admin" and new_status == "active"
+    from app.core.permissions import is_org_admin_role
+    is_currently_active_admin = is_org_admin_role(membership.role) and membership.status == "active"
+    will_be_active_admin = is_org_admin_role(new_role) and new_status == "active"
     if is_currently_active_admin and not will_be_active_admin:
-        # Count other active org_admins
+        # Count other active org_admins (both canonical and legacy)
         other_admins = (
             db.query(OrganizationMembership)
             .filter(
                 OrganizationMembership.organization_id == organization_id,
-                OrganizationMembership.role == "org_admin",
                 OrganizationMembership.status == "active",
                 OrganizationMembership.user_id != user_id,
             )
-            .count()
+            .all()
         )
+        other_admins = sum(1 for m in other_admins if is_org_admin_role(m.role))
         if other_admins == 0:
             raise HTTPException(status_code=409, detail="Cannot demote or deactivate the last active org_admin")
 
@@ -290,17 +292,18 @@ def remove_organization_member(
         raise HTTPException(status_code=404, detail="Membership not found")
 
     # Last admin protection
-    if membership.role == "org_admin" and membership.status == "active":
+    from app.core.permissions import is_org_admin_role
+    if is_org_admin_role(membership.role) and membership.status == "active":
         other_admins = (
             db.query(OrganizationMembership)
             .filter(
                 OrganizationMembership.organization_id == organization_id,
-                OrganizationMembership.role == "org_admin",
                 OrganizationMembership.status == "active",
                 OrganizationMembership.user_id != user_id,
             )
-            .count()
+            .all()
         )
+        other_admins = sum(1 for m in other_admins if is_org_admin_role(m.role))
         if other_admins == 0:
             raise HTTPException(status_code=409, detail="Cannot remove the last active org_admin")
 
