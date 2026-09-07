@@ -476,28 +476,61 @@ def downgrade_scanner(
 @router.post("/scanners/{scanner_key}/rollback")
 def rollback_scanner(
     scanner_key: str,
+    payload: dict | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_super_admin),
 ):
     _ensure_seed(db)
     definition = get_definition_or_404(db, scanner_key.strip())
-    # find last failed/canary rollout
+    payload = payload or {}
+    requested_target = payload.get("target_version") or payload.get("version")
+    # If target_version explicitly provided, validate it against trusted history
+    if requested_target:
+        requested_target = str(requested_target).strip()
+        try:
+            from app.services.scanner_control import validate_version
+            validate_version(requested_target)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        # Must be a previously deployed version: check rollout history or definition's previous_version/current_version
+        from app.models.scanner_fleet import ScannerVersion, ScannerRollout as _Rollout
+        # Check if version exists and belongs to this scanner
+        v = db.query(ScannerVersion).filter(ScannerVersion.definition_id == definition.id, ScannerVersion.version == requested_target).first()
+        if not v:
+            raise HTTPException(status_code=404, detail="Target version not found for scanner")
+        # Check if it was previously deployed (in rollout history or as previous_version)
+        history_exists = db.query(_Rollout).filter(_Rollout.definition_id == definition.id, (_Rollout.target_version == requested_target) | (_Rollout.previous_version == requested_target)).first()
+        if not history_exists and requested_target not in (definition.current_version, definition.previous_version):
+            raise HTTPException(status_code=400, detail="Target version was not previously deployed — not a known-good rollback target")
+        # Validate health/approval etc. via create_rollout will handle
+        try:
+            new_rollout = create_rollout(db, definition, target_version=requested_target, operation="rollback", actor=current_user)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        new_rollout = advance_rollout_canary(db, new_rollout, actor=current_user)
+        return {
+            "id": new_rollout.id,
+            "scanner_key": scanner_key,
+            "target_version": new_rollout.target_version,
+            "previous_version": new_rollout.previous_version,
+            "state": new_rollout.state,
+            "operation": new_rollout.operation,
+            "failure_reason": new_rollout.failure_reason,
+        }
+    # No explicit target — derive from trusted history (previous_version)
     rollout = db.query(ScannerRollout).filter(
         ScannerRollout.definition_id == definition.id,
         ScannerRollout.state.in_(["failed", "canary", "pending", "rolling_out"]),
     ).order_by(ScannerRollout.created_at.desc()).first()
     if not rollout:
-        # also check last active rollout to rollback
         rollout = db.query(ScannerRollout).filter(ScannerRollout.definition_id == definition.id).order_by(ScannerRollout.created_at.desc()).first()
         if not rollout:
             raise HTTPException(status_code=404, detail="No rollout to rollback")
         if rollout.state == "active" and rollout.previous_version:
-            # create a new rollback rollout to previous
             try:
                 new_rollout = create_rollout(db, definition, target_version=rollout.previous_version, operation="rollback", actor=current_user)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-            # advance canary
             new_rollout = advance_rollout_canary(db, new_rollout, actor=current_user)
             return {
                 "id": new_rollout.id,
