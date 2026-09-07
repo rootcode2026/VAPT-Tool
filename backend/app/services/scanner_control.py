@@ -694,6 +694,43 @@ def create_rollout(
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Target version is already current")
 
+    # C6: For downgrade, target must be genuinely older than current
+    if operation == "downgrade" and previous:
+        # Use semantic version comparison if possible, otherwise lexical with validation
+        try:
+            from packaging.version import Version
+            if Version(target_version) >= Version(previous):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=400, detail="Downgrade target must be older than current version")
+        except Exception:
+            # Fallback: if not semantic, require lexical < and not equal, but reject if cannot determine
+            if target_version >= previous:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=400, detail="Downgrade target must be older than current version (lexical)")
+
+    # Health gate for downgrade: target must be healthy, not failed/unhealthy/deprecated/disabled
+    if operation == "downgrade":
+        # Check target health
+        try:
+            h = db.query(ScannerHealth).filter(ScannerHealth.definition_id == definition.id, ScannerHealth.version == target_version).order_by(ScannerHealth.checked_at.desc()).first()
+            if h and h.status in ("unhealthy", "failed"):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=400, detail=f"Target version health is {h.status}, cannot downgrade")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        # Check target version state
+        if v.channel == "failed" or getattr(v, "deprecated", False):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="Target version is failed/deprecated, cannot downgrade")
+        if not v.enabled or not getattr(v, "approved", False):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="Target version must be approved and enabled")
+        if not v.image_digest:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="Target version missing image_digest")
+
     rollout = ScannerRollout(
         id=str(uuid.uuid4()),
         definition_id=definition.id,
