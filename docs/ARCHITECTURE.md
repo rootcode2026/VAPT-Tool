@@ -255,6 +255,7 @@ Backend routes serving the frontend: `backend/app/api/routes/` — `auth`, `proj
 - **Secret handling:** See `SECURITY_RULES.md` — early redaction in scanner, repeated at persistence/tasks, `[REDACTED]` + `_secret_hash` (SHA-256 32 hex), never plaintext in DB/logs/API/AI.
 - **Network:** AppSec scanners run offline (`semgrep p/security-audit --metrics off`, `osv-scanner --offline`, `gitleaks --no-git --config` bundled rules); no mandatory external API calls, no third-party data upload.
 - **Project isolation:** All persistence queries are `WHERE project_id = :project_id`; `get_project_id` validates `target_id` ownership; findings/assets/relationships are project-scoped.
+- **API hardening (P14.1):** `docs/API_SECURITY.md` inventory 65 endpoints, `main.py` protects `ai` + `onboarding`, `SecurityHeadersMiddleware` + `CORSMiddleware` (no wildcard), `RateLimitMiddleware` (Redis, 11 limits, 2 MB), `publicErrorMessage` no traces, `AuditService` redacted, `encrypt_secret` AES-256-GCM, `client.js` centralized 401, `test_api_security_hardening.py` 15 tests + `security-hardening.spec.mjs` 6 tests, 100 E2E passing.
 
 ## Row-Level Security Foundation (Defense-in-Depth, Disabled — Preparation Only)
 
