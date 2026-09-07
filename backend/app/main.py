@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.deps_rls import set_rls_context
 from app.api.routes.admin import router as admin_router
 from app.api.routes.assets import router as assets_router
 from app.api.routes.onboarding import router as onboarding_router
@@ -89,7 +90,7 @@ app.add_middleware(
 )
 
 
-protected = [Depends(get_current_user)]
+protected = [Depends(get_current_user), Depends(set_rls_context)]
 
 app.include_router(auth_router)
 app.include_router(targets_router, dependencies=protected)

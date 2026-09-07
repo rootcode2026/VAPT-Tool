@@ -474,6 +474,29 @@ def execute_scan(
     db = SessionLocal()
 
     try:
+        # Set RLS tenant context for this worker transaction (defense-in-depth)
+        try:
+            from app.db.rls import set_tenant_context, is_rls_enabled  # type: ignore
+
+            if is_rls_enabled():
+                org_id, proj_id = _get_scan_tenant(db, target_id)
+                if org_id:
+                    # Must be inside a transaction for SET LOCAL
+                    try:
+                        db.begin()
+                    except Exception:
+                        pass
+                    try:
+                        set_tenant_context(db, organization_id=org_id, project_id=proj_id)
+                    except Exception:
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
+                        # Retry without RLS if set fails
+                        pass
+        except Exception:
+            pass
         db.execute(
             text(
                 """
