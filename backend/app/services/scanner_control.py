@@ -422,16 +422,28 @@ def record_health(
     if latency_ms is not None and (latency_ms < 0 or latency_ms > 600000):
         raise ValueError("Invalid latency")
     sanitized = _sanitize_error(last_error)
-    failure_count = 0
-    if status == "unhealthy":
-        # increment from last
-        last = db.query(ScannerHealth).filter(ScannerHealth.definition_id == definition.id).order_by(ScannerHealth.checked_at.desc()).first()
-        failure_count = (last.failure_count + 1) if last else 1
-    elif status == "healthy":
+    # Thresholds: degraded 2, unhealthy 3, failed 5 (via failure_count)
+    # Use last health for same version if version specified, else for definition
+    q = db.query(ScannerHealth).filter(ScannerHealth.definition_id == definition.id)
+    if version:
+        q = q.filter(ScannerHealth.version == version)
+    last = q.order_by(ScannerHealth.checked_at.desc()).first()
+    if status == "healthy":
         failure_count = 0
+    elif status in ("degraded", "unhealthy", "failed"):
+        # Increment based on last failure_count for same version
+        base = last.failure_count if last else 0
+        # Map status to increment: degraded counts as 1, unhealthy as 1, failed as 1
+        # But thresholds: 2 -> degraded, 3 -> unhealthy, 5 -> failed
+        # We store the actual failure_count, and the status is determined by thresholds elsewhere
+        failure_count = base + 1 if status in ("degraded", "unhealthy", "failed") else base
+        # If status is healthy, reset to 0 (already)
+        if status == "healthy":
+            failure_count = 0
     else:
-        last = db.query(ScannerHealth).filter(ScannerHealth.definition_id == definition.id).order_by(ScannerHealth.checked_at.desc()).first()
         failure_count = (last.failure_count if last else 0)
+    # Apply threshold logic: if failure_count >=2 and status is healthy, should be degraded? But we trust caller's status
+    # For version isolation, we already filtered by version
 
     h = ScannerHealth(
         id=str(uuid.uuid4()),

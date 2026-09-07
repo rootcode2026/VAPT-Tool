@@ -323,14 +323,14 @@ def get_eligible_scanners(profile: str, db) -> list[str] | None:
             except Exception:
                 pass
         try:
-            h = (
-                db.query(ScannerHealth)
-                .filter(ScannerHealth.definition_id == d.id)
-                .order_by(ScannerHealth.checked_at.desc())
-                .first()
-            )
-            if h is not None and h.status == "unhealthy":
+            # Version-aware health: check health for current_version if exists, else for definition
+            q = db.query(ScannerHealth).filter(ScannerHealth.definition_id == d.id)
+            if d.current_version:
+                q = q.filter(ScannerHealth.version == d.current_version)
+            h = q.order_by(ScannerHealth.checked_at.desc()).first()
+            if h is not None and h.status in ("unhealthy", "failed"):
                 continue
+            # degraded and unknown are still eligible (with warning)
         except Exception:
             pass
         eligible.append(key)
