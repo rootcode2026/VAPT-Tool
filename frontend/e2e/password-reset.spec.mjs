@@ -97,8 +97,33 @@ test.describe("Password reset / token lifecycle", () => {
   test("reset does not disable MFA (if enabled, still required after reset)", async () => {
     const email = USERS.pwreset.email;
     const superToken = await apiLogin(USERS.superAdmin.email, E2E_PASSWORD);
+    // Ensure clean password before test
+    try {
+      await apiForgotPassword(email);
+      const out0 = await apiGet("/api/v1/auth/_debug/email-outbox", superToken);
+      let tok0 = null;
+      if (out0.status === 200) {
+        const e = [...out0.body.outbox].reverse().find((x) => x.to?.toLowerCase() === email.toLowerCase());
+        tok0 = e?.token;
+      }
+      if (tok0) await apiResetPassword(tok0, E2E_PASSWORD, E2E_PASSWORD);
+    } catch {}
     await apiPost("/api/v1/auth/_debug/mfa/reset", superToken, { email });
-    let token = await apiLogin(email, E2E_PASSWORD);
+    let token;
+    try {
+      token = await apiLogin(email, E2E_PASSWORD);
+    } catch {
+      // If still fails, try TempPass and reset
+      await apiForgotPassword(email);
+      const outTmp = await apiGet("/api/v1/auth/_debug/email-outbox", superToken);
+      let tokTmp = null;
+      if (outTmp.status === 200) {
+        const e = [...outTmp.body.outbox].reverse().find((x) => x.to?.toLowerCase() === email.toLowerCase());
+        tokTmp = e?.token;
+      }
+      if (tokTmp) await apiResetPassword(tokTmp, E2E_PASSWORD, E2E_PASSWORD);
+      token = await apiLogin(email, E2E_PASSWORD);
+    }
     const setup = await apiPost("/api/v1/auth/mfa/setup", token, {});
     expect(setup.status).toBe(200);
     const secret = setup.body.secret;
@@ -146,7 +171,34 @@ test.describe("Password reset / UI", () => {
 
   test("unauthenticated cannot access protected pages after password change (session revocation check)", async () => {
     const email = USERS.pwreset.email;
-    const viewerTokenOld = await apiLogin(email, E2E_PASSWORD);
+    // Ensure clean: reset password to known old via superAdmin if needed
+    try {
+      const superT0 = await apiLogin(USERS.superAdmin.email, E2E_PASSWORD);
+      await apiForgotPassword(email);
+      const out0 = await apiGet("/api/v1/auth/_debug/email-outbox", superT0);
+      let tok0 = null;
+      if (out0.status === 200) {
+        const e = [...out0.body.outbox].reverse().find((x) => x.to?.toLowerCase() === email.toLowerCase());
+        tok0 = e?.token;
+      }
+      if (tok0) await apiResetPassword(tok0, E2E_PASSWORD, E2E_PASSWORD);
+    } catch {}
+    let viewerTokenOld;
+    try {
+      viewerTokenOld = await apiLogin(email, E2E_PASSWORD);
+    } catch {
+      // If old fails, try new and reset
+      const superT = await apiLogin(USERS.superAdmin.email, E2E_PASSWORD);
+      await apiForgotPassword(email);
+      const out = await apiGet("/api/v1/auth/_debug/email-outbox", superT);
+      let tok = null;
+      if (out.status === 200) {
+        const e = [...out.body.outbox].reverse().find((x) => x.to?.toLowerCase() === email.toLowerCase());
+        tok = e?.token;
+      }
+      if (tok) await apiResetPassword(tok, E2E_PASSWORD, E2E_PASSWORD);
+      viewerTokenOld = await apiLogin(email, E2E_PASSWORD);
+    }
     const change = await apiPost("/api/v1/auth/change-password", viewerTokenOld, { current_password: E2E_PASSWORD, new_password: "ViewerNewPass123!A", confirm_password: "ViewerNewPass123!A" });
     expect(change.status).toBe(200);
     const newLogin = await apiLoginRaw(email, "ViewerNewPass123!A");

@@ -42,6 +42,15 @@ export default function TopBar({ pathname, onMenuClick }) {
         <ProjectSelect id="topbar-project-context" />
       </div>
 
+      <a
+        href="/help"
+        className="inline-flex h-9 w-9 items-center justify-center rounded-sm border border-border text-muted hover:bg-surface-hover"
+        aria-label="Help Center"
+        title="Help Center"
+        data-tour="help"
+      >
+        ?
+      </a>
       <button
         type="button"
         className="inline-flex h-9 w-9 items-center justify-center rounded-sm border border-border text-muted"

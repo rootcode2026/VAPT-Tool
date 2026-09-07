@@ -29,6 +29,7 @@ export const PRIMARY_NAV = [
 ];
 
 export const SECONDARY_NAV = [
+  { name: "Help", href: "/help", icon: IconShield },
   { name: "Settings", href: "/settings", icon: IconSettings },
 ];
 
@@ -62,6 +63,7 @@ export const PAGE_TITLES = {
   "/admin/scanners": "Scanner Fleet",
   "/admin/system": "System Health",
   "/settings": "Settings",
+  "/help": "Help",
   "/targets": "Targets",
 };
 

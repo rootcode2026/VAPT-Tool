@@ -1,0 +1,3 @@
+# FAQ
+
+What is a project? Security boundary for assets/scans/findings. What can I scan? Only authorized systems. Why can't I access a project? Not a member or wrong org (404). Why MFA? Required for super_admin, org can enforce. Lost authenticator? Use recovery code, or admin reset via _debug (dev). What is a finding? Scanner result with severity/risk/evidence. Risk? 0-100 via RiskAssessmentEngine. Accepted risk? Acknowledged but not remediated. Retest? Verify fix. Attack surface? Graph of assets/relationships. DAST/SAST/SCA? Dynamic/static/composition analysis. Compliance coverage? Assessment support, not cert. AI knowledge? Bounded findings/assets, cited.

@@ -22,12 +22,14 @@ function NavLinks({ pathname, onNavigate }) {
       {PRIMARY_NAV.map((item) => {
         const Icon = item.icon;
         const active = isNavActive(pathname, item.href);
+        const tourId = item.href.replace(/^\//, "").replace(/\//g, "-") || "dashboard";
         return (
           <Link
             key={item.href}
             href={item.href}
             onClick={onNavigate}
             aria-current={active ? "page" : undefined}
+            data-tour={tourId}
             className={[
               "flex items-center gap-3 rounded-sm px-3 py-2 text-sm transition-colors",
               active
@@ -50,12 +52,14 @@ function NavLinks({ pathname, onNavigate }) {
           {ADMIN_NAV.map((item) => {
             const Icon = item.icon;
             const active = isNavActive(pathname, item.href);
+            const tourId = item.href.replace(/^\//, "").replace(/\//g, "-") || "admin";
             return (
               <Link
                 key={item.href}
                 href={item.href}
                 onClick={onNavigate}
                 aria-current={active ? "page" : undefined}
+                data-tour={tourId}
                 className={[
                   "flex items-center gap-3 rounded-sm px-3 py-2 text-sm transition-colors",
                   active
@@ -76,12 +80,14 @@ function NavLinks({ pathname, onNavigate }) {
       {SECONDARY_NAV.map((item) => {
         const Icon = item.icon;
         const active = isNavActive(pathname, item.href);
+        const tourId = item.href.replace(/^\//, "").replace(/\//g, "-") || "help";
         return (
           <Link
             key={item.href}
             href={item.href}
             onClick={onNavigate}
             aria-current={active ? "page" : undefined}
+            data-tour={tourId}
             className={[
               "flex items-center gap-3 rounded-sm px-3 py-2 text-sm transition-colors",
               active

@@ -21,6 +21,7 @@ from app.models.recovery_code import MfaRecoveryCode
 from app.models.target import Target
 from app.models.user import User
 from app.models.user_mfa import UserMfaCredential
+from app.models.user_onboarding import UserOnboarding
 
 __all__ = [
     "Asset",
@@ -43,5 +44,6 @@ __all__ = [
     "Target",
     "User",
     "UserMfaCredential",
+    "UserOnboarding",
     "WorkerPool",
 ]
