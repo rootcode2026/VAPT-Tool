@@ -118,7 +118,7 @@ app.include_router(webhook_router)
 app.include_router(reports_router, dependencies=protected)
 app.include_router(compliance_router, dependencies=protected)
 app.include_router(dast_router, dependencies=protected)
-app.include_router(ai_router)
+app.include_router(ai_router, dependencies=protected)
 app.include_router(metrics_router, dependencies=protected)
 
 
