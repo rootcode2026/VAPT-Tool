@@ -35,7 +35,10 @@ router = APIRouter(
     tags=["Findings"],
 )
 
-WORKFLOW_STATUSES = {"open", "triaged", "in_progress", "resolved", "false_positive", "accepted_risk", "reopened"}
+WORKFLOW_STATUSES = {
+    "open", "detected", "triaged", "in_progress", "remediation_claimed", "ready_for_retest", "retesting", "remediated", "closed", "reopened",
+    "resolved", "false_positive", "accepted_risk",
+}
 SEVERITIES = {"critical", "high", "medium", "low", "info"}
 TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
@@ -425,7 +428,7 @@ def update_finding(
             new_override = so
             override_changed = getattr(finding, "severity_override", None) != so
 
-    # Validate assignee/owner (None clears)
+    # Validate assignee/owner (None clears) — also track assigned_at/assigned_by and owner_team_id (deferred)
     new_assignee = None
     assignee_changed = False
     if "assigned_to" in data.model_fields_set:
@@ -454,6 +457,31 @@ def update_finding(
             new_owner = ouid
             owner_changed = getattr(finding, "owner_user_id", None) != ouid
 
+    # Team ownership — deferred (no team table yet), accept but do not validate
+    new_team = None
+    team_changed = False
+    if "owner_team_id" in data.model_fields_set:
+        if data.owner_team_id is None:
+            new_team = None
+            team_changed = getattr(finding, "owner_team_id", None) is not None
+        else:
+            new_team = str(data.owner_team_id).strip()[:36]
+            team_changed = getattr(finding, "owner_team_id", None) != new_team
+
+    # Workflow status alias (maps to status for now, preserves original scanner severity)
+    new_workflow = None
+    workflow_changed = False
+    if "workflow_status" in data.model_fields_set:
+        if data.workflow_status is None:
+            new_workflow = None
+            workflow_changed = getattr(finding, "workflow_status", None) is not None
+        else:
+            wf = str(data.workflow_status).strip().lower()
+            if wf not in WORKFLOW_STATUSES:
+                raise HTTPException(status_code=400, detail=f"Invalid workflow_status. Allowed: {sorted(WORKFLOW_STATUSES)}")
+            new_workflow = wf
+            workflow_changed = getattr(finding, "workflow_status", None) != wf
+
     # Validate tags
     new_tags = None
     tags_changed = False
@@ -464,8 +492,7 @@ def update_finding(
 
     status_changed = new_status is not None and new_status != finding.status
 
-    if not status_changed and not override_changed and not assignee_changed and not owner_changed and not tags_changed:
-        # No-op — return detail without audit
+    if not status_changed and not override_changed and not assignee_changed and not owner_changed and not team_changed and not workflow_changed and not tags_changed:
         return _finding_detail_payload(finding, db)
 
     reason = (data.reason.strip()[:1000] if data.reason else None)
@@ -474,15 +501,61 @@ def update_finding(
     old_override = getattr(finding, "severity_override", None)
     old_assignee = getattr(finding, "assigned_to", None)
     old_owner = getattr(finding, "owner_user_id", None)
+    old_team = getattr(finding, "owner_team_id", None)
+    old_workflow = getattr(finding, "workflow_status", None)
 
     if status_changed:
         finding.status = new_status
+        # Update workflow_status as well for new lifecycle (keep in sync)
+        try:
+            finding.workflow_status = new_status
+        except Exception:
+            pass
+        # Track closed
+        if new_status in ("closed", "remediated", "resolved"):
+            try:
+                finding.closed_at = datetime.utcnow()
+                finding.closed_by = current_user.id
+            except Exception:
+                pass
+        elif new_status == "reopened":
+            try:
+                finding.closed_at = None
+                finding.closed_by = None
+            except Exception:
+                pass
+        elif new_status == "remediation_claimed":
+            try:
+                finding.remediation_claimed_at = datetime.utcnow()
+                finding.remediation_claimed_by = current_user.id
+            except Exception:
+                pass
+        elif new_status == "ready_for_retest":
+            try:
+                finding.ready_for_retest_at = datetime.utcnow()
+            except Exception:
+                pass
     if override_changed:
         finding.severity_override = new_override
     if assignee_changed:
         finding.assigned_to = new_assignee
+        try:
+            finding.assigned_at = datetime.utcnow() if new_assignee else None
+            finding.assigned_by = current_user.id if new_assignee else None
+        except Exception:
+            pass
     if owner_changed:
         finding.owner_user_id = new_owner
+    if team_changed:
+        try:
+            finding.owner_team_id = new_team
+        except Exception:
+            pass
+    if workflow_changed:
+        try:
+            finding.workflow_status = new_workflow
+        except Exception:
+            pass
     try:
         finding.updated_at = datetime.utcnow()
     except Exception:
@@ -494,18 +567,37 @@ def update_finding(
         for t in new_tags:
             db.add(FindingTag(id=str(uuid.uuid4()), finding_id=finding.id, tag=t))
 
-    # History rows (one per changed field)
-    hid = str(uuid.uuid4())
+    # History rows (one per changed field) — include org/project/request context
+    try:
+        from app.core.request_id import get_audit_context
+        ctx = get_audit_context()
+        req_id = ctx.get("request_id")
+        corr_id = ctx.get("correlation_id")
+    except Exception:
+        req_id = corr_id = None
+    def _add_history(action, old, new):
+        try:
+            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action=action, old_value=old, new_value=new, reason=reason, organization_id=organization_id, project_id=project_id, request_id=req_id, correlation_id=corr_id))
+        except Exception:
+            # Fallback for old schema without new columns
+            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action=action, old_value=old, new_value=new, reason=reason))
     if status_changed:
-        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="status_changed", old_value=old_status, new_value=new_status, reason=reason))
+        _add_history("status_changed", old_status, new_status)
+        # Also track workflow_status if different
+        if workflow_changed and old_workflow != new_status:
+            _add_history("workflow_status_changed", old_workflow, new_workflow)
     if override_changed:
-        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="severity_override", old_value=old_override, new_value=new_override, reason=reason))
+        _add_history("severity_override", old_override, new_override)
     if assignee_changed:
-        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="assigned", old_value=old_assignee, new_value=new_assignee, reason=reason))
+        _add_history("assigned", old_assignee, new_assignee)
     if owner_changed:
-        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="owner_changed", old_value=old_owner, new_value=new_owner, reason=reason))
+        _add_history("owner_changed", old_owner, new_owner)
+    if team_changed:
+        _add_history("team_changed", old_team, new_team)
+    if workflow_changed and not status_changed:
+        _add_history("workflow_status_changed", old_workflow, new_workflow)
     if tags_changed:
-        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="tags_changed", old_value=None, new_value=",".join(new_tags or []), reason=reason))
+        _add_history("tags_changed", None, ",".join(new_tags or []))
 
     # Audit — one event per PATCH (no duplicates)
     if status_changed and new_status == "triaged":
