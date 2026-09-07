@@ -27,6 +27,7 @@ export const USERS = {
   viewer: { email: "e2e.viewer@test.local", password: E2E_PASSWORD },
   memberB: { email: "e2e.memberb@test.local", password: E2E_PASSWORD },
   pwreset: { email: "e2e.pwreset@test.local", password: E2E_PASSWORD },
+  onboard: { email: "e2e.onboard@test.local", password: E2E_PASSWORD },
 };
 
 /**
@@ -42,6 +43,7 @@ export const STATE_FILES = {
   viewer: `${STATE_DIR}/state-viewer.json`,
   memberB: `${STATE_DIR}/state-memberB.json`,
   pwreset: `${STATE_DIR}/state-pwreset.json`,
+  onboard: `${STATE_DIR}/state-onboard.json`,
 };
 
 export const IDS = {
@@ -184,6 +186,24 @@ export async function apiLoginRaw(email, password) {
 export async function apiMfaChallenge(mfaToken, code) {
   const res = await fetch(`${API_URL}/api/v1/auth/mfa/challenge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mfa_token: mfaToken, code }) });
   return { status: res.status, body: await res.json().catch(() => null) };
+}
+export async function apiOnboardingStatus(token) {
+  return apiGet("/api/v1/onboarding/status", token);
+}
+export async function apiOnboardingStart(token) {
+  return apiPost("/api/v1/onboarding/start", token, {});
+}
+export async function apiOnboardingProgress(token, step) {
+  return apiPost("/api/v1/onboarding/progress", token, { current_step: step });
+}
+export async function apiOnboardingSkip(token) {
+  return apiPost("/api/v1/onboarding/skip", token, {});
+}
+export async function apiOnboardingComplete(token) {
+  return apiPost("/api/v1/onboarding/complete", token, {});
+}
+export async function apiOnboardingRestart(token) {
+  return apiPost("/api/v1/onboarding/restart", token, {});
 }
 
 // Compute TOTP (RFC 6238, 6 digits, 30s) using Node crypto — for Playwright Node process

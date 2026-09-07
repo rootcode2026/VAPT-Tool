@@ -26,6 +26,7 @@ import { useProjectContext } from "@/lib/project-context";
 import { listAuditLogs } from "@/lib/api/audit";
 import { getProjectSLASummary } from "@/lib/api/findings";
 import { getAttackSurfaceSummary, listMonitoringConfigs } from "@/lib/api/assets";
+import ContextualHelp from "@/components/help/ContextualHelp";
 
 function formatWhen(value) {
   if (!value) return "—";
@@ -250,7 +251,7 @@ export default function DashboardPage() {
   const isInitialLoading = loading && !snapshot;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="dashboard">
       <PageHeader
         title="Security Overview"
         description="Monitor your security posture, vulnerabilities, and attack surface."
@@ -277,6 +278,7 @@ export default function DashboardPage() {
           </>
         }
       />
+      <ContextualHelp title="dashboard">This dashboard shows risk, findings, assets, and attack paths for the selected project. Use it to prioritize remediation.</ContextualHelp>
 
       {loadError ? <ErrorState title="Unable to load security data." message={loadError} onRetry={refresh} /> : null}
 

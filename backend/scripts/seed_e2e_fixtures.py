@@ -69,6 +69,7 @@ USER_ANALYST = "e2eaaaaa-0000-4000-8000-000000000104"      # org A member; analy
 USER_VIEWER = "e2eaaaaa-0000-4000-8000-000000000105"       # org A member; viewer A1 only
 USER_MEMBER_B = "e2eaaaaa-0000-4000-8000-000000000106"     # org B member; analyst B1
 USER_PWRESET = "e2eaaaaa-0000-4000-8000-000000000107"      # org A member; dedicated for password-reset E2E (no storageState reuse)
+USER_ONBOARD = "e2eaaaaa-0000-4000-8000-000000000108"      # org A member; dedicated for onboarding E2E
 
 TARGET_A1_ID = "e2eaaaaa-0000-4000-8000-0000000000t1"
 TARGET_A2_ID = "e2eaaaaa-0000-4000-8000-0000000000t2"
@@ -95,7 +96,7 @@ REPORT_B1_ID = "e2eaaaaa-0000-4000-8000-0000000000r2"
 
 FIXTURE_USER_IDS = {
     USER_SUPER_ADMIN, USER_ORG_ADMIN, USER_PROJECT_ADMIN,
-    USER_ANALYST, USER_VIEWER, USER_MEMBER_B, USER_PWRESET,
+    USER_ANALYST, USER_VIEWER, USER_MEMBER_B, USER_PWRESET, USER_ONBOARD,
 }
 FIXTURE_ORG_IDS = {ORG_A_ID, ORG_B_ID}
 FIXTURE_PROJECT_IDS = {PROJECT_A1_ID, PROJECT_A2_ID, PROJECT_B1_ID}
@@ -155,6 +156,12 @@ def _users() -> dict[str, dict]:
             "role": "member",
             "status": "active",
         },
+        USER_ONBOARD: {
+            "email": "e2e.onboard@test.local",
+            "org": ORG_A_ID,
+            "role": "member",
+            "status": "active",
+        },
     }
 
 
@@ -166,6 +173,7 @@ def _org_memberships() -> dict[tuple[str, str], str]:
         (ORG_A_ID, USER_ANALYST): "member",
         (ORG_A_ID, USER_VIEWER): "member",
         (ORG_A_ID, USER_PWRESET): "member",
+        (ORG_A_ID, USER_ONBOARD): "member",
         (ORG_B_ID, USER_MEMBER_B): "member",
     }
 
@@ -178,6 +186,7 @@ def _project_memberships() -> dict[tuple[str, str], str]:
         (PROJECT_A1_ID, USER_ANALYST): "analyst",
         (PROJECT_A1_ID, USER_VIEWER): "viewer",
         (PROJECT_A1_ID, USER_PWRESET): "analyst",
+        (PROJECT_A1_ID, USER_ONBOARD): "analyst",
         (PROJECT_A2_ID, USER_ORG_ADMIN): "project_admin",
         (PROJECT_B1_ID, USER_MEMBER_B): "analyst",
     }

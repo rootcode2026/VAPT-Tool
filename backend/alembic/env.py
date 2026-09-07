@@ -30,6 +30,7 @@ from app.models import (
     Target,
     User,
     UserMfaCredential,
+    UserOnboarding,
     WorkerPool,
 )
 from app.models.ai import AIConversation, AIMessage, AIUsage

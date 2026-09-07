@@ -4,9 +4,12 @@ import { useEffect, useState } from "react";
 import PageHeader from "@/components/ui/PageHeader";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import { getMfaStatus, mfaSetup, mfaSetupVerify, mfaDisable, mfaRegenerate, changePassword, getOrgMfaPolicy, setOrgMfaPolicy } from "@/lib/api/auth";
+import { restartOnboarding } from "@/lib/api/onboarding";
+import { useTour } from "@/components/onboarding/TourProvider";
 
 export default function SettingsPage() {
   const { user } = useAuth();
+  const { restart } = useTour();
   const [mfaStatus, setMfaStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -218,6 +221,19 @@ export default function SettingsPage() {
             ) : (<p className="text-sm text-muted">Loading policy...</p>)}
           </section>
         ) : null}
+
+        <section className="rounded-md border border-border bg-surface p-5" data-tour="help">
+          <h2 className="font-semibold text-text">Help & Onboarding</h2>
+          <p className="mt-1 text-sm text-muted">Restart the guided tour or visit the Help Center for documentation.</p>
+          <div className="mt-3 flex gap-2">
+            <button type="button" onClick={restart} className="rounded-sm bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground">
+              Restart Product Tour
+            </button>
+            <a href="/help" className="rounded-sm border border-border px-4 py-2 text-sm">
+              Open Help Center
+            </a>
+          </div>
+        </section>
 
         {message ? (<p className="text-sm text-success" role="status">{message}</p>) : null}
         {error ? (<p className="text-sm text-danger" role="alert">{error}</p>) : null}

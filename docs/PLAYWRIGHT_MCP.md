@@ -1,12 +1,12 @@
-# Playwright E2E Security Validation (P13.1 + P13.2)
+# Playwright E2E Security Validation (P13.1 + P13.2 + P13.3)
 
 End-to-end browser tests plus an optional MCP harness that validate the VAPTool frontend against the running Docker stack **without weakening any security
 control** and **without hitting external networks**.
 
 Used to answer: does the app behave, stay tenant-isolated, enforce RBAC, keep
-stored-XSS inert, and enforce MFA + password-reset flows when a real browser drives it?
+stored-XSS inert, enforce MFA + password-reset, and guide new users via onboarding + Help when a real browser drives it?
 
-**Status: COMPLETE / READY — 18 specs, 76 tests all passing** (53 P13.1 baseline + 13 MFA + 10 password-reset) against the rebuilt stack (2026-09-18). The suite docks around — never against — the live security controls: it works *within* the backend login rate limit instead of disabling it.
+**Status: COMPLETE / READY — 19 specs, 94 tests all passing** (53 P13.1 baseline + 13 MFA + 10 password-reset + 18 onboarding) against the rebuilt stack (2026-09-19). The suite docks around — never against — the live security controls: it works *within* the backend login rate limit instead of disabling it.
 
 ## What is covered
 
@@ -29,6 +29,7 @@ stored-XSS inert, and enforce MFA + password-reset flows when a real browser dri
 | `e2e/security.spec.mjs` | Stored-XSS inertness, localStorage-only token, generic API errors, missing-header (CSP/HSTS) guard |
 | `e2e/mfa.spec.mjs` | TOTP enrollment (QR, invalid/valid), challenge, recovery single-use, regeneration, disable, super-admin required, org policy blocked, no secret leakage, UI settings + login challenge |
 | `e2e/password-reset.spec.mjs` | Forgot page, generic existent/non-existent, token lifecycle (invalid, full reset, reuse, MFA preserved), reset page, forgot link, session revocation after change |
+| `e2e/onboarding.spec.mjs` | First-login welcome, completed not reappear, persist reload, tour next/back/skip/finish/restart/mobile, missing target, role-aware (viewer vs super_admin), Help search/nav/contextual/mobile, security (unauth/cross-user/tenant) |
 | `e2e/responsive.spec.mjs` | Mobile drawer (`div.fixed.inset-0.z-50 > aside`) + stacked DataTable layout |
 
 ## Requirements

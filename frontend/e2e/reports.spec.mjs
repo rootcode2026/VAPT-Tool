@@ -14,8 +14,18 @@ test.describe("Reports / org A", () => {
   test("org A analyst sees their seeded executive report", async ({ page }) => {
     await asUser(page, "analyst", { projectId: IDS.PROJECT_A1 });
     await page.goto("/reports");
-    await expect(page.getByRole("heading", { name: "Reports" })).toBeVisible();
-    await expect(page.getByText(REPORT_A)).toBeVisible();
+    for (const name of ["Product tour", "Welcome"]) {
+      const dlg = page.getByRole("dialog", { name });
+      if (await dlg.isVisible().catch(() => false)) {
+        const skip = dlg.getByRole("button", { name: /Skip/ });
+        if (await skip.isVisible().catch(() => false)) await skip.click().catch(() => {});
+        else await page.keyboard.press("Escape").catch(() => {});
+        await page.waitForTimeout(500);
+      }
+    }
+    await expect(page.getByRole("heading", { name: "Reports" })).toBeVisible({ timeout: 20000 });
+    // Retry for report visibility with tour closed
+    await expect(page.getByText(REPORT_A)).toBeVisible({ timeout: 10000 });
   });
 });
 
