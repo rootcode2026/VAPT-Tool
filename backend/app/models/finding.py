@@ -443,6 +443,31 @@ class FindingSLA(Base):
         nullable=True,
     )
 
+    paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    resumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    pause_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    remaining_hours: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
@@ -493,9 +518,36 @@ class FindingRiskAcceptance(Base):
         nullable=True,
     )
 
+    requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     approved_by: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    rejected_by: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    rejected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    revoked_by: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
     )
 
