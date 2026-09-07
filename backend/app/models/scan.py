@@ -69,3 +69,13 @@ class Scan(Base):
         nullable=False,
         default=0,
     )
+
+    scanner_version: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    scanner_image_digest: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
