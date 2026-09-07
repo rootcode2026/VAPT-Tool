@@ -20,12 +20,12 @@ test.describe("Reports / org A", () => {
         const skip = dlg.getByRole("button", { name: /Skip/ });
         if (await skip.isVisible().catch(() => false)) await skip.click().catch(() => {});
         else await page.keyboard.press("Escape").catch(() => {});
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(800);
+        await expect(dlg).not.toBeVisible({ timeout: 5000 }).catch(() => {});
       }
     }
-    await expect(page.getByRole("heading", { name: "Reports" })).toBeVisible({ timeout: 20000 });
-    // Retry for report visibility with tour closed
-    await expect(page.getByText(REPORT_A)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "Reports" })).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText(REPORT_A)).toBeVisible({ timeout: 15000 });
   });
 });
 

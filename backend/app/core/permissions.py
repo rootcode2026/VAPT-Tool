@@ -1,10 +1,10 @@
 """
-Centralized permission model for enterprise multi-tenancy + RBAC.
+Centralized permission model for enterprise multi-tenancy + RBAC (P14.2).
 
 Roles are separated:
-- Platform role: User.role (super_admin, admin, member) — legacy field, super_admin is platform
-- Organization role: organization_memberships.role (member, org_admin)
-- Project role: project_memberships.role (viewer, analyst, project_admin)
+- Platform: super_admin
+- Organization: organization_admin, security_admin, security_analyst, developer, viewer, auditor (+ legacy member/org_admin)
+- Project: project_admin, security_analyst, developer, viewer, auditor (+ legacy analyst/viewer)
 
 Permissions are the authoritative check; roles map to permission sets.
 """
@@ -15,183 +15,409 @@ from __future__ import annotations
 # Role definitions
 # ---------------------------------------------------------------------------
 
-PLATFORM_ROLES = {"super_admin", "admin", "member"}
-ORG_ROLES = {"member", "org_admin"}
-PROJECT_ROLES = {"viewer", "analyst", "project_admin"}
+PLATFORM_ROLES = {"super_admin"}
+# Enterprise org roles + legacy aliases
+ORG_ROLES = {"organization_admin", "security_admin", "security_analyst", "developer", "viewer", "auditor", "member", "org_admin"}
+PROJECT_ROLES = {"project_admin", "security_admin", "security_analyst", "developer", "viewer", "auditor", "analyst"}
+
+# Aliases for backward compat: map legacy to canonical
+ORG_ROLE_ALIASES = {"member": "viewer", "org_admin": "organization_admin"}
+PROJECT_ROLE_ALIASES = {"analyst": "security_analyst"}
+
+def canonical_org_role(role: str) -> str:
+    return ORG_ROLE_ALIASES.get(role, role)
+
+def canonical_project_role(role: str) -> str:
+    return PROJECT_ROLE_ALIASES.get(role, role)
 
 # ---------------------------------------------------------------------------
-# Permission constants — minimal coherent set covering existing API inventory
+# Permission vocabulary (P14.2) — deterministic, documented
 # ---------------------------------------------------------------------------
 
-# Organization
-PERM_ORG_READ = "organization.read"
-PERM_ORG_UPDATE = "organization.update"
-PERM_ORG_MANAGE_MEMBERS = "organization.manage_members"
-
-# Project
-PERM_PROJECT_READ = "project.read"
-PERM_PROJECT_CREATE = "project.create"
-PERM_PROJECT_UPDATE = "project.update"
-PERM_PROJECT_DELETE = "project.delete"
+# Projects
+PERM_PROJECT_READ = "projects.read"
+PERM_PROJECT_CREATE = "projects.create"
+PERM_PROJECT_UPDATE = "projects.update"
+PERM_PROJECT_DELETE = "projects.delete"
 PERM_PROJECT_MANAGE_MEMBERS = "project.manage_members"
 
 # Targets
-PERM_TARGET_READ = "target.read"
-PERM_TARGET_CREATE = "target.create"
-PERM_TARGET_DELETE = "target.delete"
+PERM_TARGET_READ = "targets.read"
+PERM_TARGET_CREATE = "targets.create"
+PERM_TARGET_UPDATE = "targets.update"
+PERM_TARGET_DELETE = "targets.delete"
 
 # Scans
-PERM_SCAN_READ = "scan.read"
-PERM_SCAN_EXECUTE = "scan.execute"
+PERM_SCAN_READ = "scans.read"
+PERM_SCAN_CREATE = "scans.create"
+PERM_SCAN_CANCEL = "scans.cancel"
+PERM_SCAN_DELETE = "scans.delete"
 
-# Findings / Assets / Cloud / Dashboard
-PERM_FINDING_READ = "finding.read"
-PERM_FINDING_TRIAGE = "finding.triage"
-PERM_ASSET_READ = "asset.read"
+# Findings
+PERM_FINDING_READ = "findings.read"
+PERM_FINDING_TRIAGE = "findings.triage"
+PERM_FINDING_ASSIGN = "findings.assign"
+PERM_FINDING_UPDATE = "findings.update"
+PERM_FINDING_ACCEPT_RISK = "findings.accept_risk"
+PERM_FINDING_CLOSE = "findings.close"
+PERM_FINDING_REOPEN = "findings.reopen"
+
+# Assets
+PERM_ASSET_READ = "assets.read"
+PERM_ASSET_UPDATE = "assets.update"
+
+# Attack Surface
+PERM_ATTACK_SURFACE_READ = "attack_surface.read"
+
+# Reports
+PERM_REPORT_READ = "reports.read"
+PERM_REPORT_CREATE = "reports.create"
+PERM_REPORT_DELETE = "reports.delete"
+
+# Compliance
+PERM_COMPLIANCE_READ = "compliance.read"
+PERM_COMPLIANCE_MANAGE = "compliance.manage"
+
+# Code Security
+PERM_CODE_SECURITY_READ = "code_security.read"
+PERM_CODE_SECURITY_MANAGE = "code_security.manage"
+
+# Cloud Security
 PERM_CLOUD_READ = "cloud.read"
 PERM_CLOUD_MANAGE = "cloud.manage"
-PERM_INGESTION_CREATE = "ingestion.create"
-PERM_DASHBOARD_READ = "dashboard.read"
-PERM_REPORT_READ = "report.read"
+PERM_CLOUD_SECURITY_READ = "cloud_security.read"
+PERM_CLOUD_SECURITY_MANAGE = "cloud_security.manage"
 
-# Administration
-PERM_SCANNER_MANAGE = "scanner.manage"
+# DAST/API
+PERM_DAST_READ = "dast.read"
+PERM_DAST_MANAGE = "dast.manage"
+
+# Repositories
+PERM_REPO_READ = "repositories.read"
+PERM_REPO_CONNECT = "repositories.connect"
+PERM_REPO_MANAGE = "repositories.manage"
+
+# Integrations
+PERM_INTEGRATION_READ = "integrations.read"
+PERM_INTEGRATION_MANAGE = "integrations.manage"
+
+# Cloud Accounts
+PERM_CLOUD_ACCOUNT_READ = "cloud_accounts.read"
+PERM_CLOUD_ACCOUNT_CONNECT = "cloud_accounts.connect"
+PERM_CLOUD_ACCOUNT_MANAGE = "cloud_accounts.manage"
+
+# Users
+PERM_USER_READ = "users.read"
+PERM_USER_INVITE = "users.invite"
+PERM_USER_UPDATE = "users.update"
+PERM_USER_DISABLE = "users.disable"
+PERM_USER_DELETE = "users.delete"
+
+# Teams
+PERM_TEAM_READ = "teams.read"
+PERM_TEAM_MANAGE = "teams.manage"
+
+# Audit
 PERM_AUDIT_READ = "audit.read"
 
+# Scanner Control
+PERM_SCANNER_READ = "scanners.read"
+PERM_SCANNER_MANAGE = "scanners.manage"
+PERM_SCANNER_UPGRADE = "scanners.upgrade"
+PERM_SCANNER_ROLLBACK = "scanners.rollback"
+
+# Administration
+PERM_ORG_MANAGE = "organization.manage"
+PERM_ORG_READ = "organization.read"
+PERM_ORG_UPDATE = "organization.update"
+PERM_ORG_MANAGE_MEMBERS = "organization.manage_members"
+PERM_PROJECT_MANAGE = "project.manage"
+PERM_POLICY_MANAGE = "policies.manage"
+
+# Legacy aliases (for backward compat, map to new)
+PERM_DASHBOARD_READ = "dashboard.read"
+PERM_INGESTION_CREATE = "ingestion.create"
+PERM_FINDING_READ = PERM_FINDING_READ
+PERM_FINDING_TRIAGE = PERM_FINDING_TRIAGE
+
 ALL_PERMISSIONS = {
-    PERM_ORG_READ,
-    PERM_ORG_UPDATE,
-    PERM_ORG_MANAGE_MEMBERS,
-    PERM_PROJECT_READ,
-    PERM_PROJECT_CREATE,
-    PERM_PROJECT_UPDATE,
-    PERM_PROJECT_DELETE,
-    PERM_PROJECT_MANAGE_MEMBERS,
-    PERM_TARGET_READ,
-    PERM_TARGET_CREATE,
-    PERM_TARGET_DELETE,
-    PERM_SCAN_READ,
-    PERM_SCAN_EXECUTE,
-    PERM_FINDING_READ,
-    PERM_FINDING_TRIAGE,
-    PERM_ASSET_READ,
-    PERM_CLOUD_READ,
-    PERM_CLOUD_MANAGE,
-    PERM_INGESTION_CREATE,
-    PERM_DASHBOARD_READ,
-    PERM_REPORT_READ,
-    PERM_SCANNER_MANAGE,
+    PERM_PROJECT_READ, PERM_PROJECT_CREATE, PERM_PROJECT_UPDATE, PERM_PROJECT_DELETE, PERM_PROJECT_MANAGE_MEMBERS,
+    PERM_TARGET_READ, PERM_TARGET_CREATE, PERM_TARGET_UPDATE, PERM_TARGET_DELETE,
+    PERM_SCAN_READ, PERM_SCAN_CREATE, PERM_SCAN_CANCEL, PERM_SCAN_DELETE,
+    PERM_FINDING_READ, PERM_FINDING_TRIAGE, PERM_FINDING_ASSIGN, PERM_FINDING_UPDATE, PERM_FINDING_ACCEPT_RISK, PERM_FINDING_CLOSE, PERM_FINDING_REOPEN,
+    PERM_ASSET_READ, PERM_ASSET_UPDATE, PERM_ATTACK_SURFACE_READ,
+    PERM_REPORT_READ, PERM_REPORT_CREATE, PERM_REPORT_DELETE,
+    PERM_COMPLIANCE_READ, PERM_COMPLIANCE_MANAGE,
+    PERM_CODE_SECURITY_READ, PERM_CODE_SECURITY_MANAGE,
+    PERM_CLOUD_READ, PERM_CLOUD_MANAGE, PERM_CLOUD_SECURITY_READ, PERM_CLOUD_SECURITY_MANAGE,
+    PERM_DAST_READ, PERM_DAST_MANAGE,
+    PERM_REPO_READ, PERM_REPO_CONNECT, PERM_REPO_MANAGE,
+    PERM_INTEGRATION_READ, PERM_INTEGRATION_MANAGE,
+    PERM_CLOUD_ACCOUNT_READ, PERM_CLOUD_ACCOUNT_CONNECT, PERM_CLOUD_ACCOUNT_MANAGE,
+    PERM_USER_READ, PERM_USER_INVITE, PERM_USER_UPDATE, PERM_USER_DISABLE, PERM_USER_DELETE,
+    PERM_TEAM_READ, PERM_TEAM_MANAGE,
     PERM_AUDIT_READ,
+    PERM_SCANNER_READ, PERM_SCANNER_MANAGE, PERM_SCANNER_UPGRADE, PERM_SCANNER_ROLLBACK,
+    PERM_ORG_MANAGE, PERM_ORG_READ, PERM_ORG_UPDATE, PERM_ORG_MANAGE_MEMBERS, PERM_PROJECT_MANAGE, PERM_POLICY_MANAGE,
+    PERM_DASHBOARD_READ, PERM_INGESTION_CREATE,
 }
 
 # ---------------------------------------------------------------------------
-# Role -> permissions mapping
+# Role -> permissions matrix (enterprise)
 # ---------------------------------------------------------------------------
 
-# Organization role permissions
-ORG_ROLE_PERMISSIONS: dict[str, set[str]] = {
-    "member": {
-        PERM_ORG_READ,
-        PERM_PROJECT_READ,
-        PERM_TARGET_READ,
-        PERM_SCAN_READ,
-        PERM_FINDING_READ,
-        PERM_ASSET_READ,
-        PERM_CLOUD_READ,
-        PERM_DASHBOARD_READ,
-        PERM_REPORT_READ,
-    },
-    "org_admin": {
-        # org_admin gets all member perms plus management
-        PERM_ORG_READ,
-        PERM_ORG_UPDATE,
-        PERM_ORG_MANAGE_MEMBERS,
-        PERM_PROJECT_READ,
-        PERM_PROJECT_CREATE,
-        PERM_PROJECT_UPDATE,
-        PERM_PROJECT_DELETE,
-        PERM_PROJECT_MANAGE_MEMBERS,
-        PERM_TARGET_READ,
-        PERM_TARGET_CREATE,
-        PERM_TARGET_DELETE,
-        PERM_SCAN_READ,
-        PERM_SCAN_EXECUTE,
-        PERM_FINDING_READ,
-        PERM_FINDING_TRIAGE,
-        PERM_ASSET_READ,
-        PERM_CLOUD_READ,
-        PERM_CLOUD_MANAGE,
-        PERM_INGESTION_CREATE,
-        PERM_DASHBOARD_READ,
-        PERM_REPORT_READ,
-        PERM_SCANNER_MANAGE,
+# Organization role permissions (canonical)
+_ORG_ROLE_PERMISSIONS_CANONICAL: dict[str, set[str]] = {
+    "organization_admin": {
+        PERM_ORG_READ, PERM_ORG_UPDATE, PERM_ORG_MANAGE, PERM_ORG_MANAGE_MEMBERS,
+        PERM_PROJECT_READ, PERM_PROJECT_CREATE, PERM_PROJECT_UPDATE, PERM_PROJECT_DELETE, PERM_PROJECT_MANAGE, PERM_PROJECT_MANAGE_MEMBERS,
+        PERM_TARGET_READ, PERM_TARGET_CREATE, PERM_TARGET_UPDATE, PERM_TARGET_DELETE,
+        PERM_SCAN_READ, PERM_SCAN_CREATE, PERM_SCAN_CANCEL, PERM_SCAN_DELETE,
+        PERM_FINDING_READ, PERM_FINDING_TRIAGE, PERM_FINDING_ASSIGN, PERM_FINDING_UPDATE, PERM_FINDING_ACCEPT_RISK, PERM_FINDING_CLOSE, PERM_FINDING_REOPEN,
+        PERM_ASSET_READ, PERM_ASSET_UPDATE, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ, PERM_REPORT_CREATE, PERM_REPORT_DELETE,
+        PERM_COMPLIANCE_READ, PERM_COMPLIANCE_MANAGE,
+        PERM_CODE_SECURITY_READ, PERM_CODE_SECURITY_MANAGE,
+        PERM_CLOUD_READ, PERM_CLOUD_MANAGE, PERM_CLOUD_SECURITY_READ, PERM_CLOUD_SECURITY_MANAGE,
+        PERM_DAST_READ, PERM_DAST_MANAGE,
+        PERM_REPO_READ, PERM_REPO_CONNECT, PERM_REPO_MANAGE,
+        PERM_INTEGRATION_READ, PERM_INTEGRATION_MANAGE,
+        PERM_CLOUD_ACCOUNT_READ, PERM_CLOUD_ACCOUNT_CONNECT, PERM_CLOUD_ACCOUNT_MANAGE,
+        PERM_USER_READ, PERM_USER_INVITE, PERM_USER_UPDATE, PERM_USER_DISABLE, PERM_USER_DELETE,
+        PERM_TEAM_READ, PERM_TEAM_MANAGE,
         PERM_AUDIT_READ,
+        PERM_SCANNER_READ, PERM_SCANNER_MANAGE, PERM_SCANNER_UPGRADE, PERM_SCANNER_ROLLBACK,
+        PERM_POLICY_MANAGE,
+        PERM_DASHBOARD_READ, PERM_INGESTION_CREATE,
+    },
+    "security_admin": {
+        PERM_ORG_READ,
+        PERM_PROJECT_READ, PERM_PROJECT_CREATE, PERM_PROJECT_UPDATE, PERM_PROJECT_MANAGE_MEMBERS,
+        PERM_TARGET_READ, PERM_TARGET_CREATE, PERM_TARGET_UPDATE, PERM_TARGET_DELETE,
+        PERM_SCAN_READ, PERM_SCAN_CREATE, PERM_SCAN_CANCEL, PERM_SCAN_DELETE,
+        PERM_FINDING_READ, PERM_FINDING_TRIAGE, PERM_FINDING_ASSIGN, PERM_FINDING_UPDATE, PERM_FINDING_ACCEPT_RISK, PERM_FINDING_CLOSE, PERM_FINDING_REOPEN,
+        PERM_ASSET_READ, PERM_ASSET_UPDATE, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ, PERM_REPORT_CREATE, PERM_REPORT_DELETE,
+        PERM_COMPLIANCE_READ, PERM_COMPLIANCE_MANAGE,
+        PERM_CODE_SECURITY_READ, PERM_CODE_SECURITY_MANAGE,
+        PERM_CLOUD_READ, PERM_CLOUD_MANAGE, PERM_CLOUD_SECURITY_READ, PERM_CLOUD_SECURITY_MANAGE,
+        PERM_DAST_READ, PERM_DAST_MANAGE,
+        PERM_REPO_READ, PERM_REPO_CONNECT, PERM_REPO_MANAGE,
+        PERM_CLOUD_ACCOUNT_READ, PERM_CLOUD_ACCOUNT_CONNECT, PERM_CLOUD_ACCOUNT_MANAGE,
+        PERM_USER_READ,
+        PERM_TEAM_READ,
+        PERM_AUDIT_READ,
+        PERM_SCANNER_READ,
+        PERM_DASHBOARD_READ, PERM_INGESTION_CREATE,
+    },
+    "security_analyst": {
+        PERM_ORG_READ,
+        PERM_PROJECT_READ,
+        PERM_TARGET_READ, PERM_TARGET_CREATE,
+        PERM_SCAN_READ, PERM_SCAN_CREATE,
+        PERM_FINDING_READ, PERM_FINDING_TRIAGE, PERM_FINDING_ASSIGN, PERM_FINDING_UPDATE,
+        PERM_ASSET_READ, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ, PERM_REPORT_CREATE,
+        PERM_COMPLIANCE_READ,
+        PERM_CODE_SECURITY_READ,
+        PERM_CLOUD_READ, PERM_CLOUD_SECURITY_READ,
+        PERM_DAST_READ,
+        PERM_REPO_READ,
+        PERM_CLOUD_ACCOUNT_READ,
+        PERM_USER_READ,
+        PERM_TEAM_READ,
+        PERM_AUDIT_READ,
+        PERM_SCANNER_READ,
+        PERM_DASHBOARD_READ, PERM_INGESTION_CREATE,
+    },
+    "developer": {
+        PERM_ORG_READ,
+        PERM_PROJECT_READ,
+        PERM_TARGET_READ,
+        PERM_SCAN_READ,
+        PERM_FINDING_READ, PERM_FINDING_UPDATE,
+        PERM_ASSET_READ, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ,
+        PERM_COMPLIANCE_READ,
+        PERM_CODE_SECURITY_READ,
+        PERM_CLOUD_READ,
+        PERM_DAST_READ,
+        PERM_REPO_READ, PERM_REPO_CONNECT,
+        PERM_CLOUD_ACCOUNT_READ,
+        PERM_USER_READ,
+        PERM_TEAM_READ,
+        PERM_SCANNER_READ,
+        PERM_DASHBOARD_READ,
+    },
+    "viewer": {
+        PERM_ORG_READ,
+        PERM_PROJECT_READ,
+        PERM_TARGET_READ,
+        PERM_SCAN_READ,
+        PERM_FINDING_READ,
+        PERM_ASSET_READ, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ,
+        PERM_COMPLIANCE_READ,
+        PERM_CODE_SECURITY_READ,
+        PERM_CLOUD_READ, PERM_CLOUD_SECURITY_READ,
+        PERM_DAST_READ,
+        PERM_REPO_READ,
+        PERM_CLOUD_ACCOUNT_READ,
+        PERM_USER_READ,
+        PERM_TEAM_READ,
+        PERM_AUDIT_READ,
+        PERM_SCANNER_READ,
+        PERM_DASHBOARD_READ,
+    },
+    "auditor": {
+        PERM_ORG_READ,
+        PERM_PROJECT_READ,
+        PERM_TARGET_READ,
+        PERM_SCAN_READ,
+        PERM_FINDING_READ,
+        PERM_ASSET_READ, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ,
+        PERM_COMPLIANCE_READ, PERM_COMPLIANCE_MANAGE,
+        PERM_CODE_SECURITY_READ,
+        PERM_CLOUD_READ, PERM_CLOUD_SECURITY_READ,
+        PERM_DAST_READ,
+        PERM_REPO_READ,
+        PERM_CLOUD_ACCOUNT_READ,
+        PERM_USER_READ,
+        PERM_TEAM_READ,
+        PERM_AUDIT_READ,
+        PERM_SCANNER_READ,
+        PERM_DASHBOARD_READ,
     },
 }
 
-# Project role permissions
-PROJECT_ROLE_PERMISSIONS: dict[str, set[str]] = {
+# Project role permissions (canonical)
+_PROJECT_ROLE_PERMISSIONS_CANONICAL: dict[str, set[str]] = {
+    "project_admin": {
+        PERM_PROJECT_READ, PERM_PROJECT_UPDATE, PERM_PROJECT_DELETE, PERM_PROJECT_MANAGE, PERM_PROJECT_MANAGE_MEMBERS,
+        PERM_TARGET_READ, PERM_TARGET_CREATE, PERM_TARGET_UPDATE, PERM_TARGET_DELETE,
+        PERM_SCAN_READ, PERM_SCAN_CREATE, PERM_SCAN_CANCEL, PERM_SCAN_DELETE,
+        PERM_FINDING_READ, PERM_FINDING_TRIAGE, PERM_FINDING_ASSIGN, PERM_FINDING_UPDATE, PERM_FINDING_ACCEPT_RISK, PERM_FINDING_CLOSE, PERM_FINDING_REOPEN,
+        PERM_ASSET_READ, PERM_ASSET_UPDATE, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ, PERM_REPORT_CREATE, PERM_REPORT_DELETE,
+        PERM_COMPLIANCE_READ, PERM_COMPLIANCE_MANAGE,
+        PERM_CODE_SECURITY_READ, PERM_CODE_SECURITY_MANAGE,
+        PERM_CLOUD_READ, PERM_CLOUD_MANAGE, PERM_CLOUD_SECURITY_READ, PERM_CLOUD_SECURITY_MANAGE,
+        PERM_DAST_READ, PERM_DAST_MANAGE,
+        PERM_REPO_READ, PERM_REPO_CONNECT, PERM_REPO_MANAGE,
+        PERM_CLOUD_ACCOUNT_READ, PERM_CLOUD_ACCOUNT_CONNECT, PERM_CLOUD_ACCOUNT_MANAGE,
+        PERM_USER_READ,
+        PERM_TEAM_READ,
+        PERM_AUDIT_READ,
+        PERM_SCANNER_READ,
+        PERM_DASHBOARD_READ, PERM_INGESTION_CREATE,
+    },
+    "security_admin": {
+        PERM_PROJECT_READ, PERM_PROJECT_UPDATE,
+        PERM_TARGET_READ, PERM_TARGET_CREATE, PERM_TARGET_UPDATE, PERM_TARGET_DELETE,
+        PERM_SCAN_READ, PERM_SCAN_CREATE, PERM_SCAN_CANCEL,
+        PERM_FINDING_READ, PERM_FINDING_TRIAGE, PERM_FINDING_ASSIGN, PERM_FINDING_UPDATE, PERM_FINDING_ACCEPT_RISK, PERM_FINDING_CLOSE, PERM_FINDING_REOPEN,
+        PERM_ASSET_READ, PERM_ASSET_UPDATE, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ, PERM_REPORT_CREATE,
+        PERM_COMPLIANCE_READ, PERM_COMPLIANCE_MANAGE,
+        PERM_CODE_SECURITY_READ, PERM_CODE_SECURITY_MANAGE,
+        PERM_CLOUD_READ, PERM_CLOUD_MANAGE, PERM_CLOUD_SECURITY_READ, PERM_CLOUD_SECURITY_MANAGE,
+        PERM_DAST_READ, PERM_DAST_MANAGE,
+        PERM_REPO_READ, PERM_REPO_CONNECT, PERM_REPO_MANAGE,
+        PERM_CLOUD_ACCOUNT_READ, PERM_CLOUD_ACCOUNT_CONNECT, PERM_CLOUD_ACCOUNT_MANAGE,
+        PERM_DASHBOARD_READ, PERM_INGESTION_CREATE,
+    },
+    "security_analyst": {
+        PERM_PROJECT_READ,
+        PERM_TARGET_READ, PERM_TARGET_CREATE,
+        PERM_SCAN_READ, PERM_SCAN_CREATE,
+        PERM_FINDING_READ, PERM_FINDING_TRIAGE, PERM_FINDING_ASSIGN, PERM_FINDING_UPDATE,
+        PERM_ASSET_READ, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ, PERM_REPORT_CREATE,
+        PERM_COMPLIANCE_READ,
+        PERM_CODE_SECURITY_READ,
+        PERM_CLOUD_READ, PERM_CLOUD_SECURITY_READ,
+        PERM_DAST_READ,
+        PERM_REPO_READ,
+        PERM_CLOUD_ACCOUNT_READ,
+        PERM_DASHBOARD_READ, PERM_INGESTION_CREATE,
+    },
+    "developer": {
+        PERM_PROJECT_READ,
+        PERM_TARGET_READ,
+        PERM_SCAN_READ,
+        PERM_FINDING_READ, PERM_FINDING_UPDATE,
+        PERM_ASSET_READ, PERM_ATTACK_SURFACE_READ,
+        PERM_REPORT_READ,
+        PERM_COMPLIANCE_READ,
+        PERM_CODE_SECURITY_READ,
+        PERM_CLOUD_READ,
+        PERM_DAST_READ,
+        PERM_REPO_READ, PERM_REPO_CONNECT,
+        PERM_CLOUD_ACCOUNT_READ,
+        PERM_DASHBOARD_READ,
+    },
     "viewer": {
         PERM_PROJECT_READ,
         PERM_TARGET_READ,
         PERM_SCAN_READ,
         PERM_FINDING_READ,
-        PERM_ASSET_READ,
-        PERM_CLOUD_READ,
-        PERM_DASHBOARD_READ,
+        PERM_ASSET_READ, PERM_ATTACK_SURFACE_READ,
         PERM_REPORT_READ,
+        PERM_COMPLIANCE_READ,
+        PERM_CODE_SECURITY_READ,
+        PERM_CLOUD_READ, PERM_CLOUD_SECURITY_READ,
+        PERM_DAST_READ,
+        PERM_REPO_READ,
+        PERM_CLOUD_ACCOUNT_READ,
+        PERM_DASHBOARD_READ,
     },
-    "analyst": {
+    "auditor": {
         PERM_PROJECT_READ,
         PERM_TARGET_READ,
-        PERM_TARGET_CREATE,
         PERM_SCAN_READ,
-        PERM_SCAN_EXECUTE,
         PERM_FINDING_READ,
-        PERM_FINDING_TRIAGE,
-        PERM_ASSET_READ,
-        PERM_CLOUD_READ,
-        PERM_CLOUD_MANAGE,
-        PERM_INGESTION_CREATE,
-        PERM_DASHBOARD_READ,
+        PERM_ASSET_READ, PERM_ATTACK_SURFACE_READ,
         PERM_REPORT_READ,
-    },
-    "project_admin": {
-        PERM_PROJECT_READ,
-        PERM_PROJECT_UPDATE,
-        PERM_PROJECT_DELETE,
-        PERM_PROJECT_MANAGE_MEMBERS,
-        PERM_TARGET_READ,
-        PERM_TARGET_CREATE,
-        PERM_TARGET_DELETE,
-        PERM_SCAN_READ,
-        PERM_SCAN_EXECUTE,
-        PERM_FINDING_READ,
-        PERM_FINDING_TRIAGE,
-        PERM_ASSET_READ,
-        PERM_CLOUD_READ,
-        PERM_CLOUD_MANAGE,
-        PERM_INGESTION_CREATE,
+        PERM_COMPLIANCE_READ,
+        PERM_CODE_SECURITY_READ,
+        PERM_CLOUD_READ, PERM_CLOUD_SECURITY_READ,
+        PERM_DAST_READ,
+        PERM_REPO_READ,
+        PERM_CLOUD_ACCOUNT_READ,
+        PERM_AUDIT_READ,
         PERM_DASHBOARD_READ,
-        PERM_REPORT_READ,
     },
 }
 
-# Platform super_admin has all permissions
+# Expose with legacy aliases for backward compat
+ORG_ROLE_PERMISSIONS: dict[str, set[str]] = {}
+for _k, _v in _ORG_ROLE_PERMISSIONS_CANONICAL.items():
+    ORG_ROLE_PERMISSIONS[_k] = set(_v)
+# Legacy aliases
+ORG_ROLE_PERMISSIONS["member"] = set(ORG_ROLE_PERMISSIONS["viewer"])
+ORG_ROLE_PERMISSIONS["org_admin"] = set(ORG_ROLE_PERMISSIONS["organization_admin"])
+
+PROJECT_ROLE_PERMISSIONS: dict[str, set[str]] = {}
+for _k, _v in _PROJECT_ROLE_PERMISSIONS_CANONICAL.items():
+    PROJECT_ROLE_PERMISSIONS[_k] = set(_v)
+PROJECT_ROLE_PERMISSIONS["analyst"] = set(PROJECT_ROLE_PERMISSIONS["security_analyst"])
+PROJECT_ROLE_PERMISSIONS["project_admin"] = set(PROJECT_ROLE_PERMISSIONS["project_admin"])  # already
+
+# Platform super_admin has all
 SUPER_ADMIN_PERMISSIONS = set(ALL_PERMISSIONS)
 
-
 def permissions_for_org_role(role: str) -> set[str]:
-    return set(ORG_ROLE_PERMISSIONS.get(role, set()))
-
+    return set(ORG_ROLE_PERMISSIONS.get(canonical_org_role(role), set()))
 
 def permissions_for_project_role(role: str) -> set[str]:
-    return set(PROJECT_ROLE_PERMISSIONS.get(role, set()))
-
+    return set(PROJECT_ROLE_PERMISSIONS.get(canonical_project_role(role), set()))
 
 def is_valid_org_role(role: str) -> bool:
     return role in ORG_ROLES
 
-
 def is_valid_project_role(role: str) -> bool:
     return role in PROJECT_ROLES
+
+def is_org_admin_role(role: str | None) -> bool:
+    return role in ("org_admin", "organization_admin")

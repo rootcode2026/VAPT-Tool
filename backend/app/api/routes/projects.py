@@ -61,10 +61,11 @@ def create_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Project creation requires org_admin (enterprise tenancy).
+    # Project creation requires org_admin / organization_admin (enterprise tenancy).
     if not _is_super_admin(current_user):
         org_role = _effective_org_role(current_user, current_user.organization_id, db)
-        if org_role != "org_admin":
+        from app.core.permissions import is_org_admin_role
+        if not is_org_admin_role(org_role):
             try:
                 AuditService.record(
                     db,
@@ -198,7 +199,8 @@ def delete_project(
     # Destructive — requires org_admin (or project_admin via membership, but org_admin is canonical).
     if not _is_super_admin(current_user):
         org_role = _effective_org_role(current_user, current_user.organization_id, db)
-        if org_role != "org_admin":
+        from app.core.permissions import is_org_admin_role
+        if not is_org_admin_role(org_role):
             try:
                 AuditService.record(
                     db,
