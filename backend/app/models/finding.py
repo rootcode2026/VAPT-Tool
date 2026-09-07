@@ -102,6 +102,17 @@ class Finding(Base):
         index=True,
     )
 
+    assigned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    assigned_by: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     owner_user_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -109,8 +120,47 @@ class Finding(Base):
         index=True,
     )
 
+    owner_team_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+
     severity_override: Mapped[str | None] = mapped_column(
         String(20),
+        nullable=True,
+    )
+
+    workflow_status: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
+        index=True,
+    )
+
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    closed_by: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    remediation_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    remediation_claimed_by: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    ready_for_retest_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
     )
 
@@ -209,6 +259,36 @@ class FindingHistory(Base):
 
     reason: Mapped[str | None] = mapped_column(
         Text,
+        nullable=True,
+    )
+
+    organization_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    request_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    correlation_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    extra_data: Mapped[dict | None] = mapped_column(
+        "metadata",
+        JSONB,
         nullable=True,
     )
 
