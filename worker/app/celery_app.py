@@ -21,6 +21,16 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    # The beat schedule references the monitoring tick by name, but nothing
+    # imports app.monitoring_scheduler at worker startup (tasks.py imports it
+    # lazily), so without this the worker rejects each tick as unregistered.
+    include=["app.monitoring_scheduler"],
+    beat_schedule={
+        "monitoring-tick": {
+            "task": "app.monitoring_scheduler.monitoring_tick",
+            "schedule": int(os.getenv("MONITORING_SCHEDULER_INTERVAL_SECONDS", "60")),
+        },
+    },
 )
 
 celery_app.autodiscover_tasks(["app"])

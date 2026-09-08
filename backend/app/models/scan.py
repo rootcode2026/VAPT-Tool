@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String, Integer, DateTime, func
+from sqlalchemy import JSON, ForeignKey, String, Integer, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -77,5 +77,11 @@ class Scan(Base):
 
     scanner_image_digest: Mapped[str | None] = mapped_column(
         String(128),
+        nullable=True,
+    )
+
+    scan_metadata: Mapped[dict | None] = mapped_column(
+        "metadata",
+        JSON,
         nullable=True,
     )

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -14,6 +14,13 @@ class MonitoringConfig(Base):
         String(36),
         primary_key=True,
         default=lambda: str(uuid.uuid4()),
+    )
+
+    target_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("targets.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
 
     organization_id: Mapped[str] = mapped_column(
@@ -70,6 +77,49 @@ class MonitoringConfig(Base):
         nullable=False,
         default=False,
         server_default="0",
+    )
+
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    last_scan_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+
+    last_status: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
+    paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    pause_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    schedule: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(
@@ -160,6 +210,31 @@ class MonitoringRun(Base):
         Integer,
         nullable=False,
         default=0,
+    )
+
+    scan_ids: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
+    scanner_count: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    successful_scanners: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    failed_scanners: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    correlation_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(

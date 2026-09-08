@@ -1,7 +1,7 @@
 """Attack Surface & Exposure workspace + continuous monitoring foundation (project-scoped)."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func
@@ -24,26 +24,37 @@ from app.services.audit import (
     EVENT_ASSET_OWNER_CHANGED,
     EVENT_MONITORING_CONFIG_CREATED,
     EVENT_MONITORING_CONFIG_DELETED,
+    EVENT_MONITORING_CONFIG_PAUSED,
+    EVENT_MONITORING_CONFIG_RESUMED,
     EVENT_MONITORING_CONFIG_UPDATED,
     EVENT_MONITORING_RUN_COMPLETED,
     EVENT_MONITORING_RUN_FAILED,
+    EVENT_MONITORING_RUN_PARTIAL,
+    EVENT_MONITORING_RUN_SCHEDULED,
     EVENT_MONITORING_RUN_STARTED,
     RESOURCE_ASSET,
     RESOURCE_MONITORING_CONFIG,
     RESOURCE_MONITORING_RUN,
+    RESULT_PARTIAL,
     RESULT_SUCCESS,
     AuditService,
 )
+from app.services.monitoring_service import (
+    MONITOR_FREQUENCIES,
+    MONITOR_RUN_ACTIVE,
+    compute_next_run,
+    frequency_interval_seconds,
+    shift_run_window,
+)
+from app.services.scanner_catalog import scanners_for_profile
 
 router = APIRouter(prefix="/api/v1", tags=["Attack Surface"])
 
 GRAPH_NODE_LIMIT = 500
 GRAPH_EDGE_LIMIT = 1000
 
-MONITOR_FREQUENCIES = {"hourly", "daily", "weekly"}
 MONITOR_PROFILES = {"quick", "web", "full"}
-MONITOR_SCOPES = {"all"}
-MONITOR_RUN_ACTIVE = {"queued", "running"}
+MONITOR_SCOPES = {"all", "target"}
 
 
 def _utcnow():
@@ -595,6 +606,7 @@ def _monitoring_payload(cfg: MonitoringConfig, last_run=None) -> dict:
         "id": cfg.id,
         "organization_id": cfg.organization_id,
         "project_id": cfg.project_id,
+        "target_id": cfg.target_id,
         "name": cfg.name,
         "enabled": bool(cfg.enabled),
         "frequency": cfg.frequency,
@@ -605,7 +617,15 @@ def _monitoring_payload(cfg: MonitoringConfig, last_run=None) -> dict:
         "created_at": cfg.created_at.isoformat() if cfg.created_at else None,
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
         "last_run": last_run,
-        "next_run": None,  # No scheduler in this phase (documented)
+        "last_run_at": cfg.last_run_at.isoformat() if cfg.last_run_at else None,
+        "last_scan_id": cfg.last_scan_id,
+        "last_status": cfg.last_status,
+        "consecutive_failures": cfg.consecutive_failures,
+        "next_run": cfg.next_run_at.isoformat() if cfg.next_run_at else None,
+        "next_run_at": cfg.next_run_at.isoformat() if cfg.next_run_at else None,
+        "paused_at": cfg.paused_at.isoformat() if cfg.paused_at else None,
+        "pause_reason": cfg.pause_reason,
+        "schedule": cfg.schedule,
     }
 
 
@@ -647,17 +667,32 @@ def create_monitoring_config(
         raise HTTPException(status_code=400, detail="Name is required")
     frequency = str(data.get("frequency", "daily")).strip().lower()
     if frequency not in MONITOR_FREQUENCIES:
-        raise HTTPException(status_code=400, detail="Invalid frequency. Use hourly, daily, or weekly.")
+        raise HTTPException(status_code=400, detail="Invalid frequency. Use hourly, six_hourly, daily, or weekly.")
     profile = str(data.get("profile", "quick")).strip().lower()
     if profile not in MONITOR_PROFILES:
         raise HTTPException(status_code=400, detail="Invalid profile. Use quick, web, or full.")
     scope = str(data.get("target_scope", "all")).strip().lower()
     if scope not in MONITOR_SCOPES:
         raise HTTPException(status_code=400, detail="Invalid target_scope")
+
+    # D1: optional single-target scope. Must belong to this project.
+    target_id = data.get("target_id") or None
+    if target_id:
+        target_id = str(target_id).strip()[:36]
+        if not target_id:
+            target_id = None
+    if target_id:
+        t = db.query(Target).filter(Target.id == target_id, Target.project_id == project_id).first()
+        if not t:
+            raise HTTPException(status_code=404, detail="Target not found in this project")
+
+    now = _utcnow().replace(tzinfo=None)
+    schedule_kind = str(data.get("schedule", "")).strip()[:50] or None
     cfg = MonitoringConfig(
         id=str(uuid.uuid4()),
         organization_id=proj.organization_id,
         project_id=project_id,
+        target_id=target_id,
         name=name,
         enabled=bool(data.get("enabled", True)),
         frequency=frequency,
@@ -665,9 +700,11 @@ def create_monitoring_config(
         target_scope=scope,
         created_by=current_user.id,
         baseline_established=False,
+        next_run_at=(now + timedelta(seconds=frequency_interval_seconds(frequency))) if bool(data.get("enabled", True)) else None,
+        schedule=schedule_kind,
     )
     db.add(cfg)
-    AuditService.record(db, event_type=EVENT_MONITORING_CONFIG_CREATED, action=EVENT_MONITORING_CONFIG_CREATED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=proj.organization_id, project_id=project_id, resource_type=RESOURCE_MONITORING_CONFIG, resource_id=cfg.id, metadata={"name": name, "frequency": frequency, "profile": profile})
+    AuditService.record(db, event_type=EVENT_MONITORING_CONFIG_CREATED, action=EVENT_MONITORING_CONFIG_CREATED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=proj.organization_id, project_id=project_id, resource_type=RESOURCE_MONITORING_CONFIG, resource_id=cfg.id, metadata={"name": name, "frequency": frequency, "profile": profile, "target_scope": scope, "target_id": target_id})
     db.commit()
     db.refresh(cfg)
     return _monitoring_payload(cfg)
@@ -686,6 +723,8 @@ def update_monitoring_config(
     require_project_access(cfg.project_id, db, current_user)
     _require_monitor_manage(cfg.project_id, db, current_user)
     data = payload if isinstance(payload, dict) else {}
+    schedule_changed = False
+    now = _utcnow().replace(tzinfo=None)
     if "name" in data and data["name"] is not None:
         name = str(data["name"]).strip()[:255]
         if not name:
@@ -695,15 +734,40 @@ def update_monitoring_config(
         f = str(data["frequency"]).strip().lower()
         if f not in MONITOR_FREQUENCIES:
             raise HTTPException(status_code=400, detail="Invalid frequency")
-        cfg.frequency = f
+        if f != cfg.frequency:
+            cfg.frequency = f
+            schedule_changed = True
     if "profile" in data and data["profile"] is not None:
         p = str(data["profile"]).strip().lower()
         if p not in MONITOR_PROFILES:
             raise HTTPException(status_code=400, detail="Invalid profile")
         cfg.profile = p
+    if "target_scope" in data and data["target_scope"] is not None:
+        s = str(data["target_scope"]).strip().lower()
+        if s not in MONITOR_SCOPES:
+            raise HTTPException(status_code=400, detail="Invalid target_scope")
+        cfg.target_scope = s
+    if "target_id" in data:
+        tid = data["target_id"] or None
+        if tid:
+            tid = str(tid).strip()[:36]
+            exists = db.query(Target).filter(Target.id == tid, Target.project_id == cfg.project_id).first()
+            if not exists:
+                raise HTTPException(status_code=404, detail="Target not found in this project")
+        if tid != cfg.target_id:
+            cfg.target_id = tid
+            schedule_changed = True
     if "enabled" in data and data["enabled"] is not None:
+        was = bool(cfg.enabled)
         cfg.enabled = bool(data["enabled"])
-    AuditService.record(db, event_type=EVENT_MONITORING_CONFIG_UPDATED, action=EVENT_MONITORING_CONFIG_UPDATED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_CONFIG, resource_id=cfg.id, metadata={"config_id": cfg.id})
+        if was != cfg.enabled:
+            schedule_changed = True
+    if "schedule" in data:
+        cfg.schedule = str(data.get("schedule") or "").strip()[:50] or None
+    # Keep next_run deterministic: updated immediately when scheduling changed.
+    if schedule_changed:
+        cfg.next_run_at = compute_next_run(cfg.next_run_at, cfg.frequency, now) if cfg.enabled else None
+    AuditService.record(db, event_type=EVENT_MONITORING_CONFIG_UPDATED, action=EVENT_MONITORING_CONFIG_UPDATED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_CONFIG, resource_id=cfg.id, metadata={"config_id": cfg.id, "schedule_changed": schedule_changed})
     db.commit()
     db.refresh(cfg)
     return _monitoring_payload(cfg)
@@ -726,6 +790,92 @@ def delete_monitoring_config(
     return None
 
 
+@router.post("/monitoring/{config_id}/pause", status_code=200)
+def pause_monitoring_config(
+    config_id: str,
+    payload: dict | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cfg = db.query(MonitoringConfig).filter(MonitoringConfig.id == config_id).first()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Monitoring config not found")
+    require_project_access(cfg.project_id, db, current_user)
+    _require_monitor_manage(cfg.project_id, db, current_user)
+    if cfg.paused_at is not None:
+        return _monitoring_payload(cfg)
+    data = payload if isinstance(payload, dict) else {}
+    reason = str(data.get("reason", "") or "").strip()[:500]
+    cfg.paused_at = _utcnow().replace(tzinfo=None)
+    cfg.pause_reason = reason or None
+    cfg.next_run_at = None
+    AuditService.record(db, event_type=EVENT_MONITORING_CONFIG_PAUSED, action=EVENT_MONITORING_CONFIG_PAUSED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_CONFIG, resource_id=cfg.id, metadata={"config_id": cfg.id, "reason": cfg.pause_reason})
+    db.commit()
+    db.refresh(cfg)
+    return _monitoring_payload(cfg)
+
+
+@router.post("/monitoring/{config_id}/resume", status_code=200)
+def resume_monitoring_config(
+    config_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cfg = db.query(MonitoringConfig).filter(MonitoringConfig.id == config_id).first()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Monitoring config not found")
+    require_project_access(cfg.project_id, db, current_user)
+    _require_monitor_manage(cfg.project_id, db, current_user)
+    if not cfg.enabled:
+        raise HTTPException(status_code=409, detail="Monitor is disabled; enable it before resuming")
+    if cfg.paused_at is None:
+        return _monitoring_payload(cfg)
+    now = _utcnow().replace(tzinfo=None)
+    cfg.paused_at = None
+    cfg.pause_reason = None
+    cfg.next_run_at = compute_next_run(None, cfg.frequency, now)
+    AuditService.record(db, event_type=EVENT_MONITORING_CONFIG_RESUMED, action=EVENT_MONITORING_CONFIG_RESUMED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_CONFIG, resource_id=cfg.id, metadata={"config_id": cfg.id})
+    db.commit()
+    db.refresh(cfg)
+    return _monitoring_payload(cfg)
+
+
+@router.get("/monitoring/{config_id}/runs")
+def list_monitoring_runs_for_config(
+    config_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cfg = db.query(MonitoringConfig).filter(MonitoringConfig.id == config_id).first()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Monitoring config not found")
+    require_project_access(cfg.project_id, db, current_user)
+    q = db.query(MonitoringRun).filter(MonitoringRun.monitoring_config_id == cfg.id).order_by(MonitoringRun.created_at.desc())
+    total = q.count()
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    rows = q.offset((page - 1) * page_size).limit(page_size).all()
+    return {"items": [_run_payload(r) for r in rows], "total": total, "page": page, "page_size": page_size, "total_pages": total_pages}
+
+
+@router.get("/monitoring/{config_id}/runs/{run_id}")
+def get_monitoring_run(
+    config_id: str,
+    run_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cfg = db.query(MonitoringConfig).filter(MonitoringConfig.id == config_id).first()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Monitoring config not found")
+    require_project_access(cfg.project_id, db, current_user)
+    run = db.query(MonitoringRun).filter(MonitoringRun.id == run_id, MonitoringRun.monitoring_config_id == cfg.id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Monitoring run not found")
+    return _run_payload(run)
+
+
 # -------------------------------------------------------------------
 # Monitoring runs
 # -------------------------------------------------------------------
@@ -744,6 +894,11 @@ def _run_payload(run: MonitoringRun) -> dict:
         "assets_changed": run.assets_changed,
         "assets_stale": run.assets_stale,
         "findings_created": run.findings_created,
+        "scan_ids": run.scan_ids or [],
+        "scanner_count": run.scanner_count,
+        "successful_scanners": run.successful_scanners,
+        "failed_scanners": run.failed_scanners,
+        "correlation_id": run.correlation_id,
         "created_at": run.created_at.isoformat() if run.created_at else None,
     }
 
@@ -767,6 +922,7 @@ def list_monitoring_runs(
 @router.post("/monitoring/{config_id}/run", status_code=201)
 def start_monitoring_run(
     config_id: str,
+    payload: dict | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -785,13 +941,22 @@ def start_monitoring_run(
     if active:
         raise HTTPException(status_code=409, detail="A monitoring run is already in progress")
 
-    # Resolve scope: all active project targets (bounded)
-    targets = (
-        db.query(Target)
-        .filter(Target.project_id == cfg.project_id, Target.is_active.is_(True))
-        .limit(20)
-        .all()
-    )
+    # Resolve scope: single target (target_id) OR all active project targets (bounded).
+    targets = None
+    if cfg.target_id:
+        targets = (
+            db.query(Target)
+            .filter(Target.id == cfg.target_id, Target.project_id == cfg.project_id, Target.is_active.is_(True))
+            .limit(1)
+            .all()
+        )
+    else:
+        targets = (
+            db.query(Target)
+            .filter(Target.project_id == cfg.project_id, Target.is_active.is_(True))
+            .limit(20)
+            .all()
+        )
 
     run = MonitoringRun(
         id=str(uuid.uuid4()),
@@ -800,80 +965,139 @@ def start_monitoring_run(
         project_id=cfg.project_id,
         status="running",
         started_at=_utcnow().replace(tzinfo=None),
+        correlation_id=f"mr:{str(uuid.uuid4())[:8]}",
     )
     db.add(run)
     db.flush()
     AuditService.record(db, event_type=EVENT_MONITORING_RUN_STARTED, action=EVENT_MONITORING_RUN_STARTED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "profile": cfg.profile, "targets": len(targets)})
 
-    # Reuse existing scan execution infrastructure: create one Scan per target + dispatch Celery
-    dispatch_errors = 0
+    # Reuse existing scan execution infrastructure: create one Scan per target.
+    # Dispatch happens AFTER commit (same pattern as scans.py) so a Celery
+    # worker can never observe an uncommitted Scan row.
+    scan_ids = []
+    pending_dispatch: list = []
+    expected_scanners = len(scanners_for_profile(cfg.profile))
     for t in targets:
-        scan = Scan(id=str(uuid.uuid4()), target_id=t.id, profile=cfg.profile, status="queued")
+        scan = Scan(
+            id=str(uuid.uuid4()),
+            target_id=t.id,
+            profile=cfg.profile,
+            status="queued",
+            scan_metadata={
+                "monitoring_run_id": run.id,
+                "trigger": "manual",
+                "scheduled": False,
+            },
+        )
         db.add(scan)
         db.flush()
-        try:
-            from app.core.celery import celery_app
+        scan_ids.append(scan.id)
+        pending_dispatch.append((scan.id, t.id, t.value))
+    run.scan_ids = scan_ids
+    run.scanner_count = expected_scanners if targets else 0
 
-            celery_app.send_task("app.tasks.execute_scan", args=[scan.id, t.id, t.value, cfg.profile])
-        except Exception:
-            dispatch_errors += 1
-
-    # Change-detection pass over persisted assets (baseline-aware, no fake events)
+    # Change-detection pass over persisted assets (baseline-aware, no fake events).
+    # Counting queries run in a savepoint: their failure must mark the run
+    # failed WITHOUT discarding the run, scans, or audit records accumulated
+    # above in this transaction (a full rollback would lose them and the final
+    # refresh would raise).
+    now = _utcnow().replace(tzinfo=None)
+    change_error: str | None = None
     try:
-        from datetime import timedelta
-
-        now = _utcnow().replace(tzinfo=None)
-        if not cfg.baseline_established:
-            cfg.baseline_established = True
-            discovered = 0
-            changed = 0
-            stale = 0
-        else:
-            last_run = (
-                db.query(MonitoringRun)
-                .filter(MonitoringRun.monitoring_config_id == cfg.id, MonitoringRun.status == "completed")
-                .order_by(MonitoringRun.created_at.desc())
-                .first()
-            )
-            cutoff = last_run.created_at if last_run and last_run.created_at else (now - timedelta(days=1))
-            discovered = (
-                db.query(func.count(Asset.id))
-                .filter(Asset.project_id == cfg.project_id, Asset.first_seen_at >= cutoff)
-                .scalar()
-                or 0
-            )
-            changed = (
-                db.query(func.count(AssetChangeEvent.id))
-                .filter(AssetChangeEvent.project_id == cfg.project_id, AssetChangeEvent.detected_at >= cutoff)
-                .scalar()
-                or 0
-            )
-            stale = (
-                db.query(func.count(Asset.id))
-                .filter(Asset.project_id == cfg.project_id, Asset.status == "stale")
-                .scalar()
-                or 0
-            )
-        run.assets_discovered = int(discovered or 0)
-        run.assets_changed = int(changed or 0)
-        run.assets_stale = int(stale or 0)
-        run.findings_created = 0
-        if dispatch_errors and not targets:
-            run.status = "failed"
-            run.error = "No targets in scope"
-            run.completed_at = now
-            AuditService.record(db, event_type=EVENT_MONITORING_RUN_FAILED, action=EVENT_MONITORING_RUN_FAILED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "error": "empty scope"})
-        else:
-            run.status = "completed"
-            run.completed_at = now
-            if dispatch_errors:
-                run.error = f"{dispatch_errors} scan dispatch(es) failed"
-            AuditService.record(db, event_type=EVENT_MONITORING_RUN_COMPLETED, action=EVENT_MONITORING_RUN_COMPLETED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "targets": len(targets)})
+        with db.begin_nested():
+            if not cfg.baseline_established:
+                discovered = 0
+                changed = 0
+                stale = 0
+            else:
+                last_run = (
+                    db.query(MonitoringRun)
+                    .filter(MonitoringRun.monitoring_config_id == cfg.id, MonitoringRun.status == "completed")
+                    .order_by(MonitoringRun.created_at.desc())
+                    .first()
+                )
+                cutoff = last_run.created_at if last_run and last_run.created_at else (now - timedelta(days=1))
+                discovered = (
+                    db.query(func.count(Asset.id))
+                    .filter(Asset.project_id == cfg.project_id, Asset.first_seen_at >= cutoff)
+                    .scalar()
+                    or 0
+                )
+                changed = (
+                    db.query(func.count(AssetChangeEvent.id))
+                    .filter(AssetChangeEvent.project_id == cfg.project_id, AssetChangeEvent.detected_at >= cutoff)
+                    .scalar()
+                    or 0
+                )
+                stale = (
+                    db.query(func.count(Asset.id))
+                    .filter(Asset.project_id == cfg.project_id, Asset.status == "stale")
+                    .scalar()
+                    or 0
+                )
     except Exception as exc:
+        change_error = str(exc)[:500]
+        discovered = 0
+        changed = 0
+        stale = 0
+    if not cfg.baseline_established:
+        cfg.baseline_established = True
+    run.assets_discovered = int(discovered or 0)
+    run.assets_changed = int(changed or 0)
+    run.assets_stale = int(stale or 0)
+    run.findings_created = 0
+    if change_error is not None:
         run.status = "failed"
-        run.error = str(exc)[:500]
-        run.completed_at = _utcnow().replace(tzinfo=None)
-        AuditService.record(db, event_type=EVENT_MONITORING_RUN_FAILED, action=EVENT_MONITORING_RUN_FAILED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "error": str(exc)[:200]})
+        run.error = change_error
+        run.completed_at = now
+        AuditService.record(db, event_type=EVENT_MONITORING_RUN_FAILED, action=EVENT_MONITORING_RUN_FAILED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "error": change_error[:200]})
+    elif not targets:
+        run.status = "failed"
+        run.error = "No targets in scope"
+        run.completed_at = now
+        AuditService.record(db, event_type=EVENT_MONITORING_RUN_FAILED, action=EVENT_MONITORING_RUN_FAILED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "error": "empty scope"})
+    else:
+        run.status = "completed"
+        run.completed_at = now
+        AuditService.record(db, event_type=EVENT_MONITORING_RUN_COMPLETED, action=EVENT_MONITORING_RUN_COMPLETED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "targets": len(targets)})
+    # Subsequent scheduling state.
+    if cfg.enabled and cfg.paused_at is None:
+        cfg.next_run_at = compute_next_run(cfg.next_run_at, cfg.frequency, now)
+    cfg.last_run_at = run.started_at or now
+    cfg.last_scan_id = scan_ids[-1] if scan_ids else None
+    cfg.last_status = run.status
+    if run.status == "completed":
+        cfg.consecutive_failures = 0
+    elif run.status == "failed":
+        cfg.consecutive_failures = (cfg.consecutive_failures or 0) + 1
     db.commit()
     db.refresh(run)
+
+    # Post-commit dispatch: workers always observe committed rows. Pending scans
+    # are dispatched even when the run itself already failed (e.g.
+    # change-observation error) so security coverage is not lost; the run
+    # stays failed and finalize ignores terminal runs.
+    dispatch_errors = 0
+    if pending_dispatch:
+        from app.core.celery import celery_app as _celery_app
+
+        for _scan_id, _target_id, _target_value in pending_dispatch:
+            try:
+                _celery_app.send_task("app.tasks.execute_scan", args=[_scan_id, _target_id, _target_value, cfg.profile])
+            except Exception:
+                dispatch_errors += 1
+    if dispatch_errors and run.status == "completed":
+        # Canonical "partial" vocabulary (same terminal status the scheduler
+        # finalize path persists): some scans were created but not all
+        # dispatches reached the broker.
+        try:
+            run.error = f"{dispatch_errors} scan dispatch(es) failed"
+            run.status = "partial"
+            AuditService.record(db, event_type=EVENT_MONITORING_RUN_PARTIAL, action=EVENT_MONITORING_RUN_PARTIAL, result=RESULT_PARTIAL, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "targets": len(targets)})
+            cfg.last_status = run.status
+            cfg.consecutive_failures = (cfg.consecutive_failures or 0) + 1
+            db.commit()
+            db.refresh(run)
+        except Exception:
+            db.rollback()
     return _run_payload(run)

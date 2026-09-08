@@ -13,6 +13,8 @@ import {
   listAttackSurfaceChanges,
   listMonitoringConfigs,
   listMonitoringRuns,
+  pauseMonitoringConfig,
+  resumeMonitoringConfig,
   runMonitoringConfig,
   updateMonitoringConfig,
 } from "@/lib/api/assets";
@@ -157,6 +159,26 @@ export function MonitoringPanel({ projectId }) {
     }
   }
 
+  async function handlePause(cfg) {
+    setActionError("");
+    try {
+      await pauseMonitoringConfig(cfg.id);
+      await load();
+    } catch (err) {
+      setActionError(err.message || "Unable to pause monitor.");
+    }
+  }
+
+  async function handleResume(cfg) {
+    setActionError("");
+    try {
+      await resumeMonitoringConfig(cfg.id);
+      await load();
+    } catch (err) {
+      setActionError(err.message || "Unable to resume monitor.");
+    }
+  }
+
   async function handleDelete(configId) {
     if (!window.confirm("Delete this monitoring configuration? Run history is preserved in audit logs.")) return;
     setActionError("");
@@ -169,7 +191,7 @@ export function MonitoringPanel({ projectId }) {
   }
 
   return (
-    <DashboardSection title="Continuous Monitoring" action={<span className="text-xs text-muted">Manual runs; recurring scheduler deferred</span>}>
+    <DashboardSection title="Continuous Monitoring" action={<span className="text-xs text-muted">Scheduled + manual runs</span>}>
       {loading ? <p className="text-xs text-muted">Loading monitoring...</p> : null}
       {!loading && error ? <ErrorState title="Unable to load monitoring." message={error} onRetry={load} /> : null}
       {!loading && !error ? (
@@ -179,6 +201,7 @@ export function MonitoringPanel({ projectId }) {
             <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Monitor name" maxLength={255} aria-label="Monitor name" className="rounded-sm border border-border bg-canvas px-2 py-1.5 text-sm" />
             <select value={form.frequency} onChange={(e) => setForm((f) => ({ ...f, frequency: e.target.value }))} aria-label="Frequency" className="rounded-sm border border-border bg-canvas px-2 py-1.5 text-sm">
               <option value="hourly">hourly</option>
+              <option value="six_hourly">every 6 hours</option>
               <option value="daily">daily</option>
               <option value="weekly">weekly</option>
             </select>
@@ -194,11 +217,17 @@ export function MonitoringPanel({ projectId }) {
               {configs.map((c) => (
                 <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-border bg-canvas px-3 py-2">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{c.name} <span className="text-xs text-muted">• {c.frequency} • {c.profile} • {c.enabled ? "enabled" : "disabled"}</span></p>
-                    {c.last_run ? <p className="text-xs text-muted">Last run: {c.last_run.status} {c.last_run.created_at ? `• ${formatWhen(c.last_run.created_at)}` : ""}</p> : <p className="text-xs text-muted">Never run — first run establishes the baseline.</p>}
+                    <p className="truncate text-sm font-medium">{c.name} <span className="text-xs text-muted">• {c.frequency} • {c.profile} • {c.enabled ? "enabled" : "disabled"}{c.paused_at ? " • paused" : ""}</span></p>
+                    {c.last_run ? <p className="text-xs text-muted">Last run: {c.last_run.status} {c.last_run.created_at ? `• ${formatWhen(c.last_run.created_at)}` : ""}{c.last_status ? ` • ${c.last_status}` : ""}</p> : <p className="text-xs text-muted">Never run — first run establishes the baseline.</p>}
+                    <p className="text-xs text-muted">Next run: {c.next_run_at ? formatWhen(c.next_run_at) : "—"}{c.consecutive_failures ? ` • ${c.consecutive_failures} consecutive failure${c.consecutive_failures === 1 ? "" : "s"}` : ""}{c.pause_reason ? ` • ${c.pause_reason}` : ""}</p>
                   </div>
                   <div className="flex gap-1">
                     <button type="button" onClick={() => handleRun(c.id)} className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-surface-hover">Run now</button>
+                    {c.paused_at ? (
+                      <button type="button" onClick={() => handleResume(c)} className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-surface-hover">Resume</button>
+                    ) : (
+                      <button type="button" onClick={() => handlePause(c)} className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-surface-hover">Pause</button>
+                    )}
                     <button type="button" onClick={() => handleToggle(c)} className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-surface-hover">{c.enabled ? "Disable" : "Enable"}</button>
                     <button type="button" onClick={() => handleDelete(c.id)} className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-surface-hover">Delete</button>
                   </div>
@@ -219,7 +248,7 @@ export function MonitoringPanel({ projectId }) {
               </ul>
             </div>
           ) : null}
-          <p className="mt-2 text-xs text-muted">Schedules are configured and persisted; production recurring execution is deferred to the monitoring scheduler phase.</p>
+          <p className="mt-2 text-xs text-muted">Schedules run automatically via the monitoring scheduler service; pausing a monitor prevents new scheduled runs without canceling scans already in flight.</p>
         </>
       ) : null}
     </DashboardSection>

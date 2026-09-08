@@ -83,3 +83,19 @@ export function listMonitoringRuns(projectId, query = {}) {
 export function runMonitoringConfig(configId) {
   return api.post(`/api/v1/monitoring/${configId}/run`);
 }
+
+export function pauseMonitoringConfig(configId, reason) {
+  return api.post(`/api/v1/monitoring/${configId}/pause`, reason ? { reason } : {});
+}
+
+export function resumeMonitoringConfig(configId) {
+  return api.post(`/api/v1/monitoring/${configId}/resume`);
+}
+
+export function listMonitoringRunsForConfig(configId, query = {}) {
+  return api.get(`/api/v1/monitoring/${configId}/runs`, { query });
+}
+
+export function getMonitoringRun(configId, runId) {
+  return api.get(`/api/v1/monitoring/${configId}/runs/${runId}`);
+}
