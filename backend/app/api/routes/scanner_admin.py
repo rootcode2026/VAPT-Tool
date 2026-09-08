@@ -553,6 +553,110 @@ def rollback_scanner(
         "failure_reason": rolled.failure_reason,
     }
 
+
+@router.post("/scanners/{scanner_key}/canary", status_code=201)
+def create_canary(
+    scanner_key: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    _ensure_seed(db)
+    definition = get_definition_or_404(db, scanner_key.strip())
+    target_version = payload.get("target_version") or payload.get("version")
+    if not target_version:
+        raise HTTPException(status_code=400, detail="target_version is required")
+    canary_count = int(payload.get("canary_count", 1)) if payload.get("canary_count") is not None else 1
+    reason = payload.get("reason")
+    # Reject arbitrary fields
+    for k in ("image_ref", "image_digest", "command", "shell", "volumes", "privileged", "host_path"):
+        if k in payload:
+            raise HTTPException(status_code=400, detail=f"Forbidden field: {k}")
+    if canary_count < 1 or canary_count > 10:
+        raise HTTPException(status_code=400, detail="canary_count must be between 1 and 10")
+    try:
+        from app.services.scanner_control import create_canary_rollout, execute_canary
+        rollout = create_canary_rollout(db, definition, target_version=target_version, canary_count=canary_count, reason=reason, actor=current_user)
+        # Immediately execute canary (bounded, synthetic target)
+        rollout = execute_canary(db, rollout, actor=current_user)
+        return {
+            "id": rollout.id,
+            "scanner_key": scanner_key,
+            "target_version": rollout.target_version,
+            "previous_version": rollout.previous_version,
+            "state": rollout.state,
+            "operation": rollout.operation,
+            "canary_count": rollout.canary_count,
+            "failure_reason": rollout.failure_reason,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)[:500])
+
+
+@router.get("/scanners/{scanner_key}/canary/{rollout_id}")
+def get_canary(
+    scanner_key: str,
+    rollout_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    _ensure_seed(db)
+    definition = get_definition_or_404(db, scanner_key.strip())
+    rollout = db.query(ScannerRollout).filter(ScannerRollout.id == rollout_id, ScannerRollout.definition_id == definition.id).first()
+    if not rollout:
+        raise HTTPException(status_code=404, detail="Canary rollout not found")
+    return {
+        "id": rollout.id,
+        "scanner_key": scanner_key,
+        "target_version": rollout.target_version,
+        "previous_version": rollout.previous_version,
+        "state": rollout.state,
+        "operation": rollout.operation,
+        "canary_count": rollout.canary_count,
+        "failure_reason": rollout.failure_reason,
+        "created_at": rollout.created_at.isoformat() if rollout.created_at else None,
+        "started_at": rollout.started_at.isoformat() if rollout.started_at else None,
+        "completed_at": rollout.completed_at.isoformat() if rollout.completed_at else None,
+    }
+
+
+@router.post("/scanners/{scanner_key}/canary/{rollout_id}/promote", status_code=200)
+def promote_canary(
+    scanner_key: str,
+    rollout_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    _ensure_seed(db)
+    definition = get_definition_or_404(db, scanner_key.strip())
+    rollout = db.query(ScannerRollout).filter(ScannerRollout.id == rollout_id, ScannerRollout.definition_id == definition.id).first()
+    if not rollout:
+        raise HTTPException(status_code=404, detail="Canary rollout not found")
+    if rollout.operation != "canary":
+        raise HTTPException(status_code=400, detail="Rollout is not a canary")
+    try:
+        from app.services.scanner_control import promote_canary
+        promoted = promote_canary(db, rollout, actor=current_user)
+        return {
+            "id": promoted.id,
+            "scanner_key": scanner_key,
+            "target_version": promoted.version if hasattr(promoted, "version") else promoted.target_version,
+            "previous_version": getattr(promoted, "previous_version", None),
+            "state": getattr(promoted, "state", "stable"),
+            "operation": "promote",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)[:500])
+
 # ---------------------------------------------------------------------------
 # Fleet
 # ---------------------------------------------------------------------------
