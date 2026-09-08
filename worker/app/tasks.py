@@ -496,54 +496,13 @@ def execute_scan(
         except Exception:
             pass
 
-        # C10: Worker pool capacity check and assignment
+        # C10: Worker pool capacity — per-scanner, not per-scan
+        # For multi-scanner scans, each scanner execution will handle its own pool/worker
+        # Here we just verify that at least one pool has capacity for the overall scan
         assigned_worker_id = None
         assigned_pool = None
-        try:
-            from app.services.scanner_control import get_pool_for_scanner, assign_worker
-            from app.models.scanner_fleet import WorkerPool
-
-            # Resolve pool for first scanner in profile (use first scanner as representative)
-            scanners = get_scanners_for_profile(profile)
-            if scanners:
-                pool = get_pool_for_scanner(scanners[0], db)
-                if pool:
-                    # Check capacity via can_accept_job logic
-                    # Derive active capacity from Worker records (if any) or from Scan active jobs
-                    from sqlalchemy import func as _func
-                    from app.models.scan import Scan as _Scan
-                    active = db.query(_func.count(_Scan.id)).filter(_Scan.status.in_(["queued", "running"])).scalar() or 0
-                    available = max(0, pool.total_capacity - active - pool.reserved_buffer)
-                    if available <= 0:
-                        # No capacity, queue the scan
-                        db.execute(
-                            text("UPDATE scans SET status = :status, phase = :phase WHERE id = :scan_id"),
-                            {"status": "queued", "phase": "queued", "scan_id": scan_id},
-                        )
-                        db.commit()
-                        # Audit queued
-                        try:
-                            from app.services.audit import AuditService
-                            AuditService.record(
-                                db,
-                                event_type="SCAN_QUEUED_CAPACITY",
-                                action="SCAN_QUEUED_CAPACITY",
-                                result="SUCCESS",
-                                resource_type="scan",
-                                resource_id=scan_id,
-                                metadata={"pool": pool.name, "reason": "no capacity"},
-                            )
-                            db.commit()
-                        except Exception:
-                            pass
-                        return {"scan_id": scan_id, "status": "queued", "reason": "no capacity"}
-                    # Try to assign worker
-                    worker_id = assign_worker(pool, db, scanners[0], scan_id)
-                    if worker_id:
-                        assigned_worker_id = worker_id
-                        assigned_pool = pool
-        except Exception:
-            pass
+        # No global worker assignment for the whole scan; individual scanner executions
+        # will call assign_worker() per scanner inside the scanner loop below
         db.execute(
             text(
                 """
@@ -656,6 +615,34 @@ def execute_scan(
         _refresh_progress(db, scan_id, list(latest_status.values()), len(scanners))
 
         for scanner_name in scanners:
+            # C10: Per-scanner pool and worker assignment
+            scanner_worker_id = None
+            scanner_pool = None
+            try:
+                from app.services.scanner_control import get_pool_for_scanner, assign_worker, release_worker
+
+                pool = get_pool_for_scanner(scanner_name, db)
+                if pool:
+                    # Check capacity for this pool
+                    from sqlalchemy import func as _func
+                    from app.models.scan import Scan as _Scan
+
+                    active = db.query(_func.count(_Scan.id)).filter(_Scan.status.in_(["queued", "running"])).scalar() or 0
+                    available = max(0, pool.total_capacity - active - pool.reserved_buffer)
+                    if available <= 0:
+                        # Queue this scanner's execution (mark attempt as queued)
+                        latest_status[scanner_name] = "queued"
+                        continue
+                    # Try to assign worker for this scanner
+                    wid = assign_worker(pool, db, scanner_name, f"{scan_id}:{scanner_name}")
+                    if wid:
+                        scanner_worker_id = wid
+                        scanner_pool = pool
+                    else:
+                        latest_status[scanner_name] = "queued"
+                        continue
+            except Exception:
+                pass
             print(f"Starting scanner: {scanner_name}")
             _update_scan_phase(db, scan_id, f"{scanner_name}_running")
 
@@ -847,6 +834,16 @@ def execute_scan(
                 )
 
             scanner_outcomes.append(outcome)
+            # C10: Release worker for this scanner
+            if scanner_worker_id and scanner_pool:
+                try:
+                    from app.services.scanner_control import release_worker
+                    success = is_scanner_success(outcome)
+                    release_worker(scanner_pool, db, scanner_worker_id, success=success)
+                except Exception:
+                    pass
+                scanner_worker_id = None
+                scanner_pool = None
             _refresh_progress(
                 db,
                 scan_id,
