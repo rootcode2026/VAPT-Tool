@@ -893,6 +893,12 @@ def execute_scan(
             )
             db.commit()
             print(f"Scan failed: {scan_id}")
+            try:
+                from .monitoring_scheduler import finalize_monitoring_run
+
+                finalize_monitoring_run(db, scan_id)
+            except Exception:
+                pass
             return {
                 "scan_id": scan_id,
                 "target": target,
@@ -956,6 +962,13 @@ def execute_scan(
         print(f"Risk score: {risk_assessment['score']}")
         print(f"Risk grade: {risk_assessment['grade']}")
 
+        try:
+            from .monitoring_scheduler import finalize_monitoring_run
+
+            finalize_monitoring_run(db, scan_id)
+        except Exception:
+            pass
+
         return {
             "scan_id": scan_id,
             "target": target,
@@ -1005,6 +1018,12 @@ def execute_scan(
         except Exception as status_error:
             db.rollback()
             print(f"Failed to update scan status: {status_error}")
+        try:
+            from .monitoring_scheduler import finalize_monitoring_run
+
+            finalize_monitoring_run(db, scan_id)
+        except Exception:
+            pass
         raise
     finally:
         # C10: Release worker if assigned

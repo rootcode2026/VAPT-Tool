@@ -3,6 +3,7 @@ from app.models.asset_change_event import AssetChangeEvent
 from app.models.asset_relationship import AssetRelationship
 from app.models.audit_log import AuditLog
 from app.models.finding import Finding
+from app.models.monitoring import MonitoringConfig, MonitoringRun
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 from app.models.project import Project
@@ -30,6 +31,8 @@ __all__ = [
     "AuditLog",
     "Finding",
     "MfaRecoveryCode",
+    "MonitoringConfig",
+    "MonitoringRun",
     "Organization",
     "OrganizationMembership",
     "PasswordResetToken",

@@ -83,6 +83,37 @@ services:
       - security_network
 
 
+  scheduler:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+
+    container_name: security_scheduler
+
+    command: celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+
+    environment:
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DATABASE_URL: postgresql://security:security_password@postgres:5432/security_saas
+      MONITORING_SCHEDULER_INTERVAL_SECONDS: "60"
+      MONITORING_MAX_RUNS_PER_TICK: "10"
+      MONITORING_MAX_TARGETS_PER_RUN: "20"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      rabbitmq:
+        condition: service_started
+
+      redis:
+        condition: service_started
+
+    networks:
+      - security_network
+
+
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
 
