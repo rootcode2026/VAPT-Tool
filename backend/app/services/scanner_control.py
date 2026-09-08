@@ -30,7 +30,8 @@ from app.services.scanner_catalog import DOCUMENTED_STABLE_VERSIONS, SCANNER_CAT
 ALLOWED_CHANNELS = {"stable", "candidate", "deprecated", "failed"}
 ALLOWED_HEALTH = {"healthy", "degraded", "unhealthy", "unknown"}
 ALLOWED_ROLLOUT_STATES = {"pending", "canary", "rolling_out", "active", "failed", "rolled_back", "cancelled"}
-ALLOWED_OPERATIONS = {"upgrade", "downgrade", "rollback"}
+ALLOWED_OPERATIONS = {"upgrade", "downgrade", "rollback", "canary"}
+ALLOWED_CANARY_STATES = {"pending", "validating", "canary", "verifying", "passed", "failed", "promoted"}
 
 # Image validation — allowlisted, no shell
 _IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\-/:@]*$")
@@ -884,3 +885,280 @@ def rollback_rollout(db: Session, rollout: ScannerRollout, actor: Any | None = N
     if definition:
         db.refresh(definition)
     return rollout
+
+
+# ---------------------------------------------------------------------------
+# C8: Canary deployment — controlled, health-gated, actual execution
+# ---------------------------------------------------------------------------
+
+def create_canary_rollout(
+    db: Session,
+    definition: ScannerDefinition,
+    target_version: str,
+    canary_count: int = 1,
+    reason: str | None = None,
+    actor: Any | None = None,
+) -> ScannerRollout:
+    target_version = validate_version(target_version)
+    if canary_count < 1 or canary_count > 10:
+        raise ValueError("canary_count must be between 1 and 10")
+    # Validate target version exists and is approved/enabled
+    v = db.query(ScannerVersion).filter(ScannerVersion.definition_id == definition.id, ScannerVersion.version == target_version).first()
+    if not v:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Target version not found")
+    if not v.enabled or getattr(v, "deprecated", False):
+        raise ValueError("Target version is disabled/deprecated")
+    if not getattr(v, "approved", False):
+        raise ValueError("Target version must be approved")
+    if not v.image_ref or not v.image_digest:
+        raise ValueError("Target version missing image_ref or digest")
+    # Check no active rollout for this scanner
+    active = db.query(ScannerRollout).filter(
+        ScannerRollout.definition_id == definition.id,
+        ScannerRollout.state.in_(["pending", "canary", "verifying", "validating", "preparing", "deploying", "rolling_out"]),
+    ).first()
+    if active:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=409, detail=f"Active rollout already exists: {active.id} ({active.state})")
+    rollout = ScannerRollout(
+        id=str(uuid.uuid4()),
+        definition_id=definition.id,
+        target_version=target_version,
+        previous_version=definition.current_version,
+        state="pending",
+        operation="canary",
+        canary_count=canary_count,
+        health_threshold=1,
+        initiated_by=getattr(actor, "id", None),
+    )
+    db.add(rollout)
+    try:
+        AuditService.record(
+            db,
+            event_type="SCANNER_CANARY_REQUESTED",
+            action="SCANNER_CANARY_REQUESTED",
+            result="SUCCESS",
+            actor_user_id=getattr(actor, "id", None),
+            resource_type="scanner",
+            resource_id=definition.scanner_key,
+            metadata={"target_version": target_version, "canary_count": canary_count, "reason": (reason or "")[:500]},
+        )
+        # Security event
+        try:
+            from app.services.security_event import emit_security_event
+            emit_security_event(
+                db,
+                event_type="SCANNER_CANARY_STARTED",
+                actor_user_id=getattr(actor, "id", None),
+                resource_type="scanner",
+                resource_id=definition.scanner_key,
+                severity="INFO",
+                reason=reason,
+                metadata={"target_version": target_version, "canary_count": canary_count},
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
+    db.commit()
+    db.refresh(rollout)
+    return rollout
+
+
+def execute_canary(db: Session, rollout: ScannerRollout, actor: Any | None = None) -> ScannerRollout:
+    """
+    Execute canary: perform actual scanner execution(s) for the target version
+    using a synthetic isolated target (canary.test), then verify.
+    """
+    if rollout.state != "pending":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Canary not in pending state: {rollout.state}")
+    rollout.state = "canary"
+    rollout.started_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(rollout)
+    try:
+        AuditService.record(
+            db,
+            event_type="SCANNER_CANARY_STARTED",
+            action="SCANNER_CANARY_STARTED",
+            result="SUCCESS",
+            actor_user_id=getattr(actor, "id", None),
+            resource_type="scanner_rollout",
+            resource_id=rollout.id,
+            metadata={"target_version": rollout.target_version, "canary_count": rollout.canary_count},
+        )
+        db.commit()
+    except Exception:
+        pass
+
+    # Perform actual scanner execution(s) — use synthetic target canary.test
+    definition = db.query(ScannerDefinition).filter(ScannerDefinition.id == rollout.definition_id).first()
+    if not definition:
+        rollout.state = "failed"
+        rollout.failure_reason = "Scanner definition not found"
+        db.commit()
+        return rollout
+
+    # Get target version for image/digest
+    from app.models.scanner_fleet import ScannerVersion
+    v = db.query(ScannerVersion).filter(ScannerVersion.definition_id == definition.id, ScannerVersion.version == rollout.target_version).first()
+    if not v:
+        rollout.state = "failed"
+        rollout.failure_reason = "Target version not found"
+        db.commit()
+        return rollout
+
+    # Use canary.test as isolated synthetic target (no customer data)
+    canary_target = "canary.test"
+    canary_target_type = "domain"
+    success_count = 0
+    failure_count = 0
+    latencies = []
+    last_error = None
+
+    for i in range(rollout.canary_count):
+        try:
+            # Use existing scanner pipeline with canary target
+            from app.services.scanner_catalog import get_scanner_entry
+            entry = get_scanner_entry(definition.scanner_key)
+            if not entry:
+                failure_count += 1
+                last_error = "Scanner not in catalog"
+                continue
+            # For canary, we simulate a lightweight execution: use ScannerManager with canary target
+            # Use a bounded workspace and existing DockerRunner security controls
+            start = time.monotonic()
+            # Use a simple in-process scan for canary: try to run the scanner with canary.test
+            # For scanners that require workspace, use a temp workspace
+            try:
+                from worker.app.scanner.registry import ScannerRegistry
+                from worker.app.scanner.workspace import create_workspace, cleanup_workspace
+                from worker.app.scanner.base import ScanContext
+                registry = ScannerRegistry()
+                scanner = registry.get(definition.scanner_key)
+                # For canary, use a minimal execution: if requires_workspace, create temp workspace
+                if getattr(scanner, "requires_workspace", False):
+                    ws = create_workspace(scan_id=f"canary-{rollout.id}-{i}", scanner=definition.scanner_key, project_id="canary-project")
+                    try:
+                        ctx = ScanContext(target=ws, workspace=ws, project_id="canary-project", scan_id=f"canary-{rollout.id}-{i}", metadata={"canary": True})
+                        raw = scanner.scan_with_context(ctx)
+                    finally:
+                        cleanup_workspace(ws)
+                else:
+                    raw = scanner.scan(canary_target)
+                # If scan succeeded (no exception), count as success, even if no findings (target is synthetic)
+                success_count += 1
+                latencies.append(int((time.monotonic() - start) * 1000))
+                # Record health success for this version
+                try:
+                    record_health(db, definition, status="healthy", version=rollout.target_version, latency_ms=latencies[-1], capabilities_verified=True, version_verified=True)
+                except Exception:
+                    pass
+            except Exception as e:
+                failure_count += 1
+                last_error = _sanitize_error(str(e)) or "Canary execution failed"
+                latencies.append(int((time.monotonic() - start) * 1000))
+                # Record health failure for this version
+                try:
+                    # Classify failure: if it's timeout or container, mark as unhealthy
+                    failure_type = "unhealthy" if "timeout" in str(e).lower() or "container" in str(e).lower() else "degraded"
+                    record_health(db, definition, status=failure_type, version=rollout.target_version, last_error=last_error)
+                except Exception:
+                    pass
+        except Exception as e:
+            failure_count += 1
+            last_error = _sanitize_error(str(e)) or "Canary execution error"
+
+    # Verification: at least 1 success and no more than 0 failures for minimal, or success_count >= health_threshold
+    rollout.state = "verifying"
+    db.commit()
+    db.refresh(rollout)
+
+    # Verification criteria: success_count >=1 and failure_count==0 for minimal, or success_count >= canary_count
+    if success_count >= rollout.canary_count and failure_count == 0:
+        rollout.state = "passed"
+        rollout.failure_reason = None
+        try:
+            AuditService.record(
+                db,
+                event_type="SCANNER_CANARY_PASSED",
+                action="SCANNER_CANARY_PASSED",
+                result="SUCCESS",
+                actor_user_id=getattr(actor, "id", None),
+                resource_type="scanner_rollout",
+                resource_id=rollout.id,
+                metadata={"target_version": rollout.target_version, "success_count": success_count, "failure_count": failure_count, "latencies": latencies[:5]},
+            )
+            from app.services.security_event import emit_security_event
+            emit_security_event(
+                db,
+                event_type="SCANNER_CANARY_PASSED",
+                actor_user_id=getattr(actor, "id", None),
+                resource_type="scanner_rollout",
+                resource_id=rollout.id,
+                severity="INFO",
+                metadata={"target_version": rollout.target_version, "success_count": success_count},
+            )
+        except Exception:
+            pass
+    else:
+        rollout.state = "failed"
+        rollout.failure_reason = last_error or f"Canary verification failed: {success_count} success, {failure_count} failure (required {rollout.canary_count} success, 0 failure)"
+        try:
+            AuditService.record(
+                db,
+                event_type="SCANNER_CANARY_FAILED",
+                action="SCANNER_CANARY_FAILED",
+                result="FAILURE",
+                actor_user_id=getattr(actor, "id", None),
+                resource_type="scanner_rollout",
+                resource_id=rollout.id,
+                metadata={"target_version": rollout.target_version, "success_count": success_count, "failure_count": failure_count, "reason": rollout.failure_reason},
+            )
+            from app.services.security_event import emit_security_event
+            emit_security_event(
+                db,
+                event_type="SCANNER_CANARY_FAILED",
+                actor_user_id=getattr(actor, "id", None),
+                resource_type="scanner_rollout",
+                resource_id=rollout.id,
+                severity="MEDIUM",
+                reason=rollout.failure_reason,
+                metadata={"target_version": rollout.target_version},
+            )
+        except Exception:
+            pass
+    rollout.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(rollout)
+    return rollout
+
+
+def promote_canary(db: Session, rollout: ScannerRollout, actor: Any | None = None) -> ScannerRollout:
+    """
+    Promote a passed canary to stable. Requires rollout.state == passed, target approved/enabled, digest, health.
+    Transactionally updates target to stable and demotes previous stable.
+    """
+    if rollout.state != "passed":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Canary not in passed state: {rollout.state}")
+    definition = db.query(ScannerDefinition).filter(ScannerDefinition.id == rollout.definition_id).first()
+    if not definition:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Scanner definition not found")
+    # Re-validate target still approved/enabled/digest
+    from app.models.scanner_fleet import ScannerVersion
+    target = db.query(ScannerVersion).filter(ScannerVersion.definition_id == definition.id, ScannerVersion.version == rollout.target_version).first()
+    if not target:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Target version not found")
+    if not target.enabled or getattr(target, "deprecated", False):
+        raise ValueError("Target version is disabled/deprecated")
+    if not getattr(target, "approved", False):
+        raise ValueError("Target version must be approved")
+    if not target.image_digest:
+        raise ValueError("Target version missing digest")
+    # Transactional promotion (reuse promote_version logic)
+    return promote_version(db, definition, version=rollout.target_version, target_channel="stable", reason="Canary promotion", actor=actor)
