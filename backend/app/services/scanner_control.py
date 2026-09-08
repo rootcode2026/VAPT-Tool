@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -663,14 +663,22 @@ def can_accept_job(pool: WorkerPool, db: Session) -> bool:
     # Check for at least one eligible worker
     from app.models.scanner_fleet import Worker
     # Stale threshold: 5 minutes
-    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    now = datetime.now(timezone.utc)
+    stale_cutoff = now - timedelta(minutes=5)
     workers = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.enabled == True).all()
     for w in workers:
         if w.status in ("draining", "disabled", "failed"):
             continue
-        if w.last_heartbeat and w.last_heartbeat < stale_cutoff:
-            continue  # stale
+        hb = w.last_heartbeat
+        if hb:
+            if hb.tzinfo is None:
+                hb = hb.replace(tzinfo=timezone.utc)
+            if hb < stale_cutoff:
+                continue  # stale
         if w.status == "healthy" and not w.current_job_id:
+            # Check if normal worker (not buffer) for ordinary jobs
+            if getattr(w, "role", "normal") == "buffer":
+                continue  # buffer not for normal
             return True
     # If no Worker records, fallback to pool capacity (for dev, allow)
     if not workers:
@@ -683,13 +691,18 @@ def can_accept_buffer_job(pool: WorkerPool, db: Session) -> bool:
     if not pool.enabled or pool.status in ("disabled", "failed"):
         return False
     from app.models.scanner_fleet import Worker
-    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    now = datetime.now(timezone.utc)
+    stale_cutoff = now - timedelta(minutes=5)
     workers = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.enabled == True, Worker.role == "buffer").all()
     for w in workers:
         if w.status in ("draining", "disabled", "failed"):
             continue
-        if w.last_heartbeat and w.last_heartbeat < stale_cutoff:
-            continue
+        hb = w.last_heartbeat
+        if hb:
+            if hb.tzinfo is None:
+                hb = hb.replace(tzinfo=timezone.utc)
+            if hb < stale_cutoff:
+                continue
         if w.status == "healthy" and not w.current_job_id:
             return True
     return False
@@ -725,8 +738,12 @@ def assign_worker(pool: WorkerPool, db: Session, scanner_key: str, job_id: str, 
     for w in workers:
         if w.status in ("draining", "disabled", "failed"):
             continue
-        if w.last_heartbeat and w.last_heartbeat < stale_cutoff:
-            continue
+        hb = w.last_heartbeat
+        if hb:
+            if hb.tzinfo is None:
+                hb = hb.replace(tzinfo=timezone.utc)
+            if hb < stale_cutoff:
+                continue
         if w.status == "healthy" and not w.current_job_id:
             w.current_job_id = job_id
             w.status = "busy"
