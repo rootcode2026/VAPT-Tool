@@ -593,9 +593,9 @@ def ensure_default_pools(db: Session) -> None:
         )
         db.add(pool)
         db.flush()
-        # Seed minimal logical workers for this pool (one per capacity unit, but limited for dev)
         from app.models.scanner_fleet import Worker
-        for i in range(min(d["capacity"], 2)):  # Only 2 logical workers per pool for dev
+        # Seed normal workers
+        for i in range(min(d["capacity"], 2)):
             db.add(Worker(
                 id=str(uuid.uuid4()),
                 pool_id=pool.id,
@@ -604,6 +604,19 @@ def ensure_default_pools(db: Session) -> None:
                 enabled=True,
                 capabilities=d["families"],
                 last_heartbeat=datetime.now(timezone.utc),
+                role="normal",
+            ))
+        # Seed buffer workers (reserved)
+        for i in range(d["buffer"]):
+            db.add(Worker(
+                id=str(uuid.uuid4()),
+                pool_id=pool.id,
+                worker_key=f"{d['key']}-buffer-{i+1}",
+                status="healthy",
+                enabled=True,
+                capabilities=d["families"],
+                last_heartbeat=datetime.now(timezone.utc),
+                role="buffer",
             ))
     db.commit()
 
@@ -665,6 +678,23 @@ def can_accept_job(pool: WorkerPool, db: Session) -> bool:
     return False
 
 
+def can_accept_buffer_job(pool: WorkerPool, db: Session) -> bool:
+    """Check if pool can accept a buffer (failover) job — uses reserved buffer."""
+    if not pool.enabled or pool.status in ("disabled", "failed"):
+        return False
+    from app.models.scanner_fleet import Worker
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    workers = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.enabled == True, Worker.role == "buffer").all()
+    for w in workers:
+        if w.status in ("draining", "disabled", "failed"):
+            continue
+        if w.last_heartbeat and w.last_heartbeat < stale_cutoff:
+            continue
+        if w.status == "healthy" and not w.current_job_id:
+            return True
+    return False
+
+
 def heartbeat_worker(pool: WorkerPool, db: Session, worker_key: str) -> None:
     from app.models.scanner_fleet import Worker
     w = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.worker_key == worker_key).first()
@@ -676,14 +706,22 @@ def heartbeat_worker(pool: WorkerPool, db: Session, worker_key: str) -> None:
         db.commit()
 
 
-def assign_worker(pool: WorkerPool, db: Session, scanner_key: str, job_id: str) -> str | None:
+def assign_worker(pool: WorkerPool, db: Session, scanner_key: str, job_id: str, is_failover: bool = False) -> str | None:
     """Assign a worker from pool for a job, with concurrency safety via SELECT FOR UPDATE."""
-    if not can_accept_job(pool, db):
-        return None
+    if is_failover:
+        if not can_accept_buffer_job(pool, db):
+            return None
+    else:
+        if not can_accept_job(pool, db):
+            return None
     from app.models.scanner_fleet import Worker
-    # Find eligible worker: enabled, healthy, not draining/disabled/failed, not stale, no current job
     stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
-    workers = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.enabled == True).with_for_update().all()  # type: ignore
+    q = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.enabled == True)
+    if is_failover:
+        q = q.filter(Worker.role == "buffer")
+    else:
+        q = q.filter(Worker.role == "normal")
+    workers = q.with_for_update().all()  # type: ignore
     for w in workers:
         if w.status in ("draining", "disabled", "failed"):
             continue
