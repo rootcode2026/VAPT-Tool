@@ -84,10 +84,32 @@ class WorkerPool(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    pool_key: Mapped[str] = mapped_column(String(100), nullable=False, index=True, default="default", server_default="default")
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False, default="Default Pool", server_default="Default Pool")
+    pool_type: Mapped[str] = mapped_column(String(20), nullable=False, default="generic", server_default="generic")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
     scanner_families: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     total_capacity: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
     reserved_buffer: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="healthy", index=True)
+
+
+class Worker(Base):
+    __tablename__ = "workers"
+    __table_args__ = (
+        UniqueConstraint("pool_id", "worker_key", name="uq_workers_pool_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    pool_id: Mapped[str] = mapped_column(String(36), ForeignKey("worker_pools.id", ondelete="CASCADE"), nullable=False, index=True)
+    worker_key: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="healthy", server_default="healthy", index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    capabilities: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    current_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), default=datetime.utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), default=datetime.utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=datetime.utcnow)
 
