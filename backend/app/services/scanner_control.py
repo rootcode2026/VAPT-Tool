@@ -562,22 +562,49 @@ def get_or_create_default_pool(db: Session) -> WorkerPool:
 def ensure_default_pools(db: Session) -> None:
     # Idempotent ensure pools exist for fleet scaling 14 -> 30+
     defaults = [
-        {"name": "default", "families": [s["family"] for s in SCANNER_CATALOG], "capacity": 14, "buffer": 2},
-        {"name": "network-pool", "families": ["network", "web", "dast"], "capacity": 8, "buffer": 1},
-        {"name": "appsec-pool", "families": ["sast", "sca", "secrets", "container", "iac", "api"], "capacity": 6, "buffer": 1},
+        {"name": "default", "families": [s["family"] for s in SCANNER_CATALOG], "capacity": 14, "buffer": 2, "key": "default", "display": "Default Pool", "type": "generic"},
+        {"name": "network-pool", "families": ["network", "web", "dast"], "capacity": 8, "buffer": 1, "key": "network-pool", "display": "Network Pool", "type": "network"},
+        {"name": "appsec-pool", "families": ["sast", "sca", "secrets", "container", "iac", "api"], "capacity": 6, "buffer": 1, "key": "appsec-pool", "display": "AppSec Pool", "type": "appsec"},
+        {"name": "api-pool", "families": ["api"], "capacity": 4, "buffer": 1, "key": "api-pool", "display": "API Pool", "type": "api"},
+        {"name": "cloud-pool", "families": ["cloud"], "capacity": 2, "buffer": 1, "key": "cloud-pool", "display": "Cloud Pool", "type": "cloud"},
     ]
     for d in defaults:
         existing = db.query(WorkerPool).filter(WorkerPool.name == d["name"]).first()
         if existing:
+            # Update pool_key/display_name/type if missing
+            if not getattr(existing, "pool_key", None):
+                existing.pool_key = d["key"]
+            if not getattr(existing, "display_name", None):
+                existing.display_name = d["display"]
+            if not getattr(existing, "pool_type", None):
+                existing.pool_type = d["type"]
             continue
-        db.add(WorkerPool(
+        pool = WorkerPool(
             id=str(uuid.uuid4()),
             name=d["name"],
+            pool_key=d["key"],
+            display_name=d["display"],
+            pool_type=d["type"],
             scanner_families=d["families"],
             total_capacity=d["capacity"],
             reserved_buffer=d["buffer"],
             status="healthy",
-        ))
+            enabled=True,
+        )
+        db.add(pool)
+        db.flush()
+        # Seed minimal logical workers for this pool (one per capacity unit, but limited for dev)
+        from app.models.scanner_fleet import Worker
+        for i in range(min(d["capacity"], 2)):  # Only 2 logical workers per pool for dev
+            db.add(Worker(
+                id=str(uuid.uuid4()),
+                pool_id=pool.id,
+                worker_key=f"{d['key']}-worker-{i+1}",
+                status="healthy",
+                enabled=True,
+                capabilities=d["families"],
+                last_heartbeat=datetime.now(timezone.utc),
+            ))
     db.commit()
 
 def get_pool_for_scanner(scanner_key: str, db: Session) -> WorkerPool | None:
@@ -607,18 +634,71 @@ def get_pool_for_scanner(scanner_key: str, db: Session) -> WorkerPool | None:
     return pool
 
 
+def can_accept_job(pool: WorkerPool, db: Session) -> bool:
+    """Check if pool can accept a new job (deterministic, respects reserved buffer)."""
+    if not pool.enabled or pool.status in ("disabled", "failed"):
+        return False
+    from sqlalchemy import func as _func
+    from app.models.scan import Scan as _Scan
+    try:
+        active = db.query(_func.count(_Scan.id)).filter(_Scan.status.in_(["queued", "running"])).scalar() or 0
+    except Exception:
+        active = 0
+    available = max(0, pool.total_capacity - active - pool.reserved_buffer)
+    if available <= 0:
+        return False
+    # Check for at least one eligible worker
+    from app.models.scanner_fleet import Worker
+    # Stale threshold: 5 minutes
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    workers = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.enabled == True).all()
+    for w in workers:
+        if w.status in ("draining", "disabled", "failed"):
+            continue
+        if w.last_heartbeat and w.last_heartbeat < stale_cutoff:
+            continue  # stale
+        if w.status == "healthy" and not w.current_job_id:
+            return True
+    # If no Worker records, fallback to pool capacity (for dev, allow)
+    if not workers:
+        return available > 0
+    return False
+
+
+def heartbeat_worker(pool: WorkerPool, db: Session, worker_key: str) -> None:
+    from app.models.scanner_fleet import Worker
+    w = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.worker_key == worker_key).first()
+    if w:
+        w.last_heartbeat = datetime.now(timezone.utc)
+        # If was stale/unknown, mark healthy
+        if w.status in ("unknown", "stale"):
+            w.status = "healthy"
+        db.commit()
+
+
 def assign_worker(pool: WorkerPool, db: Session, scanner_key: str, job_id: str) -> str | None:
     """Assign a worker from pool for a job, with concurrency safety via SELECT FOR UPDATE."""
+    if not can_accept_job(pool, db):
+        return None
     from app.models.scanner_fleet import Worker
-    # Find eligible worker: enabled, healthy/busy check, not draining/disabled/failed
-    workers = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.enabled == True, Worker.status.in_(["healthy", "busy"])).with_for_update().all()  # type: ignore
+    # Find eligible worker: enabled, healthy, not draining/disabled/failed, not stale, no current job
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    workers = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.enabled == True).with_for_update().all()  # type: ignore
     for w in workers:
+        if w.status in ("draining", "disabled", "failed"):
+            continue
+        if w.last_heartbeat and w.last_heartbeat < stale_cutoff:
+            continue
         if w.status == "healthy" and not w.current_job_id:
             w.current_job_id = job_id
             w.status = "busy"
             w.last_heartbeat = datetime.now(timezone.utc)
             db.commit()
             return w.id
+    # Fallback: if no Worker records, allow pool capacity (for dev)
+    from app.models.scanner_fleet import Worker as _W
+    if not db.query(_W).filter(_W.pool_id == pool.id).first():
+        return f"logical-{pool.name}-{job_id}"
     return None
 
 
