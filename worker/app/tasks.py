@@ -481,7 +481,6 @@ def execute_scan(
             if is_rls_enabled():
                 org_id, proj_id = _get_scan_tenant(db, target_id)
                 if org_id:
-                    # Must be inside a transaction for SET LOCAL
                     try:
                         db.begin()
                     except Exception:
@@ -493,8 +492,56 @@ def execute_scan(
                             db.rollback()
                         except Exception:
                             pass
-                        # Retry without RLS if set fails
                         pass
+        except Exception:
+            pass
+
+        # C10: Worker pool capacity check and assignment
+        assigned_worker_id = None
+        assigned_pool = None
+        try:
+            from app.services.scanner_control import get_pool_for_scanner, assign_worker
+            from app.models.scanner_fleet import WorkerPool
+
+            # Resolve pool for first scanner in profile (use first scanner as representative)
+            scanners = get_scanners_for_profile(profile)
+            if scanners:
+                pool = get_pool_for_scanner(scanners[0], db)
+                if pool:
+                    # Check capacity via can_accept_job logic
+                    # Derive active capacity from Worker records (if any) or from Scan active jobs
+                    from sqlalchemy import func as _func
+                    from app.models.scan import Scan as _Scan
+                    active = db.query(_func.count(_Scan.id)).filter(_Scan.status.in_(["queued", "running"])).scalar() or 0
+                    available = max(0, pool.total_capacity - active - pool.reserved_buffer)
+                    if available <= 0:
+                        # No capacity, queue the scan
+                        db.execute(
+                            text("UPDATE scans SET status = :status, phase = :phase WHERE id = :scan_id"),
+                            {"status": "queued", "phase": "queued", "scan_id": scan_id},
+                        )
+                        db.commit()
+                        # Audit queued
+                        try:
+                            from app.services.audit import AuditService
+                            AuditService.record(
+                                db,
+                                event_type="SCAN_QUEUED_CAPACITY",
+                                action="SCAN_QUEUED_CAPACITY",
+                                result="SUCCESS",
+                                resource_type="scan",
+                                resource_id=scan_id,
+                                metadata={"pool": pool.name, "reason": "no capacity"},
+                            )
+                            db.commit()
+                        except Exception:
+                            pass
+                        return {"scan_id": scan_id, "status": "queued", "reason": "no capacity"}
+                    # Try to assign worker
+                    worker_id = assign_worker(pool, db, scanners[0], scan_id)
+                    if worker_id:
+                        assigned_worker_id = worker_id
+                        assigned_pool = pool
         except Exception:
             pass
         db.execute(
@@ -963,4 +1010,20 @@ def execute_scan(
             print(f"Failed to update scan status: {status_error}")
         raise
     finally:
+        # C10: Release worker if assigned
+        if assigned_worker_id and assigned_pool:
+            try:
+                from app.services.scanner_control import release_worker
+                # Determine success from final status
+                success = True
+                try:
+                    # Check scan status
+                    row = db.execute(text("SELECT status FROM scans WHERE id = :sid"), {"sid": scan_id}).fetchone()
+                    if row and row[0] == "failed":
+                        success = False
+                except Exception:
+                    pass
+                release_worker(assigned_pool, db, assigned_worker_id, success=success)
+            except Exception:
+                pass
         db.close()
