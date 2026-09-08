@@ -580,6 +580,58 @@ def ensure_default_pools(db: Session) -> None:
         ))
     db.commit()
 
+def get_pool_for_scanner(scanner_key: str, db: Session) -> WorkerPool | None:
+    """Deterministic pool mapping via family/category (C9)."""
+    from app.services.scanner_catalog import get_scanner_entry
+    entry = get_scanner_entry(scanner_key)
+    if not entry:
+        return None
+    family = entry.get("family") or entry.get("category")
+    # Map families to pools (deterministic)
+    mapping = {
+        "network": "network-pool",
+        "web": "web-pool",
+        "dast": "web-pool",
+        "sast": "appsec-pool",
+        "sca": "appsec-pool",
+        "secrets": "appsec-pool",
+        "container": "appsec-pool",
+        "iac": "appsec-pool",
+        "api": "api-pool",
+        "cloud": "cloud-pool",
+    }
+    pool_name = mapping.get(family, "default")
+    pool = db.query(WorkerPool).filter(WorkerPool.name == pool_name).first()
+    if not pool:
+        pool = db.query(WorkerPool).filter(WorkerPool.name == "default").first()
+    return pool
+
+
+def assign_worker(pool: WorkerPool, db: Session, scanner_key: str, job_id: str) -> str | None:
+    """Assign a worker from pool for a job, with concurrency safety via SELECT FOR UPDATE."""
+    from app.models.scanner_fleet import Worker
+    # Find eligible worker: enabled, healthy/busy check, not draining/disabled/failed
+    workers = db.query(Worker).filter(Worker.pool_id == pool.id, Worker.enabled == True, Worker.status.in_(["healthy", "busy"])).with_for_update().all()  # type: ignore
+    for w in workers:
+        if w.status == "healthy" and not w.current_job_id:
+            w.current_job_id = job_id
+            w.status = "busy"
+            w.last_heartbeat = datetime.now(timezone.utc)
+            db.commit()
+            return w.id
+    return None
+
+
+def release_worker(pool: WorkerPool, db: Session, worker_id: str, success: bool = True) -> None:
+    from app.models.scanner_fleet import Worker
+    w = db.query(Worker).filter(Worker.id == worker_id, Worker.pool_id == pool.id).first()
+    if w:
+        w.current_job_id = None
+        w.status = "healthy" if success else "failed"
+        w.last_heartbeat = datetime.now(timezone.utc)
+        db.commit()
+
+
 def fleet_summary(db: Session) -> dict:
     ensure_default_pools(db)
     pools = db.query(WorkerPool).all()
