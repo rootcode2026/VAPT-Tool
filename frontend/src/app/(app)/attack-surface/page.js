@@ -270,10 +270,17 @@ export default function AttackSurfacePage() {
         title="Attack Surface"
         description="Project-level view of discovered assets, exposure, relationships, findings, and attack paths. All data is derived from backend security intelligence without client-side risk recalculation."
         actions={
-          <label className="flex items-center gap-2 text-sm">
-            <span className="text-muted">Project</span>
-            <ProjectSelect id="attack-surface-project-context" />
-          </label>
+          <div className="flex items-center gap-2 text-sm">
+            {selectedProjectId ? (
+              <Link href={`/projects/${selectedProjectId}/dashboard`} className="rounded-sm border border-border px-2 py-1.5 text-xs hover:bg-surface-hover">
+                SOC Dashboard
+              </Link>
+            ) : null}
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-muted">Project</span>
+              <ProjectSelect id="attack-surface-project-context" />
+            </label>
+          </div>
         }
       />
 
