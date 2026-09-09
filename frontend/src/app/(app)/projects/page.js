@@ -226,6 +226,13 @@ export default function ProjectsPage() {
                     >
                       Open
                     </Link>
+                    <Link
+                      href={`/projects/${row.id}/dashboard`}
+                      className="text-xs text-primary hover:underline"
+                      onClick={() => setSelectedProjectId(row.id)}
+                    >
+                      SOC Dashboard
+                    </Link>
                     <button
                       type="button"
                       className="text-xs text-danger hover:underline"

@@ -24,6 +24,7 @@ from app.api.routes.repository_connections import webhook_router as webhook_rout
 from app.api.routes.scanner_admin import router as scanner_admin_router
 from app.api.routes.attack_surface import router as attack_surface_router
 from app.api.routes.alerts import router as alerts_router
+from app.api.routes.project_dashboard import router as project_dashboard_router
 from app.api.routes.audit_logs import router as audit_logs_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.cloud import router as cloud_router
@@ -102,6 +103,7 @@ app.include_router(finding_lifecycle_router, dependencies=protected)
 app.include_router(assets_router, dependencies=protected)
 app.include_router(attack_surface_router, dependencies=protected)
 app.include_router(alerts_router, dependencies=protected)
+app.include_router(project_dashboard_router, dependencies=protected)
 app.include_router(scanners_router, dependencies=protected)
 app.include_router(dashboard_router, dependencies=protected)
 app.include_router(ingestions_router, dependencies=protected)
