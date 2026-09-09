@@ -233,6 +233,13 @@ export default function ProjectsPage() {
                     >
                       SOC Dashboard
                     </Link>
+                    <Link
+                      href={`/projects/${row.id}/compliance`}
+                      className="text-xs text-primary hover:underline"
+                      onClick={() => setSelectedProjectId(row.id)}
+                    >
+                      Compliance
+                    </Link>
                     <button
                       type="button"
                       className="text-xs text-danger hover:underline"
