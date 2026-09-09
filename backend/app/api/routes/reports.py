@@ -9,7 +9,16 @@ from app.db.database import get_db
 from app.models.report import Report, REPORT_TYPES
 from app.models.user import User
 from app.services.audit import AuditService
-from app.services.report_service import collect_metrics, build_report_content, export_csv, export_pdf
+from app.services.report_service import (
+    GENERATOR_VERSION,
+    REPORT_FORMAT_VERSION,
+    build_report_content,
+    collect_metrics,
+    collect_report_snapshot,
+    export_csv,
+    export_pdf,
+    parse_report_period,
+)
 
 router = APIRouter(prefix="/api/v1/reports", tags=["Reports"])
 
@@ -63,8 +72,25 @@ def create_report(payload: dict, db: Session = Depends(get_db), current_user: Us
         params = {}
     # bounded filters
     for k in list(params.keys()):
-        if k not in ("date_from", "date_to", "severity", "finding_status", "asset_type", "scanner", "framework"):
+        if k not in ("date_from", "date_to", "start_date", "end_date", "severity",
+                     "finding_status", "asset_type", "scanner", "framework",
+                     "include_controls", "include_low_findings"):
             params.pop(k)
+    # D6: explicit bounded reporting period (defaults: last 30 days, max 365).
+    # Top-level fields win over parameters for ergonomics.
+    for alias, canonical in (("start_date", "start_date"), ("end_date", "end_date")):
+        if payload.get(alias) is not None:
+            params[canonical] = payload.get(alias)
+    try:
+        period_start, period_end = parse_report_period(params)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    params["start_date"] = period_start.isoformat()
+    params["end_date"] = period_end.isoformat()
+    options = {
+        "include_controls": bool(params.get("include_controls", True)),
+        "include_low_findings": bool(params.get("include_low_findings", False)),
+    }
     report = Report(
         id=str(uuid.uuid4()),
         organization_id=org_id,
@@ -93,10 +119,17 @@ def create_report(payload: dict, db: Session = Depends(get_db), current_user: Us
         pass
     try:
         metrics = collect_metrics(db, org_id, project_id, params)
-        content = build_report_content(report_type, metrics, db, org_id, project_id)
+        snapshot = collect_report_snapshot(db, org_id, project_id, period_start, period_end, options)
+        content = build_report_content(report_type, metrics, db, org_id, project_id, snapshot)
         report.summary = metrics
         report.content = content
-        report.data_snapshot = {"metrics": metrics, "as_of": report.data_as_of.isoformat() if report.data_as_of else None}
+        report.data_snapshot = {
+            "metrics": metrics,
+            "snapshot": snapshot,
+            "as_of": report.data_as_of.isoformat() if report.data_as_of else None,
+            "report_format_version": REPORT_FORMAT_VERSION,
+            "generator_version": GENERATOR_VERSION,
+        }
         report.status = "completed"
         report.completed_at = datetime.now(timezone.utc)
         try:
@@ -179,13 +212,12 @@ def cancel_report(report_id: str, db: Session = Depends(get_db), current_user: U
     if not _is_super_admin(current_user):
         if r.project_id:
             require_project_access(r.project_id, db, current_user)
-            # only project_admin can cancel
-            from app.api.deps import _effective_project_role
+            # only project_admin can cancel (module-level imports; no
+            # function-level shadowing imports that would unbind the names)
             role = _effective_project_role(current_user, r.project_id, db)
             if role not in ("project_admin", "analyst") and _effective_org_role(current_user, r.organization_id, db) != "org_admin":
                 raise HTTPException(status_code=403, detail="Cannot cancel")
         else:
-            from app.api.deps import _effective_org_role
             if _effective_org_role(current_user, r.organization_id, db) != "org_admin":
                 raise HTTPException(status_code=403, detail="Cannot cancel")
     if r.status in ("completed", "failed", "cancelled"):
@@ -228,11 +260,17 @@ def download_report(report_id: str, fmt: str, db: Session = Depends(get_db), cur
     if fmt == "json":
         return {"id": r.id, "report_type": r.report_type, "title": r.title, "summary": r.summary, "content": r.content, "data_snapshot": r.data_snapshot, "version": r.version}
     elif fmt == "csv":
-        # Build findings CSV from content if available
+        # Build findings CSV from stored snapshot detail when available
         findings = []
-        if r.content and isinstance(r.content, dict) and "findings" in r.content:
-            findings = r.content["findings"]
-        else:
+        if r.content and isinstance(r.content, dict):
+            snap = r.content.get("snapshot") or {}
+            if isinstance(snap, dict) and isinstance(snap.get("findings"), dict):
+                det = snap["findings"].get("detail") or []
+                if isinstance(det, list) and det:
+                    findings = det
+            if not findings and isinstance(r.content.get("findings"), list):
+                findings = r.content["findings"]
+        if not findings:
             # fallback to summary
             findings = [{"id": r.id, "title": r.title, "severity": "info", "status": r.status, "scanner": r.report_type, "asset_id": "", "evidence": ""}]
         csv_bytes = export_csv(findings)
