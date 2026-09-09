@@ -148,7 +148,15 @@ export default function FindingLifecycle({ findingId, projectId }) {
     setActionError("");
     try {
       const notes = status === "completed" ? window.prompt("Completion notes (optional):") || undefined : undefined;
-      await updateRemediation(findingId, remId, { status, completion_notes: notes });
+      let blocked_reason;
+      if (status === "blocked") {
+        blocked_reason = window.prompt("Blocker reason (required):") || "";
+        if (!blocked_reason.trim()) {
+          setActionError("blocked_reason is required to block remediation.");
+          return;
+        }
+      }
+      await updateRemediation(findingId, remId, { status, completion_notes: notes, blocked_reason: blocked_reason ? blocked_reason.slice(0, 500) : undefined });
       const rem = await listRemediations(findingId);
       setRems(rem.items || []);
     } catch (err) {
@@ -246,9 +254,13 @@ export default function FindingLifecycle({ findingId, projectId }) {
           {rems.map((r) => (
             <li key={r.id} className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-3">
               <p className="text-sm font-medium">{r.title} • {r.status}</p>
-              <p className="text-xs text-slate-500">Assignee {r.assigned_to ? r.assigned_to.slice(0, 8) : "—"}</p>
+              <p className="text-xs text-slate-500">Assignee {r.assigned_to ? r.assigned_to.slice(0, 8) : "—"}{r.overdue ? " • Overdue" : ""}{r.sla_status ? ` • SLA ${r.sla_status}` : ""}{r.due_at ? ` • due ${formatWhen(r.due_at)}` : ""}</p>
+              {r.status === "blocked" && r.blocked_reason ? <p className="mt-1 text-xs text-red-300">Blocked: {r.blocked_reason}</p> : null}
+              {r.evidence_ref ? <p className="mt-1 text-xs text-slate-400">Evidence: {r.evidence_ref.slice(0, 200)}</p> : null}
+              {r.verification_required ? <p className="mt-1 text-xs text-amber-300">Owner-reported complete — verification required (D8 retest).</p> : null}
+              {r.accepted_risk ? <p className="mt-1 text-xs text-slate-500">Finding is accepted risk — SLA follows risk-acceptance semantics.</p> : null}
               <div className="mt-2 flex flex-wrap gap-2">
-                {[["in_progress", "Start"], ["submitted", "Submit"], ["completed", "Complete"], ["cancelled", "Cancel"]].map(([s, label]) => (
+                {[["in_progress", "Start"], ["submitted", "Submit"], ["blocked", "Block"], ["completed", "Complete"], ["cancelled", "Cancel"]].map(([s, label]) => (
                   <button key={s} type="button" onClick={() => handleRemStatus(r.id, s)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">{label}</button>
                 ))}
               </div>

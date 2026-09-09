@@ -28,9 +28,13 @@ from app.services import finding_lifecycle as lc
 from app.services.audit import (
     EVENT_FINDING_REOPENED,
     EVENT_FINDING_RESOLVED,
+    EVENT_REMEDIATION_BLOCKED,
     EVENT_REMEDIATION_CANCELLED,
     EVENT_REMEDIATION_COMPLETED,
     EVENT_REMEDIATION_CREATED,
+    EVENT_REMEDIATION_EVIDENCE_ADDED,
+    EVENT_REMEDIATION_STARTED,
+    EVENT_REMEDIATION_UNBLOCKED,
     EVENT_REMEDIATION_UPDATED,
     EVENT_RETEST_CANCELLED,
     EVENT_RETEST_ERROR,
@@ -488,7 +492,15 @@ def review_risk_acceptance(
 # Remediation
 # -------------------------------------------------------------------
 
-def _rem_payload(r: FindingRemediation) -> dict:
+def _rem_payload(r: FindingRemediation, finding=None, sla: FindingSLA | None = None, due_source: str | None = None) -> dict:
+    # D7: expose blocked/evidence + SLA rollup + verification boundary.
+    # "completed" == owner-reported completion; "verified" requires D8 retest evidence.
+    now = _utcnow()
+    sla_status = lc.evaluate_sla_status(sla, now) if sla is not None else None
+    overdue = bool(sla is not None and sla_status == "breached")
+    due_at = r.due_at or (sla.due_at if sla is not None else None)
+    if due_source is None:
+        due_source = "remediation" if r.due_at else ("sla" if sla is not None and sla.due_at else None)
     return {
         "id": r.id,
         "finding_id": r.finding_id,
@@ -496,16 +508,46 @@ def _rem_payload(r: FindingRemediation) -> dict:
         "project_id": r.project_id,
         "created_by": r.created_by,
         "assigned_to": r.assigned_to,
+        "updated_by": getattr(r, "updated_by", None),
         "status": r.status,
         "title": r.title,
         "description": r.description,
         "remediation_guidance": r.remediation_guidance,
-        "due_at": r.due_at.isoformat() if r.due_at else None,
+        "due_at": due_at.isoformat() if due_at else None,
+        "due_source": due_source,
         "started_at": r.started_at.isoformat() if r.started_at else None,
         "completed_at": r.completed_at.isoformat() if r.completed_at else None,
         "completion_notes": r.completion_notes,
+        "blocked_reason": getattr(r, "blocked_reason", None),
+        "evidence_ref": getattr(r, "evidence_ref", None),
+        "finding_status": getattr(finding, "status", None),
+        "finding_severity": (
+            (getattr(finding, "severity_override", None) or getattr(finding, "severity", None)) if finding is not None else None
+        ),
+        "accepted_risk": bool(finding is not None and getattr(finding, "status", None) == "accepted_risk"),
+        "sla_status": sla_status,
+        "overdue": overdue,
+        "verification_required": r.status == "completed",
+        "verified": False,  # D8 owns formal verification; D7 never marks verified.
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
+
+
+def _remediation_sla(db: Session, finding_id: str) -> FindingSLA | None:
+    sla = (
+        db.query(FindingSLA)
+        .filter(FindingSLA.finding_id == finding_id, FindingSLA.status == "active")
+        .order_by(FindingSLA.created_at.desc())
+        .first()
+    )
+    if sla is not None:
+        return sla
+    return (
+        db.query(FindingSLA)
+        .filter(FindingSLA.finding_id == finding_id)
+        .order_by(FindingSLA.created_at.desc())
+        .first()
+    )
 
 
 @router.get("/findings/{finding_id}/remediations")
@@ -516,7 +558,8 @@ def list_remediations(
 ):
     finding, project_id, organization_id = _finding_org_project(finding_id, db, current_user)
     rows = db.query(FindingRemediation).filter(FindingRemediation.finding_id == finding.id).order_by(FindingRemediation.created_at.desc()).all()
-    return {"items": [_rem_payload(r) for r in rows], "total": len(rows)}
+    sla = _remediation_sla(db, finding.id)
+    return {"items": [_rem_payload(r, finding, sla) for r in rows], "total": len(rows)}
 
 
 @router.post("/findings/{finding_id}/remediations", status_code=201)
@@ -543,10 +586,24 @@ def create_remediation(
         assigned_to = auid
     due_at = _parse_dt(payload.get("due_at"), "due_at") if isinstance(payload, dict) and payload.get("due_at") else None
     due_naive = due_at.replace(tzinfo=None) if due_at and due_at.tzinfo else due_at
-    # Only one non-terminal remediation at a time
+    # D7: evidence_ref is a bounded reference only (no raw bodies/secrets).
+    try:
+        evidence_ref = lc.sanitize_remediation_evidence_ref(
+            payload.get("evidence_ref") if isinstance(payload, dict) else None
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # D7: reuse existing SLA for default due date when caller omits due_at.
+    due_source = "remediation" if due_naive is not None else None
+    if due_naive is None:
+        sla_default = _remediation_sla(db, finding.id)
+        if sla_default is not None and sla_default.due_at is not None:
+            due_naive = sla_default.due_at
+            due_source = "sla"
+    # Only one active remediation at a time (D7: blocked counts as active)
     existing = (
         db.query(FindingRemediation)
-        .filter(FindingRemediation.finding_id == finding.id, FindingRemediation.status.in_(["open", "in_progress", "submitted"]))
+        .filter(FindingRemediation.finding_id == finding.id, FindingRemediation.status.in_(list(lc.REMEDIATION_ACTIVE_STATUSES)))
         .first()
     )
     if existing:
@@ -563,13 +620,14 @@ def create_remediation(
         description=description,
         remediation_guidance=guidance,
         due_at=due_naive,
+        evidence_ref=evidence_ref,
     )
     db.add(rem)
     db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="remediation_created", old_value=None, new_value="open", reason=title[:200]))
     AuditService.record(db, event_type=EVENT_REMEDIATION_CREATED, action=EVENT_REMEDIATION_CREATED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_REMEDIATION, resource_id=rem.id, metadata={"finding_id": finding.id, "title": title[:100]})
     db.commit()
     db.refresh(rem)
-    return _rem_payload(rem)
+    return _rem_payload(rem, finding, _remediation_sla(db, finding.id), due_source=due_source)
 
 
 @router.patch("/findings/{finding_id}/remediations/{rem_id}")
@@ -588,16 +646,26 @@ def update_remediation(
     if not rem:
         raise HTTPException(status_code=404, detail="Remediation not found")
     data = payload if isinstance(payload, dict) else {}
-    # Assignment change
+    # Assignment change (owner must belong to org; cross-tenant rejected via _validate_user_in_org)
     if "assigned_to" in data:
+        old_owner = rem.assigned_to
         if data["assigned_to"] is None:
             rem.assigned_to = None
         else:
             auid = str(data["assigned_to"]).strip()
             _validate_user_in_org(auid, organization_id, db)
             rem.assigned_to = auid
-        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="remediation_assigned", old_value=None, new_value=rem.assigned_to, reason=None))
-    # Status transition
+        rem.updated_by = current_user.id
+        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="remediation_assigned", old_value=old_owner, new_value=rem.assigned_to, reason=None))
+        AuditService.record(db, event_type=EVENT_REMEDIATION_UPDATED, action=EVENT_REMEDIATION_UPDATED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_REMEDIATION, resource_id=rem.id, metadata={"finding_id": finding.id, "field": "assigned_to"})
+    # Due date change (bounded history)
+    if "due_at" in data and data["due_at"] is not None:
+        old_due = rem.due_at.isoformat() if rem.due_at else None
+        new_due = _parse_dt(str(data["due_at"]), "due_at")
+        rem.due_at = new_due.replace(tzinfo=None) if new_due and new_due.tzinfo else new_due
+        rem.updated_by = current_user.id
+        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="remediation_due_changed", old_value=old_due, new_value=rem.due_at.isoformat() if rem.due_at else None, reason=None))
+    # Status transition (idempotent: same status is a no-op success)
     if "status" in data and data["status"] is not None:
         new_status = str(data["status"]).strip().lower()
         if new_status not in lc.REMEDIATION_STATUSES:
@@ -605,31 +673,230 @@ def update_remediation(
         allowed = lc.REMEDIATION_TRANSITIONS.get(rem.status, set())
         if new_status != rem.status and new_status not in allowed:
             raise HTTPException(status_code=400, detail=f"Invalid transition from {rem.status} to {new_status}")
+        if new_status == "blocked" and rem.status != "blocked":
+            reason = str(data.get("blocked_reason", "") or "").strip()[: lc.REMEDIATION_BLOCKED_REASON_MAX]
+            if not reason:
+                raise HTTPException(status_code=400, detail="blocked_reason is required to block remediation")
+            rem.blocked_reason = reason
         if new_status != rem.status:
             old = rem.status
             rem.status = new_status
+            rem.updated_by = current_user.id
             now = _utcnow().replace(tzinfo=None)
-            if new_status == "in_progress" and not rem.started_at:
-                rem.started_at = now
-            if new_status == "completed":
+            if new_status == "in_progress":
+                if not rem.started_at:
+                    rem.started_at = now
+                # Unblock path clears the blocker but preserves history
+                if old == "blocked":
+                    rem.blocked_reason = None
+                    evt = EVENT_REMEDIATION_UNBLOCKED
+                else:
+                    evt = EVENT_REMEDIATION_STARTED
+            elif new_status == "blocked":
+                evt = EVENT_REMEDIATION_BLOCKED
+            elif new_status == "completed":
                 notes = str(data.get("completion_notes", "")).strip()[:2000] if data.get("completion_notes") else None
                 if notes:
                     rem.completion_notes = notes
                 rem.completed_at = now
-                # Remediation completed → retest required (do not auto-resolve)
+                # D7: completion is owner-reported only — never auto-verify/resolve.
                 evt = EVENT_REMEDIATION_COMPLETED
             elif new_status == "cancelled":
                 evt = EVENT_REMEDIATION_CANCELLED
             else:
                 evt = EVENT_REMEDIATION_UPDATED
-            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action=f"remediation_{new_status}", old_value=old, new_value=new_status, reason=str(data.get("reason", ""))[:500] if data.get("reason") else None))
+            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action=f"remediation_{new_status}", old_value=old, new_value=new_status, reason=str(data.get("reason", "") or data.get("blocked_reason", ""))[:500] if (data.get("reason") or data.get("blocked_reason")) else None))
             AuditService.record(db, event_type=evt, action=evt, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_REMEDIATION, resource_id=rem.id, metadata={"finding_id": finding.id, "status": new_status})
-    # Notes
+    # Notes (bounded)
     if "completion_notes" in data and data["completion_notes"] is not None and "status" not in data:
         rem.completion_notes = str(data["completion_notes"]).strip()[:2000]
+        rem.updated_by = current_user.id
+    # Evidence reference (bounded reference only; secrets rejected)
+    if "evidence_ref" in data and data["evidence_ref"] is not None:
+        try:
+            new_ref = lc.sanitize_remediation_evidence_ref(data["evidence_ref"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if new_ref != rem.evidence_ref:
+            rem.evidence_ref = new_ref
+            rem.updated_by = current_user.id
+            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="remediation_evidence_added", old_value=None, new_value=(new_ref or "")[:200], reason=None))
+            AuditService.record(db, event_type=EVENT_REMEDIATION_EVIDENCE_ADDED, action=EVENT_REMEDIATION_EVIDENCE_ADDED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_REMEDIATION, resource_id=rem.id, metadata={"finding_id": finding.id})
     db.commit()
     db.refresh(rem)
-    return _rem_payload(rem)
+    return _rem_payload(rem, finding, _remediation_sla(db, finding.id))
+
+
+# -------------------------------------------------------------------
+# D7: project-scoped remediation list + lifecycle actions
+# -------------------------------------------------------------------
+
+def _require_remediation_row(rem_id: str, project_id: str, db: Session):
+    """Fetch a remediation strictly scoped to the project (IDOR-safe)."""
+    from app.models.finding import Finding
+
+    rem = (
+        db.query(FindingRemediation)
+        .filter(FindingRemediation.id == rem_id, FindingRemediation.project_id == project_id)
+        .first()
+    )
+    if not rem:
+        raise HTTPException(status_code=404, detail="Remediation not found")
+    finding = db.query(Finding).filter(Finding.id == rem.finding_id).first()
+    return rem, finding
+
+
+def _apply_remediation_transition(db: Session, rem: FindingRemediation, finding, project_id: str, organization_id: str, actor: User, target: str, extra: dict | None = None):
+    """Shared deterministic transition used by PATCH and action endpoints."""
+    extra = extra or {}
+    if target not in lc.REMEDIATION_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    if target == rem.status:
+        return False  # idempotent no-op
+    allowed = lc.REMEDIATION_TRANSITIONS.get(rem.status, set())
+    if target not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid transition from {rem.status} to {target}")
+    if target == "blocked":
+        reason = str(extra.get("blocked_reason", "") or "").strip()[: lc.REMEDIATION_BLOCKED_REASON_MAX]
+        if not reason:
+            raise HTTPException(status_code=400, detail="blocked_reason is required to block remediation")
+        rem.blocked_reason = reason
+    old = rem.status
+    rem.status = target
+    rem.updated_by = actor.id
+    now = _utcnow().replace(tzinfo=None)
+    if target == "in_progress":
+        if not rem.started_at:
+            rem.started_at = now
+        if old == "blocked":
+            rem.blocked_reason = None
+            evt = EVENT_REMEDIATION_UNBLOCKED
+        else:
+            evt = EVENT_REMEDIATION_STARTED
+    elif target == "blocked":
+        evt = EVENT_REMEDIATION_BLOCKED
+    elif target == "completed":
+        notes = str(extra.get("completion_notes", "") or "").strip()[:2000] or None
+        if notes:
+            rem.completion_notes = notes
+        rem.completed_at = now
+        evt = EVENT_REMEDIATION_COMPLETED
+    elif target == "cancelled":
+        evt = EVENT_REMEDIATION_CANCELLED
+    else:
+        evt = EVENT_REMEDIATION_UPDATED
+    db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id if finding else rem.finding_id, actor_user_id=actor.id, action=f"remediation_{target}", old_value=old, new_value=target, reason=str(extra.get("reason", "") or extra.get("blocked_reason", ""))[:500] if (extra.get("reason") or extra.get("blocked_reason")) else None))
+    AuditService.record(db, event_type=evt, action=evt, result=RESULT_SUCCESS, actor_user_id=actor.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_REMEDIATION, resource_id=rem.id, metadata={"finding_id": rem.finding_id, "status": target})
+    return True
+
+
+@router.get("/projects/{project_id}/remediations")
+def list_project_remediations(
+    project_id: str,
+    status: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    owner: str | None = Query(default=None),
+    overdue: bool | None = Query(default=None),
+    finding_id: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """D7 project-scoped remediation queue (bounded, joined, no N+1)."""
+    from app.models.finding import Finding
+
+    require_project_access(project_id, db, current_user)
+    q = (
+        db.query(FindingRemediation, Finding)
+        .join(Finding, Finding.id == FindingRemediation.finding_id)
+        .filter(FindingRemediation.project_id == project_id)
+    )
+    if status:
+        s = status.strip().lower()
+        if s not in lc.REMEDIATION_STATUSES:
+            raise HTTPException(status_code=400, detail="Invalid status filter")
+        q = q.filter(FindingRemediation.status == s)
+    if severity:
+        sev = severity.strip().lower()
+        q = q.filter(func.coalesce(Finding.severity_override, Finding.severity) == sev)
+    if owner:
+        q = q.filter(FindingRemediation.assigned_to == owner.strip())
+    if finding_id:
+        q = q.filter(FindingRemediation.finding_id == finding_id.strip())
+    since_dt = _parse_dt(since, "since") if since else None
+    until_dt = _parse_dt(until, "until") if until else None
+    if since_dt:
+        q = q.filter(FindingRemediation.updated_at >= (since_dt.replace(tzinfo=None) if since_dt.tzinfo else since_dt))
+    if until_dt:
+        q = q.filter(FindingRemediation.updated_at <= (until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt))
+    rows = q.order_by(FindingRemediation.updated_at.desc()).offset(offset).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    # Batch-load SLAs for overdue computation (single query, no N+1).
+    fids = [r.finding_id for r, _ in rows]
+    sla_map: dict[str, FindingSLA] = {}
+    if fids:
+        for s in db.query(FindingSLA).filter(FindingSLA.finding_id.in_(fids)).order_by(FindingSLA.created_at.desc()).all():
+            sla_map.setdefault(s.finding_id, s)
+    items = []
+    for rem, finding in rows:
+        payload = _rem_payload(rem, finding, sla_map.get(rem.finding_id))
+        if overdue is True and not payload["overdue"]:
+            continue
+        if overdue is False and payload["overdue"]:
+            continue
+        items.append(payload)
+    # Deterministic priority ordering: severity rank, overdue first, oldest due.
+    rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    items.sort(key=lambda p: (rank.get(str(p.get("finding_severity") or "").lower(), 5), not p.get("overdue"), p.get("due_at") or "9999"))
+    return {"items": items, "total": len(items), "limit": limit, "offset": offset, "has_more": has_more}
+
+
+@router.get("/projects/{project_id}/remediations/{remediation_id}")
+def get_project_remediation(
+    project_id: str,
+    remediation_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_project_access(project_id, db, current_user)
+    rem, finding = _require_remediation_row(remediation_id, project_id, db)
+    return _rem_payload(rem, finding, _remediation_sla(db, rem.finding_id))
+
+
+def _remediation_action(project_id: str, remediation_id: str, target: str, payload: dict, db: Session, current_user: User):
+    from app.api.routes.findings import _require_finding_manage as _manage
+
+    require_project_access(project_id, db, current_user)
+    _manage(project_id, db, current_user)
+    rem, finding = _require_remediation_row(remediation_id, project_id, db)
+    _apply_remediation_transition(db, rem, finding, project_id, rem.organization_id, current_user, target, payload or {})
+    db.commit()
+    db.refresh(rem)
+    return _rem_payload(rem, finding, _remediation_sla(db, rem.finding_id))
+
+
+@router.post("/projects/{project_id}/remediations/{remediation_id}/start")
+def start_remediation(project_id: str, remediation_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _remediation_action(project_id, remediation_id, "in_progress", {}, db, current_user)
+
+
+@router.post("/projects/{project_id}/remediations/{remediation_id}/block")
+def block_remediation(project_id: str, remediation_id: str, payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _remediation_action(project_id, remediation_id, "blocked", payload or {}, db, current_user)
+
+
+@router.post("/projects/{project_id}/remediations/{remediation_id}/unblock")
+def unblock_remediation(project_id: str, remediation_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _remediation_action(project_id, remediation_id, "in_progress", {}, db, current_user)
+
+
+@router.post("/projects/{project_id}/remediations/{remediation_id}/complete")
+def complete_remediation(project_id: str, remediation_id: str, payload: dict | None = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _remediation_action(project_id, remediation_id, "completed", payload or {}, db, current_user)
 
 
 # -------------------------------------------------------------------

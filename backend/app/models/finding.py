@@ -693,6 +693,23 @@ class FindingRemediation(Base):
         nullable=True,
     )
 
+    # D7 remediation workflow (additive): blocked state + bounded references.
+    blocked_reason: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+
+    evidence_ref: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    updated_by: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
