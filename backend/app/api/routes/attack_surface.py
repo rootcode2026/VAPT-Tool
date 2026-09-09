@@ -901,6 +901,7 @@ def _run_payload(run: MonitoringRun) -> dict:
         "correlation_id": run.correlation_id,
         "change_status": run.change_status,
         "change_events_count": run.change_events_count,
+        "alert_status": run.alert_status,
         "created_at": run.created_at.isoformat() if run.created_at else None,
     }
 
@@ -1031,6 +1032,7 @@ def start_monitoring_run(
         started_at=_utcnow().replace(tzinfo=None),
         correlation_id=f"mr:{str(uuid.uuid4())[:8]}",
         change_status="pending",
+        alert_status="pending",
     )
     db.add(run)
     db.flush()
@@ -1116,12 +1118,14 @@ def start_monitoring_run(
         run.error = change_error
         run.completed_at = now
         run.change_status = "skipped"
+        run.alert_status = "skipped"
         AuditService.record(db, event_type=EVENT_MONITORING_RUN_FAILED, action=EVENT_MONITORING_RUN_FAILED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "error": change_error[:200]})
     elif not targets:
         run.status = "failed"
         run.error = "No targets in scope"
         run.completed_at = now
         run.change_status = "skipped"
+        run.alert_status = "skipped"
         AuditService.record(db, event_type=EVENT_MONITORING_RUN_FAILED, action=EVENT_MONITORING_RUN_FAILED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "error": "empty scope"})
     else:
         run.status = "completed"

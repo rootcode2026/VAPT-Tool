@@ -1,3 +1,4 @@
+from app.models.alert import Alert, AlertPolicy
 from app.models.asset import Asset
 from app.models.asset_change_event import AssetChangeEvent
 from app.models.asset_relationship import AssetRelationship
@@ -25,6 +26,8 @@ from app.models.user_mfa import UserMfaCredential
 from app.models.user_onboarding import UserOnboarding
 
 __all__ = [
+    "Alert",
+    "AlertPolicy",
     "Asset",
     "AssetChangeEvent",
     "AssetRelationship",
