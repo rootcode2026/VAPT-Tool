@@ -237,9 +237,193 @@ class MonitoringRun(Base):
         nullable=True,
     )
 
+    change_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="skipped",
+        server_default="skipped",
+        index=True,
+    )
+
+    change_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    change_events_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
         default=datetime.utcnow,
+    )
+
+
+class MonitoringObservationBaseline(Base):
+    """D2 trusted-observation snapshot: one row per monitoring config.
+
+    Replaced only by completed runs with usable content; partial runs never
+    replace it and failed runs never touch it. Stores canonical observation
+    summaries (bounded), never raw scanner output.
+    """
+
+    __tablename__ = "monitoring_observation_baselines"
+
+    config_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("monitoring_configs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+    )
+
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    assets: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+
+    findings: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+
+    relationships: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+
+    scanners: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+
+
+class MonitoringChangeEvent(Base):
+    """D2 run-level change record: durable, explainable, idempotent.
+
+    Identity is the deterministic ``event_key`` (UNIQUE): reprocessing the
+    same run re-emits the same keys and ``ON CONFLICT DO NOTHING`` drops
+    duplicates at the database level. Provenance is bounded summaries only.
+    """
+
+    __tablename__ = "monitoring_change_events"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    monitoring_config_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("monitoring_configs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    prev_run_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+
+    curr_run_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        index=True,
+    )
+
+    change_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        index=True,
+    )
+
+    asset_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("assets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    finding_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("findings.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    scan_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("scans.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    previous_state: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
+    current_state: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
+    scanners: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
+    scan_ids: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
+    completeness: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="complete",
+        server_default="complete",
+    )
+
+    event_key: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+
+    extra_data: Mapped[dict] = mapped_column(
+        "metadata",
+        JSON,
+        nullable=False,
+        default=dict,
     )

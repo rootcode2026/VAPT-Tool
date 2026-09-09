@@ -11,6 +11,7 @@ import {
   createMonitoringConfig,
   deleteMonitoringConfig,
   listAttackSurfaceChanges,
+  listMonitoringChanges,
   listMonitoringConfigs,
   listMonitoringRuns,
   pauseMonitoringConfig,
@@ -78,6 +79,112 @@ export function AttackSurfaceChanges({ projectId }) {
               { key: "change_type", header: "Change" },
               { key: "asset", header: "Asset", render: (r) => <Link href={r.asset_id ? `/assets/${r.asset_id}` : "#"} className="text-xs hover:underline break-all">{r.asset_value || r.asset_id}</Link> },
               { key: "source", header: "Source", render: (r) => <span className="text-xs">{r.scanner || r.source || "—"}</span> },
+              { key: "detected_at", header: "Detected", render: (r) => <span className="text-xs">{formatWhen(r.detected_at)}</span> },
+            ]}
+            rows={items}
+          />
+          <div className="mt-2 flex items-center justify-between">
+            <button type="button" disabled={page <= 1} onClick={() => { const n = page - 1; setPage(n); load(n, changeType); }} className="rounded-sm border border-border px-2 py-1 text-xs disabled:opacity-50">Previous</button>
+            <button type="button" onClick={() => { const n = page + 1; setPage(n); load(n, changeType); }} className="rounded-sm border border-border px-2 py-1 text-xs">Next</button>
+          </div>
+        </>
+      ) : null}
+    </DashboardSection>
+  );
+}
+
+const MONITOR_CHANGE_TYPES = [
+  "ASSET_CREATED",
+  "ASSET_REMOVED",
+  "ASSET_METADATA_CHANGED",
+  "RELATIONSHIP_CREATED",
+  "RELATIONSHIP_REMOVED",
+  "FINDING_CREATED",
+  "FINDING_RESOLVED",
+  "FINDING_REOPENED",
+  "FINDING_STATUS_CHANGED",
+  "FINDING_SEVERITY_CHANGED",
+];
+
+export function MonitoringChanges({ projectId }) {
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [changeType, setChangeType] = useState("");
+
+  async function load(p = page, ct = changeType) {
+    if (!projectId) return;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await listMonitoringChanges(projectId, { page: p, page_size: 10, change_type: ct || undefined });
+      setItems(data.items || []);
+      setTotal(data.total ?? 0);
+    } catch (err) {
+      setError(err.message || "Unable to load monitoring changes.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load(1, changeType);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  function subject(r) {
+    const curr = r.current_state || {};
+    const prev = r.previous_state || {};
+    const fp = curr.fingerprint || prev.fingerprint;
+    if (fp) return `finding ${String(fp).slice(0, 12)}…`;
+    const val = curr.value || prev.value;
+    if (val) return String(val);
+    if (curr.source_value) return `${curr.source_value} → ${curr.target_value}`;
+    return r.asset_id || r.finding_id || "—";
+  }
+
+  function delta(r) {
+    const prev = r.previous_state;
+    const curr = r.current_state;
+    const short = (v) => {
+      if (v === null || v === undefined) return "—";
+      const s = typeof v === "string" ? v : JSON.stringify(v);
+      return s.length > 80 ? `${s.slice(0, 80)}…` : s;
+    };
+    if (!prev) return <span className="text-xs">new: {short(curr && (curr.status || curr.value || curr.severity))}</span>;
+    const p = prev.status || prev.severity || JSON.stringify(prev);
+    const c = curr ? curr.status || curr.severity || JSON.stringify(curr) : "removed";
+    return <span className="text-xs">{short(p)} → {short(c)}</span>;
+  }
+
+  return (
+    <DashboardSection
+      title="Monitoring Changes"
+      action={<span className="text-xs text-muted">{total} run-level events</span>}
+    >
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <select value={changeType} onChange={(e) => setChangeType(e.target.value)} className="rounded-sm border border-border bg-canvas px-2 py-1.5 text-xs" aria-label="Filter by monitoring change type">
+          <option value="">All change types</option>
+          {MONITOR_CHANGE_TYPES.map((c) => (
+            <option key={c} value={c}>{c.replaceAll("_", " ")}</option>
+          ))}
+        </select>
+        <button type="button" onClick={() => { setPage(1); load(1, changeType); }} className="rounded-sm border border-border px-2 py-1.5 text-xs hover:bg-surface-hover">Apply</button>
+      </div>
+      {loading ? <p className="text-xs text-muted">Loading monitoring changes...</p> : null}
+      {!loading && error ? <ErrorState title="Unable to load monitoring changes." message={error} onRetry={() => load(page, changeType)} /> : null}
+      {!loading && !error && items.length === 0 ? <EmptyState title="No monitoring changes" description="Run-level asset, relationship, and finding changes will appear here once scheduled observations are compared." /> : null}
+      {!loading && !error && items.length > 0 ? (
+        <>
+          <DataTable
+            rowKey={(r) => r.id}
+            columns={[
+              { key: "change_type", header: "Change" },
+              { key: "subject", header: "Subject", render: (r) => <span className="text-xs break-all">{subject(r)}</span> },
+              { key: "delta", header: "Previous → Current", render: (r) => delta(r) },
+              { key: "scanners", header: "Scanners", render: (r) => <span className="text-xs">{(r.scanners || []).join(", ") || "—"}</span> },
               { key: "detected_at", header: "Detected", render: (r) => <span className="text-xs">{formatWhen(r.detected_at)}</span> },
             ]}
             rows={items}

@@ -68,6 +68,7 @@ def _setup_ingestion():
                     source_asset_id TEXT,
                     target_asset_id TEXT,
                     relationship_type TEXT,
+                    last_seen_scan_id TEXT,
                     metadata TEXT,
                     created_at DATETIME,
                     updated_at DATETIME

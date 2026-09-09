@@ -99,3 +99,7 @@ export function listMonitoringRunsForConfig(configId, query = {}) {
 export function getMonitoringRun(configId, runId) {
   return api.get(`/api/v1/monitoring/${configId}/runs/${runId}`);
 }
+
+export function listMonitoringChanges(projectId, query = {}) {
+  return api.get(`/api/v1/projects/${projectId}/monitoring/changes`, { query });
+}

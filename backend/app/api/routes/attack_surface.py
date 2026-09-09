@@ -13,7 +13,7 @@ from app.models.asset import Asset
 from app.models.asset_change_event import AssetChangeEvent
 from app.models.asset_relationship import AssetRelationship
 from app.models.finding import Finding
-from app.models.monitoring import MonitoringConfig, MonitoringRun
+from app.models.monitoring import MonitoringChangeEvent, MonitoringConfig, MonitoringRun
 from app.models.project import Project
 from app.models.scan import Scan
 from app.models.target import Target
@@ -899,7 +899,30 @@ def _run_payload(run: MonitoringRun) -> dict:
         "successful_scanners": run.successful_scanners,
         "failed_scanners": run.failed_scanners,
         "correlation_id": run.correlation_id,
+        "change_status": run.change_status,
+        "change_events_count": run.change_events_count,
         "created_at": run.created_at.isoformat() if run.created_at else None,
+    }
+
+
+def _monitoring_change_payload(ev: MonitoringChangeEvent) -> dict:
+    return {
+        "id": ev.id,
+        "project_id": ev.project_id,
+        "monitoring_config_id": ev.monitoring_config_id,
+        "prev_run_id": ev.prev_run_id,
+        "curr_run_id": ev.curr_run_id,
+        "change_type": ev.change_type,
+        "asset_id": ev.asset_id,
+        "finding_id": ev.finding_id,
+        "scan_id": ev.scan_id,
+        "previous_state": ev.previous_state,
+        "current_state": ev.current_state,
+        "scanners": ev.scanners or [],
+        "scan_ids": ev.scan_ids or [],
+        "completeness": ev.completeness,
+        "detected_at": ev.detected_at.isoformat() if ev.detected_at else None,
+        "extra_data": ev.extra_data or {},
     }
 
 
@@ -917,6 +940,47 @@ def list_monitoring_runs(
     total_pages = (total + page_size - 1) // page_size if total else 0
     rows = q.offset((page - 1) * page_size).limit(page_size).all()
     return {"items": [_run_payload(r) for r in rows], "total": total, "page": page, "page_size": page_size, "total_pages": total_pages}
+
+
+@router.get("/projects/{project_id}/monitoring/changes")
+def list_monitoring_changes(
+    project_id: str,
+    monitoring_run_id: str | None = Query(default=None),
+    change_type: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    finding_id: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """D2 run-level change records. Project-scoped read: any project member
+    may read (viewer/analyst/project_admin); tenant derived server-side from
+    the path project, never from client-supplied IDs."""
+    require_project_access(project_id, db, current_user)
+    q = db.query(MonitoringChangeEvent).filter(MonitoringChangeEvent.project_id == project_id)
+    if monitoring_run_id:
+        run = db.query(MonitoringRun).filter(MonitoringRun.id == monitoring_run_id).first()
+        if not run or run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Monitoring run not found in this project")
+        q = q.filter(MonitoringChangeEvent.curr_run_id == monitoring_run_id)
+    if change_type:
+        q = q.filter(MonitoringChangeEvent.change_type == str(change_type).strip()[:50])
+    if asset_id:
+        q = q.filter(MonitoringChangeEvent.asset_id == str(asset_id).strip()[:36])
+    if finding_id:
+        q = q.filter(MonitoringChangeEvent.finding_id == str(finding_id).strip()[:36])
+    if since:
+        q = q.filter(MonitoringChangeEvent.detected_at >= _parse_dt(since, "since"))
+    if until:
+        q = q.filter(MonitoringChangeEvent.detected_at <= _parse_dt(until, "until"))
+    q = q.order_by(MonitoringChangeEvent.detected_at.desc())
+    total = q.count()
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    rows = q.offset((page - 1) * page_size).limit(page_size).all()
+    return {"items": [_monitoring_change_payload(r) for r in rows], "total": total, "page": page, "page_size": page_size, "total_pages": total_pages}
 
 
 @router.post("/monitoring/{config_id}/run", status_code=201)
@@ -966,6 +1030,7 @@ def start_monitoring_run(
         status="running",
         started_at=_utcnow().replace(tzinfo=None),
         correlation_id=f"mr:{str(uuid.uuid4())[:8]}",
+        change_status="pending",
     )
     db.add(run)
     db.flush()
@@ -1050,11 +1115,13 @@ def start_monitoring_run(
         run.status = "failed"
         run.error = change_error
         run.completed_at = now
+        run.change_status = "skipped"
         AuditService.record(db, event_type=EVENT_MONITORING_RUN_FAILED, action=EVENT_MONITORING_RUN_FAILED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "error": change_error[:200]})
     elif not targets:
         run.status = "failed"
         run.error = "No targets in scope"
         run.completed_at = now
+        run.change_status = "skipped"
         AuditService.record(db, event_type=EVENT_MONITORING_RUN_FAILED, action=EVENT_MONITORING_RUN_FAILED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=cfg.organization_id, project_id=cfg.project_id, resource_type=RESOURCE_MONITORING_RUN, resource_id=run.id, metadata={"config_id": cfg.id, "error": "empty scope"})
     else:
         run.status = "completed"

@@ -53,7 +53,8 @@ def _setup():
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS asset_relationships (
                     id TEXT PRIMARY KEY,
-                    project_id TEXT, source_asset_id TEXT, target_asset_id TEXT, relationship_type TEXT
+                    project_id TEXT, source_asset_id TEXT, target_asset_id TEXT, relationship_type TEXT,
+                    last_seen_scan_id TEXT
                 )
             """))
     except Exception:
