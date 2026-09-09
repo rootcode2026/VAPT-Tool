@@ -75,6 +75,7 @@ class AssetRelationship(Base):
     source_asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("assets.id"))
     target_asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("assets.id"))
     relationship_type: Mapped[str] = mapped_column(String(50))
+    last_seen_scan_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scans.id"), nullable=True)
     extra_data: Mapped[str] = mapped_column("metadata", String, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

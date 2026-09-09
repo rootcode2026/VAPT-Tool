@@ -42,7 +42,8 @@ DDL = [
         error TEXT, assets_discovered INTEGER, assets_changed INTEGER,
         assets_stale INTEGER, findings_created INTEGER, scan_ids TEXT,
         scanner_count INTEGER, successful_scanners INTEGER, failed_scanners INTEGER,
-        correlation_id TEXT, created_at DATETIME
+        correlation_id TEXT, change_status TEXT, change_error TEXT,
+        change_events_count INTEGER, created_at DATETIME
     )
     """,
     """

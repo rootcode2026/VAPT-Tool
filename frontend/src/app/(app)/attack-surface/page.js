@@ -20,7 +20,7 @@ import {
   getProjectSecuritySummary,
   listProjectAssets,
 } from "@/lib/api/assets";
-import { AttackSurfaceChanges, MonitoringPanel } from "@/components/attack-surface/AttackSurfaceOps";
+import { AttackSurfaceChanges, MonitoringChanges, MonitoringPanel } from "@/components/attack-surface/AttackSurfaceOps";
 import { listProjectFindings } from "@/lib/api/findings";
 import { useProjectContext } from "@/lib/project-context";
 
@@ -519,6 +519,8 @@ export default function AttackSurfacePage() {
       </FilterBar>
 
       <AttackSurfaceChanges projectId={selectedProjectId} />
+
+      <MonitoringChanges projectId={selectedProjectId} />
 
       <MonitoringPanel projectId={selectedProjectId} />
 

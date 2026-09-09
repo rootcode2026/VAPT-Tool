@@ -454,6 +454,7 @@ def persist_parsed_bundle(
     upsert_relationships(
         db,
         project_id=project_id,
+        scan_id=scan_id,
         relationships=correlated["relationships"],
         persisted_assets=persisted,
         scanner=scanner,
@@ -680,6 +681,7 @@ def upsert_relationships(
     relationships: list,
     persisted_assets: list[dict],
     scanner: str | None = None,
+    scan_id: str | None = None,
     now: datetime | None = None,
 ) -> list[dict]:
     observed_at = now or datetime.now(timezone.utc)
@@ -737,6 +739,7 @@ def upsert_relationships(
                     source_asset_id,
                     target_asset_id,
                     relationship_type,
+                    last_seen_scan_id,
                     metadata,
                     created_at,
                     updated_at
@@ -747,13 +750,15 @@ def upsert_relationships(
                     :source_asset_id,
                     :target_asset_id,
                     :relationship_type,
+                    :scan_id,
                     :metadata,
                     :observed_at,
                     :observed_at
                 )
                 ON CONFLICT (project_id, source_asset_id, target_asset_id, relationship_type)
                 DO UPDATE SET
-                    updated_at = EXCLUDED.updated_at
+                    updated_at = EXCLUDED.updated_at,
+                    last_seen_scan_id = EXCLUDED.last_seen_scan_id
                 RETURNING id, metadata, created_at
                 """
             ),
@@ -763,6 +768,7 @@ def upsert_relationships(
                 "source_asset_id": source_id,
                 "target_asset_id": target_id,
                 "relationship_type": rel_type,
+                "scan_id": scan_id,
                 "metadata": json.dumps(metadata),
                 "observed_at": observed_at,
             },

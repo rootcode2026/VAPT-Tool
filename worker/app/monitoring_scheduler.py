@@ -317,9 +317,9 @@ def _insert_run_and_scans(db, cfg: dict, targets: list[dict], now: datetime) -> 
                 "INSERT INTO monitoring_runs (id, monitoring_config_id, organization_id, "
                 "project_id, status, started_at, completed_at, error, assets_discovered, "
                 "assets_changed, assets_stale, findings_created, scan_ids, scanner_count, "
-                "correlation_id, created_at) "
+                "correlation_id, change_status, created_at) "
                 "VALUES (:id, :cid, :oid, :pid, 'failed', :now, :now, :error, 0, 0, 0, 0, "
-                ":scan_ids, 0, :corr, :now)"
+                ":scan_ids, 0, :corr, 'skipped', :now)"
             ),
             {
                 "id": run_id,
@@ -339,9 +339,9 @@ def _insert_run_and_scans(db, cfg: dict, targets: list[dict], now: datetime) -> 
                 "INSERT INTO monitoring_runs (id, monitoring_config_id, organization_id, "
                 "project_id, status, started_at, completed_at, error, assets_discovered, "
                 "assets_changed, assets_stale, findings_created, scan_ids, scanner_count, "
-                "correlation_id, created_at) "
+                "correlation_id, change_status, created_at) "
                 "VALUES (:id, :cid, :oid, :pid, 'failed', :now, :now, :error, 0, 0, 0, 0, "
-                ":scan_ids, :count, :corr, :now)"
+                ":scan_ids, :count, :corr, 'skipped', :now)"
             ),
             {
                 "id": run_id,
@@ -360,8 +360,9 @@ def _insert_run_and_scans(db, cfg: dict, targets: list[dict], now: datetime) -> 
         text(
             "INSERT INTO monitoring_runs (id, monitoring_config_id, organization_id, "
             "project_id, status, started_at, assets_discovered, assets_changed, "
-            "assets_stale, findings_created, scan_ids, scanner_count, correlation_id, created_at) "
-            "VALUES (:id, :cid, :oid, :pid, 'scheduled', :now, 0, 0, 0, 0, :scan_ids, :count, :corr, :now)"
+            "assets_stale, findings_created, scan_ids, scanner_count, correlation_id, "
+            "change_status, created_at) "
+            "VALUES (:id, :cid, :oid, :pid, 'scheduled', :now, 0, 0, 0, 0, :scan_ids, :count, :corr, 'pending', :now)"
         ),
         {
             "id": run_id,
@@ -530,7 +531,7 @@ def _dispatch_pending(db, cfg: dict, outcome: dict, now: datetime, dispatch) -> 
             db.execute(
                 text(
                     "UPDATE monitoring_runs SET status = 'failed', completed_at = :now, "
-                    "error = :error WHERE id = :rid"
+                    "error = :error, change_status = 'skipped' WHERE id = :rid"
                 ),
                 {"now": now, "error": "scan_dispatch_failed", "rid": outcome["run_id"]},
             )
@@ -561,6 +562,8 @@ def finalize_monitoring_run(db, scan_id: str):
     paths). Aggregates per-scanner latest attempt outcomes across ALL scans in
     the run; transitions scheduled/queued/running runs to
     completed/partial/failed; updates config last_status / consecutive_failures.
+    On a completed/partial transition it additionally triggers D2 change
+    detection (best-effort); failed runs are marked change-skipped.
     Never raises (scheduler bookkeeping must not break scan persistence).
     Returns the run status string, or None when no linked active run exists.
     """
@@ -582,7 +585,7 @@ def finalize_monitoring_run(db, scan_id: str):
         run = (
             db.execute(
                 text(
-                    "SELECT id, monitoring_config_id, status, scan_ids "
+                    "SELECT id, monitoring_config_id, status, scan_ids, change_status "
                     "FROM monitoring_runs WHERE id = :rid"
                 ),
                 {"rid": run_id},
@@ -590,8 +593,10 @@ def finalize_monitoring_run(db, scan_id: str):
             .mappings()
             .first()
         )
-        if not run or run["status"] not in ACTIVE_RUN_STATUSES:
+        if not run:
             return None
+        if run["status"] not in ACTIVE_RUN_STATUSES:
+            return _maybe_process_terminal_run(db, run)
         scan_ids = _parse_json(run.get("scan_ids")) or []
         if not isinstance(scan_ids, list):
             scan_ids = []
@@ -653,13 +658,37 @@ def finalize_monitoring_run(db, scan_id: str):
             status = "partial"
         else:
             status = "failed"
-        db.execute(
+        transitioned = db.execute(
             text(
                 "UPDATE monitoring_runs SET status = :status, completed_at = :now, "
-                "successful_scanners = :ok, failed_scanners = :bad WHERE id = :rid"
+                "successful_scanners = :ok, failed_scanners = :bad, "
+                "change_status = CASE WHEN :status = 'failed' THEN 'skipped' "
+                "ELSE change_status END "
+                "WHERE id = :rid AND status IN ('scheduled', 'queued', 'running')"
             ),
             {"status": status, "now": now, "ok": total_success, "bad": total_failed, "rid": run_id},
         )
+        try:
+            transitioned_count = transitioned.rowcount
+        except Exception:
+            transitioned_count = 1
+        if not transitioned_count:
+            # Lost a concurrent transition race: another worker already moved
+            # this run to terminal (and owns change detection). Re-read it.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                cur = (
+                    db.execute(
+                        text("SELECT status FROM monitoring_runs WHERE id = :rid"),
+                        {"rid": run_id},
+                    ).fetchone()
+                )
+                return cur[0] if cur else None
+            except Exception:
+                return None
         if status == "completed":
             fail_expr = "0"
         else:
@@ -673,7 +702,68 @@ def finalize_monitoring_run(db, scan_id: str):
             {"status": status, "sid": scan_id, "now": now, "cid": run["monitoring_config_id"]},
         )
         db.commit()
+        if status in ("completed", "partial"):
+            _run_change_detection_best_effort(db, run_id)
         return status
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return None
+
+
+def _run_change_detection_best_effort(db, run_id: str) -> None:
+    """Trigger D2 run comparison without ever breaking scan persistence."""
+    try:
+        from .change_detection import process_run_changes
+
+        process_run_changes(db, run_id)
+    except Exception:
+        pass
+
+
+def _maybe_process_terminal_run(db, run) -> str | None:
+    """D2 entry for runs already terminal (e.g. manual runs, which complete
+    synchronously at dispatch while their scans still execute).
+
+    Waits until ALL run scans are terminal, then claims the run for change
+    detection exactly once (pending->processing CAS). Failed runs are marked
+    change-skipped. Never raises. Returns the run status when change
+    detection was triggered, else None (preserving the historical contract
+    that terminal runs yield None).
+    """
+    try:
+        run_id = run["id"]
+        if (run.get("change_status") or "") != "pending":
+            return None
+        scan_ids = _parse_json(run.get("scan_ids")) or []
+        if not isinstance(scan_ids, list):
+            scan_ids = []
+        if not scan_ids:
+            db.execute(
+                text("UPDATE monitoring_runs SET change_status = 'skipped' WHERE id = :rid"),
+                {"rid": run_id},
+            )
+            db.commit()
+            return None
+        for sid in scan_ids:
+            s = (
+                db.execute(text("SELECT status FROM scans WHERE id = :sid"), {"sid": sid}).fetchone()
+            )
+            if not s or s[0] not in TERMINAL_SCAN_STATUSES:
+                return None
+        if run["status"] == "failed":
+            db.execute(
+                text("UPDATE monitoring_runs SET change_status = 'skipped' WHERE id = :rid"),
+                {"rid": run_id},
+            )
+            db.commit()
+            return None
+        if run["status"] not in ("completed", "partial"):
+            return None
+        _run_change_detection_best_effort(db, run_id)
+        return run["status"]
     except Exception:
         try:
             db.rollback()

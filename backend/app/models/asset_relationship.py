@@ -53,6 +53,13 @@ class AssetRelationship(Base):
         index=True,
     )
 
+    last_seen_scan_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("scans.id"),
+        nullable=True,
+        index=True,
+    )
+
     extra_data: Mapped[dict] = mapped_column(
         "metadata",
         JSONB,
