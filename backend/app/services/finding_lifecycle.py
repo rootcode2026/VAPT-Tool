@@ -16,17 +16,47 @@ DEFAULT_SLA_HOURS = {
 
 SLA_STATUSES = {"active", "met", "breached", "waived"}
 RA_STATUSES = {"requested", "approved", "rejected", "expired", "revoked"}
-REMEDIATION_STATUSES = {"open", "in_progress", "submitted", "completed", "cancelled"}
+# D7: remediation workflow reuses FindingRemediation with an additive "blocked" state.
+# "completed" means owner-reported completion (NOT verified); verification belongs to D8.
+REMEDIATION_STATUSES = {"open", "in_progress", "submitted", "blocked", "completed", "cancelled"}
 RETEST_STATUSES = {"requested", "queued", "running", "passed", "failed", "cancelled", "error"}
 RETEST_RESULTS = {"passed", "failed", "error"}
 
 REMEDIATION_TRANSITIONS = {
     "open": {"in_progress", "cancelled"},
-    "in_progress": {"submitted", "cancelled"},
-    "submitted": {"completed", "cancelled"},
+    "in_progress": {"submitted", "blocked", "cancelled"},
+    "blocked": {"in_progress", "cancelled"},
+    "submitted": {"completed", "blocked", "cancelled"},
     "completed": set(),
     "cancelled": set(),
 }
+
+# One active remediation per finding (D7 includes "blocked" as active).
+REMEDIATION_ACTIVE_STATUSES = {"open", "in_progress", "submitted", "blocked"}
+
+# Bounded evidence-reference guardrails (references only, never raw bodies/secrets).
+REMEDIATION_EVIDENCE_REF_MAX = 2000
+REMEDIATION_BLOCKED_REASON_MAX = 500
+_SECRET_REF_PATTERNS = ("BEGIN PRIVATE KEY", "BEGIN RSA PRIVATE", "BEGIN OPENSSH", "aws_secret", "sk_live", "ghp_")
+
+
+def sanitize_remediation_evidence_ref(value: str | None) -> str | None:
+    """Validate a bounded evidence *reference* (ID/URL/summary), not raw evidence.
+
+    Returns the trimmed value or None. Raises ValueError on secret-like content.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if len(s) > REMEDIATION_EVIDENCE_REF_MAX:
+        s = s[:REMEDIATION_EVIDENCE_REF_MAX]
+    upper = s.upper()
+    for pat in _SECRET_REF_PATTERNS:
+        if pat in s or pat.upper() in upper:
+            raise ValueError("evidence_ref must be a bounded reference, not secret material")
+    return s
 
 RETEST_TRANSITIONS = {
     "requested": {"queued", "cancelled"},

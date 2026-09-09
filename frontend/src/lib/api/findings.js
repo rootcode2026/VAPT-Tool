@@ -76,6 +76,30 @@ export function updateRetest(findingId, retestId, payload) {
   return api.patch(`/api/v1/findings/${findingId}/retests/${retestId}`, payload);
 }
 
+export function listProjectRemediations(projectId, query = {}) {
+  return api.get(`/api/v1/projects/${projectId}/remediations`, { query });
+}
+
+export function getProjectRemediation(projectId, remediationId) {
+  return api.get(`/api/v1/projects/${projectId}/remediations/${remediationId}`);
+}
+
+export function startProjectRemediation(projectId, remediationId) {
+  return api.post(`/api/v1/projects/${projectId}/remediations/${remediationId}/start`);
+}
+
+export function blockProjectRemediation(projectId, remediationId, payload) {
+  return api.post(`/api/v1/projects/${projectId}/remediations/${remediationId}/block`, payload);
+}
+
+export function unblockProjectRemediation(projectId, remediationId) {
+  return api.post(`/api/v1/projects/${projectId}/remediations/${remediationId}/unblock`);
+}
+
+export function completeProjectRemediation(projectId, remediationId, payload = {}) {
+  return api.post(`/api/v1/projects/${projectId}/remediations/${remediationId}/complete`, payload);
+}
+
 export function getProjectSLASummary(projectId) {
   return api.get(`/api/v1/projects/${projectId}/sla/summary`);
 }
