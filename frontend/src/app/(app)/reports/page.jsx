@@ -17,7 +17,7 @@ export default function ReportsPage() {
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [form, setForm] = useState({ report_type: "executive_security", title: "" });
+  const [form, setForm] = useState({ report_type: "executive_security", title: "", start_date: "", end_date: "" });
   const [msg, setMsg] = useState("");
 
   const load = useCallback(async () => {
@@ -40,9 +40,15 @@ export default function ReportsPage() {
   async function handleCreate() {
     setMsg("");
     try {
-      await createReport({ report_type: form.report_type, title: form.title || undefined, project_id: selectedProjectId || undefined });
+      await createReport({
+        report_type: form.report_type,
+        title: form.title || undefined,
+        project_id: selectedProjectId || undefined,
+        start_date: form.start_date || undefined,
+        end_date: form.end_date || undefined,
+      });
       setMsg("Report generated");
-      setForm({ report_type: "executive_security", title: "" });
+      setForm({ report_type: "executive_security", title: "", start_date: "", end_date: "" });
       load();
     } catch (e) {
       setMsg(e.message);
@@ -64,6 +70,8 @@ export default function ReportsPage() {
             {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
           <input placeholder="Title (optional)" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} className="rounded border bg-canvas px-2 py-1 text-sm" />
+          <input type="date" value={form.start_date} onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value }))} aria-label="Start date" className="rounded border bg-canvas px-2 py-1 text-sm" />
+          <input type="date" value={form.end_date} onChange={(e) => setForm((f) => ({ ...f, end_date: e.target.value }))} aria-label="End date" className="rounded border bg-canvas px-2 py-1 text-sm" />
           <button type="button" onClick={handleCreate} className="rounded bg-primary px-3 py-1 text-sm font-medium text-primary-foreground">Generate</button>
         </div>
         {msg ? <p className="mt-2 text-xs text-muted">{msg}</p> : null}
