@@ -257,6 +257,26 @@ class MonitoringRun(Base):
         server_default="0",
     )
 
+    alert_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="skipped",
+        server_default="skipped",
+        index=True,
+    )
+
+    alert_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    alerts_created: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

@@ -317,9 +317,9 @@ def _insert_run_and_scans(db, cfg: dict, targets: list[dict], now: datetime) -> 
                 "INSERT INTO monitoring_runs (id, monitoring_config_id, organization_id, "
                 "project_id, status, started_at, completed_at, error, assets_discovered, "
                 "assets_changed, assets_stale, findings_created, scan_ids, scanner_count, "
-                "correlation_id, change_status, created_at) "
+                "correlation_id, change_status, alert_status, created_at) "
                 "VALUES (:id, :cid, :oid, :pid, 'failed', :now, :now, :error, 0, 0, 0, 0, "
-                ":scan_ids, 0, :corr, 'skipped', :now)"
+                ":scan_ids, 0, :corr, 'skipped', 'skipped', :now)"
             ),
             {
                 "id": run_id,
@@ -339,9 +339,9 @@ def _insert_run_and_scans(db, cfg: dict, targets: list[dict], now: datetime) -> 
                 "INSERT INTO monitoring_runs (id, monitoring_config_id, organization_id, "
                 "project_id, status, started_at, completed_at, error, assets_discovered, "
                 "assets_changed, assets_stale, findings_created, scan_ids, scanner_count, "
-                "correlation_id, change_status, created_at) "
+                "correlation_id, change_status, alert_status, created_at) "
                 "VALUES (:id, :cid, :oid, :pid, 'failed', :now, :now, :error, 0, 0, 0, 0, "
-                ":scan_ids, :count, :corr, 'skipped', :now)"
+                ":scan_ids, :count, :corr, 'skipped', 'skipped', :now)"
             ),
             {
                 "id": run_id,
@@ -361,8 +361,8 @@ def _insert_run_and_scans(db, cfg: dict, targets: list[dict], now: datetime) -> 
             "INSERT INTO monitoring_runs (id, monitoring_config_id, organization_id, "
             "project_id, status, started_at, assets_discovered, assets_changed, "
             "assets_stale, findings_created, scan_ids, scanner_count, correlation_id, "
-            "change_status, created_at) "
-            "VALUES (:id, :cid, :oid, :pid, 'scheduled', :now, 0, 0, 0, 0, :scan_ids, :count, :corr, 'pending', :now)"
+            "change_status, alert_status, created_at) "
+            "VALUES (:id, :cid, :oid, :pid, 'scheduled', :now, 0, 0, 0, 0, :scan_ids, :count, :corr, 'pending', 'pending', :now)"
         ),
         {
             "id": run_id,
@@ -531,7 +531,8 @@ def _dispatch_pending(db, cfg: dict, outcome: dict, now: datetime, dispatch) -> 
             db.execute(
                 text(
                     "UPDATE monitoring_runs SET status = 'failed', completed_at = :now, "
-                    "error = :error, change_status = 'skipped' WHERE id = :rid"
+                    "error = :error, change_status = 'skipped', alert_status = 'skipped' "
+                    "WHERE id = :rid"
                 ),
                 {"now": now, "error": "scan_dispatch_failed", "rid": outcome["run_id"]},
             )
@@ -663,7 +664,9 @@ def finalize_monitoring_run(db, scan_id: str):
                 "UPDATE monitoring_runs SET status = :status, completed_at = :now, "
                 "successful_scanners = :ok, failed_scanners = :bad, "
                 "change_status = CASE WHEN :status = 'failed' THEN 'skipped' "
-                "ELSE change_status END "
+                "ELSE change_status END, "
+                "alert_status = CASE WHEN :status = 'failed' THEN 'skipped' "
+                "ELSE alert_status END "
                 "WHERE id = :rid AND status IN ('scheduled', 'queued', 'running')"
             ),
             {"status": status, "now": now, "ok": total_success, "bad": total_failed, "rid": run_id},
@@ -704,6 +707,7 @@ def finalize_monitoring_run(db, scan_id: str):
         db.commit()
         if status in ("completed", "partial"):
             _run_change_detection_best_effort(db, run_id)
+            _run_alert_evaluation_best_effort(db, run_id)
         return status
     except Exception:
         try:
@@ -719,6 +723,17 @@ def _run_change_detection_best_effort(db, run_id: str) -> None:
         from .change_detection import process_run_changes
 
         process_run_changes(db, run_id)
+    except Exception:
+        pass
+
+
+def _run_alert_evaluation_best_effort(db, run_id: str) -> None:
+    """Trigger D3 alert evaluation without ever breaking scan persistence
+    or D2 change records. Runs after D2 commits, in its own transaction."""
+    try:
+        from .alerting import evaluate_run_alerts
+
+        evaluate_run_alerts(db, run_id)
     except Exception:
         pass
 
@@ -763,6 +778,7 @@ def _maybe_process_terminal_run(db, run) -> str | None:
         if run["status"] not in ("completed", "partial"):
             return None
         _run_change_detection_best_effort(db, run_id)
+        _run_alert_evaluation_best_effort(db, run_id)
         return run["status"]
     except Exception:
         try:
