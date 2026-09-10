@@ -166,8 +166,10 @@ export default function FindingLifecycle({ findingId, projectId }) {
 
   async function handleRequestRetest() {
     setActionError("");
+    setActionOk("");
     try {
       await requestRetest(findingId);
+      setActionOk("Verification scan queued — result is computed from scan evidence, never asserted manually.");
       const ret = await listRetests(findingId);
       setRetests(ret.items || []);
     } catch (err) {
@@ -175,20 +177,24 @@ export default function FindingLifecycle({ findingId, projectId }) {
     }
   }
 
-  async function handleRetestStatus(retestId, status) {
+  async function handleRetestRefresh() {
     setActionError("");
     try {
-      let payload = { status };
-      if (status === "running") payload = { status };
-      if (status === "passed" || status === "failed" || status === "error") {
-        const summary = window.prompt(`Result summary for ${status} (optional):`) || undefined;
-        payload = { status, result: status, result_summary: summary };
-      }
-      await updateRetest(findingId, retestId, payload);
       const ret = await listRetests(findingId);
       setRetests(ret.items || []);
     } catch (err) {
-      setActionError(err.message || "Unable to update retest.");
+      setActionError(err.message || "Unable to refresh retests.");
+    }
+  }
+
+  async function handleRetestCancel(retestId) {
+    setActionError("");
+    try {
+      await updateRetest(findingId, retestId, { status: "cancelled" });
+      const ret = await listRetests(findingId);
+      setRetests(ret.items || []);
+    } catch (err) {
+      setActionError(err.message || "Unable to cancel retest.");
     }
   }
 
@@ -270,22 +276,35 @@ export default function FindingLifecycle({ findingId, projectId }) {
       </section>
 
       <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6" aria-label="Retest">
-        <h2 className="text-lg font-semibold text-white">Retest</h2>
-        <button type="button" onClick={handleRequestRetest} className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500">Request retest</button>
+        <h2 className="text-lg font-semibold text-white">Retest &amp; Verification</h2>
+        <div className="mt-3 flex gap-2">
+          <button type="button" onClick={handleRequestRetest} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500">Run retest</button>
+          <button type="button" onClick={handleRetestRefresh} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Refresh</button>
+        </div>
+        {retests.length === 0 ? <p className="mt-3 text-sm text-slate-500">No verification runs yet.</p> : null}
         <ul className="mt-4 space-y-2">
           {retests.map((r) => (
             <li key={r.id} className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-3">
-              <p className="text-sm font-medium">{r.status}{r.result ? ` • ${r.result}` : ""} • {r.scanner || "—"}</p>
-              <p className="text-xs text-slate-500">{r.result_summary || "No summary"}</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {[["queued", "Queue"], ["running", "Run"], ["passed", "Pass"], ["failed", "Fail"], ["error", "Error"], ["cancelled", "Cancel"]].map(([s, label]) => (
-                  <button key={s} type="button" onClick={() => handleRetestStatus(r.id, s)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">{label}</button>
-                ))}
-              </div>
+              <p className="text-sm font-medium">
+                {r.status === "passed" ? "Verified" : r.status === "failed" ? "Verification failed — finding still detected" : r.status === "error" ? "Verification inconclusive" : r.status === "cancelled" ? "Cancelled" : r.status === "running" ? "Retest running" : "Retest requested"}
+                {r.result ? ` • ${r.result}` : ""} • {r.scanner || "—"}{r.scanner_version ? ` ${r.scanner_version}` : ""}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Target {r.target_value || "—"} • requested {formatWhen(r.created_at)}
+                {r.started_at ? ` • started ${formatWhen(r.started_at)}` : ""}{r.completed_at ? ` • completed ${formatWhen(r.completed_at)}` : ""}
+              </p>
+              {r.image_digest ? <p className="mt-1 font-mono text-xs text-slate-500">digest: {String(r.image_digest).slice(0, 19)}…{r.channel ? ` • ${r.channel}` : ""}</p> : null}
+              {r.verification_note ? <p className="mt-1 text-xs text-slate-400">{r.verification_note}</p> : null}
+              {r.status === "passed" ? <p className="mt-1 text-xs text-emerald-300">Verified — original fingerprint absent from the completed verification scan.</p> : null}
+              {["requested", "queued", "running"].includes(r.status) ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => handleRetestCancel(r.id)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">Cancel</button>
+                </div>
+              ) : null}
             </li>
           ))}
         </ul>
-        <p className="mt-3 text-xs text-slate-500">Passed retest resolves the finding; failed retest reopens it. Manual resolve without retest requires a reason via triage.</p>
+        <p className="mt-3 text-xs text-slate-500">Verification is computed from the verification scan&apos;s evidence: absent fingerprint → verified; present → still detected; scan/parser failure → inconclusive (never verified). Results cannot be asserted manually.</p>
       </section>
     </div>
   );

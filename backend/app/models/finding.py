@@ -808,6 +808,57 @@ class FindingRetest(Base):
         nullable=True,
     )
 
+    # D8 verification provenance + fingerprint matching (additive).
+    # Verification scans run through the existing scan/worker pipeline;
+    # these columns record exactly what was executed and what was compared.
+    scan_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("scans.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    scanner_version: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    image_ref: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    image_digest: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+
+    channel: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
+    baseline_fingerprint: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+
+    resulting_fingerprint: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    fingerprint_algo: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
+    verification_note: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,

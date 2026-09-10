@@ -76,6 +76,22 @@ export function updateRetest(findingId, retestId, payload) {
   return api.patch(`/api/v1/findings/${findingId}/retests/${retestId}`, payload);
 }
 
+export function listProjectRetests(projectId, query = {}) {
+  return api.get(`/api/v1/projects/${projectId}/retests`, { query });
+}
+
+export function getProjectRetest(projectId, retestId) {
+  return api.get(`/api/v1/projects/${projectId}/retests/${retestId}`);
+}
+
+export function cancelProjectRetest(projectId, retestId, payload = {}) {
+  return api.post(`/api/v1/projects/${projectId}/retests/${retestId}/cancel`, payload);
+}
+
+export function completeProjectRetest(projectId, retestId) {
+  return api.post(`/api/v1/projects/${projectId}/retests/${retestId}/complete`);
+}
+
 export function listProjectRemediations(projectId, query = {}) {
   return api.get(`/api/v1/projects/${projectId}/remediations`, { query });
 }

@@ -903,7 +903,9 @@ def complete_remediation(project_id: str, remediation_id: str, payload: dict | N
 # Retest
 # -------------------------------------------------------------------
 
-def _retest_payload(r: FindingRetest) -> dict:
+def _retest_payload(r: FindingRetest, scan=None) -> dict:
+    # D8: verification result is server-computed from scan evidence, never
+    # client-asserted. Provenance (scanner/version/digest/target/scan) is exact.
     return {
         "id": r.id,
         "finding_id": r.finding_id,
@@ -913,7 +915,17 @@ def _retest_payload(r: FindingRetest) -> dict:
         "executed_by": r.executed_by,
         "status": r.status,
         "scanner": r.scanner,
+        "scanner_version": getattr(r, "scanner_version", None),
+        "image_ref": getattr(r, "image_ref", None),
+        "image_digest": getattr(r, "image_digest", None),
+        "channel": getattr(r, "channel", None),
         "target_value": r.target_value,
+        "scan_id": getattr(r, "scan_id", None),
+        "scan_status": getattr(scan, "status", None),
+        "baseline_fingerprint": getattr(r, "baseline_fingerprint", None),
+        "resulting_fingerprint": getattr(r, "resulting_fingerprint", None),
+        "fingerprint_algo": getattr(r, "fingerprint_algo", None),
+        "verification_note": getattr(r, "verification_note", None),
         "started_at": r.started_at.isoformat() if r.started_at else None,
         "completed_at": r.completed_at.isoformat() if r.completed_at else None,
         "result": r.result,
@@ -921,6 +933,111 @@ def _retest_payload(r: FindingRetest) -> dict:
         "evidence": r.evidence,
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
+
+
+def _retest_scan(db: Session, rt: FindingRetest):
+    """Load the linked verification scan, if any (never trust client scan IDs)."""
+    from app.models.scan import Scan
+
+    scan_id = getattr(rt, "scan_id", None)
+    if not scan_id:
+        return None
+    return db.query(Scan).filter(Scan.id == scan_id).first()
+
+
+def _complete_retest_from_scan(db: Session, rt: FindingRetest, finding, scan, actor_user_id: str | None):
+    """Run the D8 evaluator over the verification scan's persisted findings.
+
+    Server-authoritative: detected fingerprints are derived from stored scan
+    findings with the canonical fingerprint function. Returns (changed, result).
+    """
+    from app.models.finding import Finding
+
+    detected: set[str] = set()
+    try:
+        rows = db.query(Finding).filter(Finding.id != finding.id, Finding.scan_id == scan.id).all()
+        # Note: findings from the verification scan have scan_id == scan.id;
+        # the original finding belongs to its own scan, excluded above.
+        for f in rows:
+            try:
+                detected.add(lc.d8_fingerprint(lc.d8_finding_input(f)))
+            except Exception:
+                continue
+    except Exception:
+        detected = set()
+    result, note = lc.evaluate_retest_verification(
+        getattr(rt, "baseline_fingerprint", None), detected, getattr(scan, "status", None)
+    )
+    now = _utcnow().replace(tzinfo=None)
+    old_status = rt.status
+    # Uniform history for every completion path (explicit, PATCH, lazy sync).
+    db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=actor_user_id, action=f"retest_{result}", old_value=old_status, new_value=result, reason=(note or "")[:500]))
+    rt.status = result
+    rt.result = result
+    rt.result_summary = note[:2000]
+    rt.verification_note = note[:2000]
+    if result == "failed" and getattr(rt, "baseline_fingerprint", None):
+        rt.resulting_fingerprint = rt.baseline_fingerprint
+    # Bounded provenance evidence (no raw scanner output, no secrets).
+    prov = (
+        f"scanner={rt.scanner or '?'} version={getattr(rt, 'scanner_version', None) or '?'} "
+        f"digest={(getattr(rt, 'image_digest', None) or '?')[:19]} target={rt.target_value or '?'} "
+        f"scan={getattr(rt, 'scan_id', None) or '?'}"
+    )
+    rt.evidence = prov[:2000]
+    rt.completed_at = now
+    if actor_user_id and not rt.executed_by:
+        rt.executed_by = actor_user_id
+    if result == "passed":
+        if finding.status == "accepted_risk":
+            # Risk acceptance remains authoritative; record the factual result only.
+            AuditService.record(db, event_type=EVENT_RETEST_PASSED, action=EVENT_RETEST_PASSED, result=RESULT_SUCCESS, actor_user_id=actor_user_id, organization_id=rt.organization_id, project_id=rt.project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id, "risk_acceptance_retained": True})
+        else:
+            old_fstatus = finding.status
+            finding.status = "resolved"
+            try:
+                finding.updated_at = now
+            except Exception:
+                pass
+            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=actor_user_id, action="status_changed", old_value=old_fstatus, new_value="resolved", reason="retest passed"))
+            AuditService.record(db, event_type=EVENT_RETEST_PASSED, action=EVENT_RETEST_PASSED, result=RESULT_SUCCESS, actor_user_id=actor_user_id, organization_id=rt.organization_id, project_id=rt.project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id})
+            AuditService.record(db, event_type=EVENT_FINDING_RESOLVED, action=EVENT_FINDING_RESOLVED, result=RESULT_SUCCESS, actor_user_id=actor_user_id, organization_id=rt.organization_id, project_id=rt.project_id, resource_type=RESOURCE_FINDING, resource_id=finding.id, metadata={"via": "retest"})
+    elif result == "failed":
+        # Finding remains active. Reopen only from terminal states; otherwise keep status.
+        if finding.status in ("resolved", "closed", "remediated", "reopened", "false_positive"):
+            old_fstatus = finding.status
+            finding.status = "reopened"
+            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=actor_user_id, action="status_changed", old_value=old_fstatus, new_value="reopened", reason="retest failed"))
+            AuditService.record(db, event_type=EVENT_FINDING_REOPENED, action=EVENT_FINDING_REOPENED, result=RESULT_SUCCESS, actor_user_id=actor_user_id, organization_id=rt.organization_id, project_id=rt.project_id, resource_type=RESOURCE_FINDING, resource_id=finding.id, metadata={"via": "retest"})
+        AuditService.record(db, event_type=EVENT_RETEST_FAILED, action=EVENT_RETEST_FAILED, result=RESULT_SUCCESS, actor_user_id=actor_user_id, organization_id=rt.organization_id, project_id=rt.project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id})
+    else:
+        # ERROR: no finding change — absence of evidence is not proof.
+        AuditService.record(db, event_type=EVENT_RETEST_ERROR, action=EVENT_RETEST_ERROR, result=RESULT_SUCCESS, actor_user_id=actor_user_id, organization_id=rt.organization_id, project_id=rt.project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id})
+    return True, result
+
+
+def _sync_retest_with_scan(db: Session, rt: FindingRetest, finding, actor_user_id: str | None = None) -> bool:
+    """Lazily advance a retest from its verification scan state (bounded, idempotent).
+
+    Returns True if the retest changed (caller commits). Terminal states are stable.
+    """
+    if rt.status in ("passed", "failed", "error", "cancelled"):
+        return False
+    scan = _retest_scan(db, rt)
+    if scan is None:
+        return False
+    now = _utcnow().replace(tzinfo=None)
+    if getattr(scan, "status", None) == "running" and rt.status == "queued":
+        rt.status = "running"
+        if not rt.started_at:
+            rt.started_at = now
+        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=actor_user_id, action="retest_running", old_value="queued", new_value="running", reason="verification scan running"))
+        return True
+    if getattr(scan, "status", None) in ("completed", "failed", "error", "cancelled", "partial"):
+        if rt.status in ("requested", "queued", "running"):
+            _complete_retest_from_scan(db, rt, finding, scan, actor_user_id)
+            return True
+    return False
 
 
 @router.get("/findings/{finding_id}/retests")
@@ -931,7 +1048,165 @@ def list_retests(
 ):
     finding, project_id, organization_id = _finding_org_project(finding_id, db, current_user)
     rows = db.query(FindingRetest).filter(FindingRetest.finding_id == finding.id).order_by(FindingRetest.created_at.desc()).all()
-    return {"items": [_retest_payload(r) for r in rows], "total": len(rows)}
+    changed = False
+    for r in rows:
+        if _sync_retest_with_scan(db, r, finding):
+            changed = True
+    if changed:
+        db.commit()
+        for r in rows:
+            db.refresh(r)
+    return {"items": [_retest_payload(r, _retest_scan(db, r)) for r in rows], "total": len(rows)}
+
+
+# -------------------------------------------------------------------
+# D8: project-scoped retest queue + lifecycle actions
+# -------------------------------------------------------------------
+
+def _require_project_retest(retest_id: str, project_id: str, db: Session):
+    """Fetch a retest strictly scoped to the project (IDOR-safe)."""
+    from app.models.finding import Finding
+
+    rt = (
+        db.query(FindingRetest)
+        .filter(FindingRetest.id == retest_id, FindingRetest.project_id == project_id)
+        .first()
+    )
+    if not rt:
+        raise HTTPException(status_code=404, detail="Retest not found")
+    finding = db.query(Finding).filter(Finding.id == rt.finding_id).first()
+    return rt, finding
+
+
+@router.get("/projects/{project_id}/retests")
+def list_project_retests(
+    project_id: str,
+    status: str | None = Query(default=None),
+    result: str | None = Query(default=None),
+    scanner: str | None = Query(default=None),
+    finding_id: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """D8 project-scoped retest queue (bounded; lazy sync of active items)."""
+    from app.models.finding import Finding
+
+    require_project_access(project_id, db, current_user)
+    q = db.query(FindingRetest).filter(FindingRetest.project_id == project_id)
+    if status:
+        s = status.strip().lower()
+        if s not in lc.RETEST_STATUSES:
+            raise HTTPException(status_code=400, detail="Invalid status filter")
+        q = q.filter(FindingRetest.status == s)
+    if result:
+        res = result.strip().lower()
+        if res not in lc.RETEST_RESULTS:
+            raise HTTPException(status_code=400, detail="Invalid result filter")
+        q = q.filter(FindingRetest.result == res)
+    if scanner:
+        q = q.filter(FindingRetest.scanner == scanner.strip().lower())
+    if finding_id:
+        q = q.filter(FindingRetest.finding_id == finding_id.strip())
+    since_dt = _parse_dt(since, "since") if since else None
+    until_dt = _parse_dt(until, "until") if until else None
+    if since_dt:
+        q = q.filter(FindingRetest.updated_at >= (since_dt.replace(tzinfo=None) if since_dt.tzinfo else since_dt))
+    if until_dt:
+        q = q.filter(FindingRetest.updated_at <= (until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt))
+    rows = q.order_by(FindingRetest.updated_at.desc()).offset(offset).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    # Lazy-sync active retests with their verification scans (bounded to page).
+    fids = {r.finding_id for r in rows}
+    findings = {f.id: f for f in db.query(Finding).filter(Finding.id.in_(fids)).all()} if fids else {}
+    changed = False
+    for r in rows:
+        f = findings.get(r.finding_id)
+        if f is not None and _sync_retest_with_scan(db, r, f):
+            changed = True
+    if changed:
+        db.commit()
+        for r in rows:
+            db.refresh(r)
+    return {
+        "items": [_retest_payload(r, _retest_scan(db, r)) for r in rows],
+        "total": len(rows),
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
+
+
+@router.get("/projects/{project_id}/retests/{retest_id}")
+def get_project_retest(
+    project_id: str,
+    retest_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_project_access(project_id, db, current_user)
+    rt, finding = _require_project_retest(retest_id, project_id, db)
+    if finding is not None and _sync_retest_with_scan(db, rt, finding):
+        db.commit()
+        db.refresh(rt)
+    return _retest_payload(rt, _retest_scan(db, rt))
+
+
+@router.post("/projects/{project_id}/retests/{retest_id}/cancel")
+def cancel_project_retest(
+    project_id: str,
+    retest_id: str,
+    payload: dict | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.api.routes.findings import _require_finding_manage as _manage
+
+    require_project_access(project_id, db, current_user)
+    _manage(project_id, db, current_user)
+    rt, finding = _require_project_retest(retest_id, project_id, db)
+    if rt.status in ("passed", "failed", "error", "cancelled"):
+        raise HTTPException(status_code=400, detail=f"Retest already {rt.status}")
+    old = rt.status
+    rt.status = "cancelled"
+    data = payload or {}
+    AuditService.record(db, event_type=EVENT_RETEST_CANCELLED, action=EVENT_RETEST_CANCELLED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=rt.organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": rt.finding_id})
+    if finding is not None:
+        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="retest_cancelled", old_value=old, new_value="cancelled", reason=str(data.get("reason", ""))[:500] if data.get("reason") else None))
+    db.commit()
+    db.refresh(rt)
+    return _retest_payload(rt, _retest_scan(db, rt))
+
+
+@router.post("/projects/{project_id}/retests/{retest_id}/complete")
+def complete_project_retest(
+    project_id: str,
+    retest_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Evaluate verification now (server-authoritative; 409 if scan not terminal)."""
+    from app.api.routes.findings import _require_finding_manage as _manage
+
+    require_project_access(project_id, db, current_user)
+    _manage(project_id, db, current_user)
+    rt, finding = _require_project_retest(retest_id, project_id, db)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    if rt.status in ("passed", "failed", "error", "cancelled"):
+        # Idempotent: terminal states are stable, return current record.
+        return _retest_payload(rt, _retest_scan(db, rt))
+    scan = _retest_scan(db, rt)
+    if scan is None or getattr(scan, "status", None) not in ("completed", "failed", "error", "cancelled", "partial"):
+        raise HTTPException(status_code=409, detail="Verification scan has not produced terminal evidence yet")
+    _complete_retest_from_scan(db, rt, finding, scan, current_user.id)
+    db.commit()
+    db.refresh(rt)
+    return _retest_payload(rt, _retest_scan(db, rt))
 
 
 @router.post("/findings/{finding_id}/retests/request", status_code=201)
@@ -940,9 +1215,12 @@ def request_retest(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from app.models.scan import Scan
+    from app.models.target import Target
+
     finding, project_id, organization_id = _finding_org_project(finding_id, db, current_user)
     _require_finding_manage(project_id, db, current_user)
-    # Only one active retest at a time
+    # Idempotency: only one active retest per finding (409, deterministic).
     existing = (
         db.query(FindingRetest)
         .filter(FindingRetest.finding_id == finding.id, FindingRetest.status.in_(["requested", "queued", "running"]))
@@ -950,33 +1228,119 @@ def request_retest(
     )
     if existing:
         raise HTTPException(status_code=409, detail="Active retest already exists")
-    # Scanner selection: prefer original scanner
+    # Scanner selection: original scanner only — never arbitrary, never silent fallback.
     scanner = (finding.scanner or "").strip().lower() or None
-    # Target value from finding context
-    from app.models.scan import Scan
-    from app.models.target import Target
+    if not scanner:
+        raise HTTPException(status_code=400, detail="Original scanner unavailable for retest")
+    from app.services.scanner_catalog import get_scanner_entry
 
+    entry = get_scanner_entry(scanner)
+    if entry is None:
+        raise HTTPException(status_code=400, detail=f"Scanner not in control-plane catalog: {scanner}")
+    if scanner not in lc.RETEST_EXECUTABLE_SCANNERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Verification execution is not supported for scanner '{scanner}': "
+            "workspace scanners would scan an empty workspace and could falsely pass",
+        )
+    profile = lc.RETEST_SCANNER_PROFILES.get(scanner)
+    if not profile:
+        raise HTTPException(status_code=400, detail=f"No supported verification profile for scanner '{scanner}'")
+    # Target validation: original finding context only (active target, same project).
     scan = db.query(Scan).filter(Scan.id == finding.scan_id).first()
     target = db.query(Target).filter(Target.id == scan.target_id).first() if scan else None
-    target_value = target.value if target else None
+    if target is None or getattr(target, "project_id", None) != project_id:
+        raise HTTPException(status_code=404, detail="Retest target not found")
+    if not getattr(target, "is_active", False):
+        raise HTTPException(status_code=400, detail="Retest target is inactive")
+    target_value = target.value
+    # Scanner provenance: exact stable/approved version + digest (never `latest`).
+    # Control-plane reads run in a savepoint: a read failure (e.g. fleet tables
+    # absent) must never poison the request transaction — it degrades to an
+    # explicit 409, never a 500, never silent execution.
+    from app.services.scanner_control import can_accept_job, get_pool_for_scanner, resolve_production_version
+
+    version = None
+    try:
+        with db.begin_nested():
+            version = resolve_production_version(db, scanner)
+    except Exception:
+        version = None
+    if version is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No stable approved scanner version with digest for '{scanner}': verification refused",
+        )
+    # Capacity: refuse explicitly when the pool is saturated (no silent queue pileup).
+    # A pool read failure degrades to proceeding (worker enforces availability at
+    # execution); it must never poison the transaction — hence the savepoint.
+    try:
+        with db.begin_nested():
+            pool = get_pool_for_scanner(scanner, db)
+            saturated = pool is not None and not can_accept_job(pool, db)
+    except Exception:
+        saturated = False
+    if saturated:
+        raise HTTPException(status_code=409, detail="Verification capacity unavailable: worker pool saturated")
+    # Baseline fingerprint (canonical, worker-parity pinned by vector test).
+    baseline_fp, _ = lc.d8_baseline_fingerprint(finding)
+    # Verification scan through the existing scan pipeline (same target/profile).
+    verification_scan = Scan(
+        id=str(uuid.uuid4()),
+        target_id=target.id,
+        profile=profile,
+        status="queued",
+    )
+    db.add(verification_scan)
+    db.flush()
     rt = FindingRetest(
         id=str(uuid.uuid4()),
         finding_id=finding.id,
         organization_id=organization_id,
         project_id=project_id,
         requested_by=current_user.id,
-        status="requested",
+        status="queued",
         scanner=scanner,
+        scanner_version=getattr(version, "version", None),
+        image_ref=getattr(version, "image_ref", None),
+        image_digest=getattr(version, "image_digest", None),
+        channel=getattr(version, "channel", None),
         target_value=target_value,
+        scan_id=verification_scan.id,
+        baseline_fingerprint=baseline_fp,
+        fingerprint_algo=lc.FINGERPRINT_ALGO,
     )
-    if not scanner:
-        raise HTTPException(status_code=400, detail="Original scanner unavailable for retest")
     db.add(rt)
-    db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="retest_requested", old_value=None, new_value="requested", reason=None))
-    AuditService.record(db, event_type=EVENT_RETEST_REQUESTED, action=EVENT_RETEST_REQUESTED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id, "scanner": scanner})
+    db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="retest_requested", old_value=None, new_value="queued", reason=None))
+    AuditService.record(db, event_type=EVENT_RETEST_REQUESTED, action=EVENT_RETEST_REQUESTED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id, "scanner": scanner, "scanner_version": getattr(version, "version", None), "scan_id": verification_scan.id})
+    # Enqueue verification execution via existing Celery scan infrastructure.
+    try:
+        from app.core.celery import celery_app as _celery
+        from app.core.request_id import get_correlation_id as _corr_fn
+
+        _corr = None
+        try:
+            _corr = _corr_fn()
+        except Exception:
+            _corr = None
+        _celery.send_task(
+            "app.tasks.execute_scan",
+            args=[verification_scan.id, target.id, target.value, profile],
+            kwargs={"correlation_id": _corr} if _corr else {},
+        )
+    except Exception as exc:
+        # Explicit error record (auditable) — never a silent stuck queue.
+        verification_scan.status = "failed"
+        rt.status = "error"
+        rt.result = "error"
+        rt.completed_at = _utcnow().replace(tzinfo=None)
+        rt.verification_note = "Verification scan could not be queued."
+        rt.result_summary = "Verification scan could not be queued."
+        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="retest_error", old_value="queued", new_value="error", reason=str(exc)[:200]))
+        AuditService.record(db, event_type=EVENT_RETEST_ERROR, action=EVENT_RETEST_ERROR, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id, "reason": "queue_failed"})
     db.commit()
     db.refresh(rt)
-    return _retest_payload(rt)
+    return _retest_payload(rt, _retest_scan(db, rt))
 
 
 @router.patch("/findings/{finding_id}/retests/{retest_id}")
@@ -1003,54 +1367,44 @@ def update_retest(
         raise HTTPException(status_code=400, detail=f"Invalid transition from {rt.status} to {new_status}")
     now = _utcnow().replace(tzinfo=None)
     old_status = rt.status
-    # Manual resolution requires reason
-    if new_status in ("passed", "failed", "error") and old_status == "running":
-        pass  # valid terminal from running
-    if new_status in ("passed", "failed") and rt.status not in ("running", "queued", "requested"):
-        raise HTTPException(status_code=400, detail="Terminal result requires running retest")
-    rt.status = new_status
-    if new_status == "running" and not rt.started_at:
-        rt.started_at = now
-        rt.executed_by = current_user.id
-        AuditService.record(db, event_type=EVENT_RETEST_STARTED, action=EVENT_RETEST_STARTED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id})
-    if new_status in ("passed", "failed", "error"):
-        result = str(data.get("result", new_status)).strip().lower()
-        if result not in lc.RETEST_RESULTS and result != new_status:
-            raise HTTPException(status_code=400, detail="Invalid result")
-        rt.result = result if result in lc.RETEST_RESULTS else new_status
-        summary = str(data.get("result_summary", "")).strip()[:2000] if data.get("result_summary") else None
-        rt.result_summary = summary
-        # Sanitized evidence (bounded, no secrets — reuse audit sanitize via history cap)
-        ev = str(data.get("evidence", "")).strip()[:2000] if data.get("evidence") else None
-        rt.evidence = ev
-        rt.completed_at = now
-        rt.executed_by = rt.executed_by or current_user.id
-        if rt.result == "passed":
-            old_fstatus = finding.status
-            finding.status = "resolved"
-            try:
-                finding.updated_at = now
-            except Exception:
-                pass
-            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="status_changed", old_value=old_fstatus, new_value="resolved", reason="retest passed"))
-            AuditService.record(db, event_type=EVENT_RETEST_PASSED, action=EVENT_RETEST_PASSED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id})
-            AuditService.record(db, event_type=EVENT_FINDING_RESOLVED, action=EVENT_FINDING_RESOLVED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_FINDING, resource_id=finding.id, metadata={"via": "retest"})
-        elif rt.result == "failed":
-            old_fstatus = finding.status
-            finding.status = "reopened"
-            try:
-                finding.updated_at = now
-            except Exception:
-                pass
-            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="status_changed", old_value=old_fstatus, new_value="reopened", reason="retest failed"))
-            AuditService.record(db, event_type=EVENT_RETEST_FAILED, action=EVENT_RETEST_FAILED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id})
-            AuditService.record(db, event_type=EVENT_FINDING_REOPENED, action=EVENT_FINDING_REOPENED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_FINDING, resource_id=finding.id, metadata={"via": "retest"})
-        else:
-            AuditService.record(db, event_type=EVENT_RETEST_ERROR, action=EVENT_RETEST_ERROR, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id})
+    if new_status == "running":
+        if new_status != old_status:
+            rt.status = "running"
+            if not rt.started_at:
+                rt.started_at = now
+            rt.executed_by = current_user.id
+            AuditService.record(db, event_type=EVENT_RETEST_STARTED, action=EVENT_RETEST_STARTED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id})
+            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="retest_running", old_value=old_status, new_value="running", reason=str(data.get("reason", ""))[:500] if data.get("reason") else None))
+        db.commit()
+        db.refresh(rt)
+        return _retest_payload(rt, _retest_scan(db, rt))
     if new_status == "cancelled":
+        if new_status == old_status:
+            db.commit()
+            db.refresh(rt)
+            return _retest_payload(rt, _retest_scan(db, rt))
+        rt.status = "cancelled"
         AuditService.record(db, event_type=EVENT_RETEST_CANCELLED, action=EVENT_RETEST_CANCELLED, result=RESULT_SUCCESS, actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type=RESOURCE_RETEST, resource_id=rt.id, metadata={"finding_id": finding.id})
+        db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action="retest_cancelled", old_value=old_status, new_value="cancelled", reason=str(data.get("reason", ""))[:500] if data.get("reason") else None))
+        db.commit()
+        db.refresh(rt)
+        return _retest_payload(rt, _retest_scan(db, rt))
+    # Terminal states are evaluator-driven ONLY: client-asserted results are
+    # never trusted (no click-to-verify). The verification scan must be terminal.
+    if new_status in ("passed", "failed", "error"):
+        if old_status in ("passed", "failed", "error", "cancelled"):
+            raise HTTPException(status_code=400, detail=f"Retest already {old_status}")
+        scan = _retest_scan(db, rt)
+        if scan is None or getattr(scan, "status", None) not in ("completed", "failed", "error", "cancelled", "partial"):
+            raise HTTPException(status_code=409, detail="Verification scan has not produced terminal evidence yet")
+        _complete_retest_from_scan(db, rt, finding, scan, current_user.id)
+        if data.get("reason"):
+            db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action=f"retest_{rt.status}_note", old_value=old_status, new_value=rt.status, reason=str(data.get("reason", ""))[:500]))
+        db.commit()
+        db.refresh(rt)
+        return _retest_payload(rt, _retest_scan(db, rt))
+    # queued (operational no-op path)
     db.add(FindingHistory(id=str(uuid.uuid4()), finding_id=finding.id, actor_user_id=current_user.id, action=f"retest_{new_status}", old_value=old_status, new_value=new_status, reason=str(data.get("reason", ""))[:500] if data.get("reason") else None))
-    # Manual resolve without retest requires reason (handled via findings PATCH, documented)
     db.commit()
     db.refresh(rt)
-    return _retest_payload(rt)
+    return _retest_payload(rt, _retest_scan(db, rt))
