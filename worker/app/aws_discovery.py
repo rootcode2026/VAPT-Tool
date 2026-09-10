@@ -46,6 +46,15 @@ THROTTLE_CODES = frozenset({
 SECRET_KEY_RE = re.compile(r"(?i)(secret|token|private|credential|password|access[_-]?key)")
 
 
+def _error_code(exc: Exception) -> str | None:
+    """Bounded AWS error code (for distinguishing denial from absence)."""
+    try:
+        code = str((getattr(exc, "response", {}) or {}).get("Error", {}).get("Code", "") or "")
+        return code[:64] or None
+    except Exception:
+        return None
+
+
 def sanitize_aws_error(exc: Exception, default: str = "AWS operation failed") -> str:
     """Bounded, credential-free error text safe for APIs, runs, and audit."""
     try:
@@ -173,7 +182,7 @@ def _tags_as_dict(tags: Any) -> dict[str, str]:
     return out
 
 
-def _bounded_extra(extra: dict) -> dict:
+def _bounded_extra(extra: dict, _depth: int = 0) -> dict:
     out: dict[str, Any] = {}
     for key, value in (extra or {}).items():
         k = str(key)[:64]
@@ -183,13 +192,22 @@ def _bounded_extra(extra: dict) -> dict:
             v: Any = value[:500]
             if SECRET_KEY_RE.search(v):
                 continue
+        elif isinstance(value, dict):
+            if _depth >= 1:
+                continue
+            v = _bounded_extra(value, _depth + 1)
         elif isinstance(value, (list, tuple)):
             items = []
             for i in list(value)[:20]:
-                s = str(i)[:200]
-                if SECRET_KEY_RE.search(s):
-                    continue
-                items.append(s)
+                if isinstance(i, dict):
+                    if _depth >= 1:
+                        continue
+                    items.append(_bounded_extra(i, _depth + 1))
+                else:
+                    s = str(i)[:200]
+                    if SECRET_KEY_RE.search(s):
+                        continue
+                    items.append(s)
             v = items
         elif isinstance(value, (int, float, bool)) or value is None:
             v = value
@@ -382,6 +400,21 @@ def discover_ec2_instances(client, region: str, account_id: str):
                 if not inst_id:
                     continue
                 groups = [g.get("GroupId") for g in (inst.get("SecurityGroups") or []) if isinstance(g, dict) and g.get("GroupId")]
+                # E2 evidence: IMDS posture derived here because the shared
+                # persistence sanitizer drops any "token" key (http_tokens would
+                # not survive). True = IMDSv2 enforced or endpoint disabled;
+                # False = IMDSv1 allowed; None = unknown (NOT_ASSESSED).
+                meta_opts = inst.get("MetadataOptions") or {}
+                http_endpoint = meta_opts.get("HttpEndpoint")
+                http_tokens = meta_opts.get("HttpTokens")
+                if http_endpoint == "disabled":
+                    imds_v2 = True
+                elif http_tokens == "required":
+                    imds_v2 = True
+                elif http_tokens == "optional":
+                    imds_v2 = False
+                else:
+                    imds_v2 = None
                 resources.append(_resource("ec2", "aws_ec2_instance", inst_id, region, account_id,
                                            name=_tag_name(inst.get("Tags")), tags=inst.get("Tags"),
                                            extra={"instance_type": inst.get("InstanceType"), "state": (inst.get("State") or {}).get("Name"),
@@ -389,7 +422,9 @@ def discover_ec2_instances(client, region: str, account_id: str):
                                                   "security_groups": groups[:10],
                                                   "public_ip": inst.get("PublicIpAddress"),
                                                   "private_ip": inst.get("PrivateIpAddress"),
-                                                  "platform": inst.get("Platform")}))
+                                                  "platform": inst.get("Platform"),
+                                                  "http_endpoint": http_endpoint,
+                                                  "imds_v2_enforced": imds_v2}))
     except Exception as exc:
         warning = _warning_for("ec2", exc)
     return resources, warning
@@ -406,10 +441,24 @@ def discover_load_balancers(client, region: str, account_id: str):
             azs = lb.get("AvailabilityZones") or []
             subnets = [z.get("SubnetId") for z in azs if isinstance(z, dict) and z.get("SubnetId")]
             groups = lb.get("SecurityGroups") or []
+            # E2 evidence: listeners (bounded read-only call; failure recorded).
+            listeners: list[dict] = []
+            listener_error = None
+            if arn:
+                try:
+                    for listener in _paginate(client, "describe_listeners", "Listeners", limit=20, LoadBalancerArn=arn):
+                        listeners.append({"protocol": str(listener.get("Protocol") or "")[:16],
+                                          "port": listener.get("Port")})
+                except Exception as exc:
+                    listener_error = sanitize_aws_error(exc, "listener configuration unavailable")[:150]
+            extra_lb: dict[str, Any] = {"vpc_id": lb.get("VpcId"), "scheme": lb.get("Scheme"),
+                                        "subnets": subnets[:10], "security_groups": groups[:10],
+                                        "state": (lb.get("State") or {}).get("Code"),
+                                        "listeners": listeners}
+            if listener_error:
+                extra_lb["listener_error"] = listener_error
             resources.append(_resource("elbv2", rtype, arn or str(name or ""), region, account_id, arn=arn,
-                                       name=name, extra={"vpc_id": lb.get("VpcId"), "scheme": lb.get("Scheme"),
-                                                         "subnets": subnets[:10], "security_groups": groups[:10],
-                                                         "state": (lb.get("State") or {}).get("Code")}))
+                                       name=name, extra=extra_lb))
     except Exception as exc:
         warning = _warning_for("elbv2", exc)
     return resources, warning
@@ -428,7 +477,10 @@ def discover_rds_instances(client, region: str, account_id: str):
                                        extra={"engine": db.get("Engine"), "engine_version": db.get("EngineVersion"),
                                               "vpc_id": (db.get("DBSubnetGroup") or {}).get("VpcId"),
                                               "security_groups": groups[:10], "status": db.get("DBInstanceStatus"),
-                                              "multi_az": db.get("MultiAZ")}))
+                                              "multi_az": db.get("MultiAZ"),
+                                              # E2 evidence: same DescribeDBInstances response, no new call.
+                                              "publicly_accessible": db.get("PubliclyAccessible"),
+                                              "storage_encrypted": db.get("StorageEncrypted")}))
     except Exception as exc:
         warning = _warning_for("rds", exc)
     return resources, warning
@@ -443,12 +495,25 @@ def discover_lambda_functions(client, region: str, account_id: str):
             if not name:
                 continue
             vpc = fn.get("VpcConfig") or {}
+            # E2 evidence: function URLs + auth type (bounded read-only call).
+            urls: list[dict] = []
+            url_error = None
+            try:
+                for url in _paginate(client, "list_function_url_configs", "FunctionUrls", limit=5, FunctionName=name):
+                    urls.append({"url": str(url.get("FunctionUrl") or "")[:500],
+                                 "auth": str(url.get("AuthType") or "")[:16]})
+            except Exception as exc:
+                url_error = sanitize_aws_error(exc, "function URL configuration unavailable")[:150]
+            extra_fn: dict[str, Any] = {"runtime": fn.get("Runtime"),
+                                        "vpc_id": vpc.get("VpcId"),
+                                        "subnets": (vpc.get("SubnetIds") or [])[:10],
+                                        "security_groups": (vpc.get("SecurityGroupIds") or [])[:10],
+                                        "last_modified": str(fn.get("LastModified") or "")[:32],
+                                        "function_urls": urls}
+            if url_error:
+                extra_fn["url_error"] = url_error
             resources.append(_resource("lambda", "aws_lambda_function", arn or name, region, account_id, arn=arn,
-                                       name=name, extra={"runtime": fn.get("Runtime"),
-                                                         "vpc_id": vpc.get("VpcId"),
-                                                         "subnets": (vpc.get("SubnetIds") or [])[:10],
-                                                         "security_groups": (vpc.get("SecurityGroupIds") or [])[:10],
-                                                         "last_modified": str(fn.get("LastModified") or "")[:32]}))
+                                       name=name, extra=extra_fn))
     except Exception as exc:
         warning = _warning_for("lambda", exc)
     return resources, warning
@@ -544,8 +609,26 @@ def discover_s3_buckets(client, account_id: str):
                     region = "eu-west-1"
             except Exception:
                 region = "unknown"
-            resources.append(_resource("s3", "aws_s3_bucket", name, region, account_id,
-                                       name=name, extra={"created": str(bucket.get("CreationDate") or "")[:32]}))
+            # E2 evidence: public-access-block + default encryption (bounded,
+            # per-bucket read-only calls; failures recorded, never fatal).
+            extra: dict[str, Any] = {"created": str(bucket.get("CreationDate") or "")[:32]}
+            try:
+                pab = call_with_retry(lambda: client.get_public_access_block(Bucket=name), sleep=lambda _: None) or {}
+                config = pab.get("PublicAccessBlockConfiguration") or {}
+                for flag in ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets"):
+                    extra["pab_" + flag.lower()] = config.get(flag)
+            except Exception as exc:
+                extra["pab_error"] = sanitize_aws_error(exc, "public access block unavailable")[:150]
+                extra["pab_error_code"] = _error_code(exc)
+            try:
+                enc = call_with_retry(lambda: client.get_bucket_encryption(Bucket=name), sleep=lambda _: None) or {}
+                rules = enc.get("ServerSideEncryptionConfiguration", {}).get("Rules", []) or []
+                first = rules[0].get("ApplyServerSideEncryptionByDefault", {}) if rules and isinstance(rules[0], dict) else {}
+                extra["encryption"] = str(first.get("SSEAlgorithm") or "")[:32] or None
+            except Exception as exc:
+                extra["encryption_error"] = sanitize_aws_error(exc, "encryption configuration unavailable")[:150]
+                extra["encryption_error_code"] = _error_code(exc)
+            resources.append(_resource("s3", "aws_s3_bucket", name, region, account_id, name=name, extra=extra))
     except Exception as exc:
         warning = _warning_for("s3", exc)
     return resources, warning

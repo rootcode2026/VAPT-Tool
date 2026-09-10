@@ -17,17 +17,19 @@ class Finding(Base):
         default=lambda: str(uuid.uuid4()),
     )
 
-    scan_id: Mapped[str] = mapped_column(
+    # E2: nullable so asset-linked cloud findings (no scan/target context)
+    # persist through the existing table. Scan-driven findings always set both.
+    scan_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("scans.id"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 
-    target_id: Mapped[str] = mapped_column(
+    target_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("targets.id"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 

@@ -9,7 +9,8 @@ import EmptyState from "@/components/ui/EmptyState";
 import SeverityBadge from "@/components/ui/SeverityBadge";
 import { useProjectContext } from "@/lib/project-context";
 import { getCloudSecuritySummary, listCloudChecks } from "@/lib/api/codeSecurity";
-import { listCloudConnections, createCloudConnection, validateCloudConnection, discoverCloudResources, listCloudDiscoveries } from "@/lib/api/connectors";
+import { listCloudConnections, createCloudConnection, validateCloudConnection, discoverCloudResources, listCloudDiscoveries, listCloudCheckCatalog, runCloudSecurityChecks, listCloudCheckRuns } from "@/lib/api/connectors";
+import Link from "next/link";
 
 function Stat({ label, value, hint }) {
   return (
@@ -28,6 +29,9 @@ export default function CloudSecurityPage() {
   const [conns, setConns] = useState([]);
   const [newConn, setNewConn] = useState({ provider: "aws", account_id: "", credential: "", role_arn: "", external_id: "", name: "" });
   const [discoveries, setDiscoveries] = useState([]);
+  const [catalog, setCatalog] = useState({ checks: [], count: 0 });
+  const [checkRuns, setCheckRuns] = useState([]);
+  const [checkMsg, setCheckMsg] = useState("");
   const [connMsg, setConnMsg] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -37,16 +41,20 @@ export default function CloudSecurityPage() {
     setLoading(true);
     setError("");
     try {
-      const [s, c, cc, dd] = await Promise.all([
+      const [s, c, cc, dd, cat, cr] = await Promise.all([
         getCloudSecuritySummary(selectedProjectId),
         listCloudChecks(selectedProjectId).catch(() => ({ checks: [] })),
         listCloudConnections(selectedProjectId).catch(() => ({ connections: [] })),
         listCloudDiscoveries(selectedProjectId, { limit: 10 }).catch(() => ({ discoveries: [] })),
+        listCloudCheckCatalog(selectedProjectId).catch(() => ({ checks: [], count: 0 })),
+        listCloudCheckRuns(selectedProjectId, { limit: 5 }).catch(() => ({ runs: [] })),
       ]);
       setSummary(s);
       setChecks(c.checks || c || []);
       setConns(cc.connections || []);
       setDiscoveries(dd.discoveries || []);
+      setCatalog(cat);
+      setCheckRuns(cr.runs || []);
     } catch (e) {
       setError(e.message || "Unable to load cloud security.");
     } finally {
@@ -129,6 +137,29 @@ export default function CloudSecurityPage() {
         <div className="mt-2 grid gap-2 sm:grid-cols-2">
           <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Exposed resources</p><p className="text-sm font-medium">{summary?.exposure?.exposed_resources ?? 0}</p></div>
           <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Relationships</p><p className="text-sm font-medium">{summary?.relationships ?? 0}</p></div>
+        </div>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">AWS Security Checks (E2)</h3>
+        <p className="text-xs text-muted">{catalog.count || 0} deterministic checks against persisted discovery evidence. Missing evidence yields NOT_ASSESSED — never PASS. Findings appear on the findings page.</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button type="button" onClick={async () => { setCheckMsg(""); try { const r = await runCloudSecurityChecks(selectedProjectId, {}); setCheckMsg(`Evaluated ${r.resources_evaluated} resources: ${r.failed} failed, ${r.passed} passed, ${r.not_assessed} not assessed, ${r.findings_created} findings`); load(); } catch (e) { setCheckMsg(e.message);} }} className="rounded bg-primary px-3 py-1 text-sm font-medium text-primary-foreground">Run checks</button>
+          <Link href="/findings" className="rounded border px-3 py-1 text-sm">View findings</Link>
+        </div>
+        {checkMsg ? <p className="mt-2 text-xs text-muted">{checkMsg}</p> : null}
+        <div className="mt-2 space-y-2">
+          {checkRuns.length === 0 ? <p className="text-xs text-muted">No check runs yet.</p> : checkRuns.map((r) => (
+            <div key={r.id} className="rounded border bg-canvas px-3 py-2">
+              <p className="text-sm font-medium">{r.status} • {r.failed} failed • {r.passed} passed • {r.not_assessed} not assessed{r.errors ? ` • ${r.errors} errors` : ""}</p>
+              <p className="text-xs text-muted">{r.findings_created} findings • pack {r.check_pack_version || "?"}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 space-y-1">
+          {(catalog.checks || []).map((c) => (
+            <p key={c.check_id} className="text-xs text-muted"><span className="font-mono">{c.check_id}</span> • {c.title} <SeverityBadge severity={c.severity} /></p>
+          ))}
         </div>
       </div>
 

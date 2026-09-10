@@ -37,3 +37,15 @@ export function listCloudDiscoveries(projectId, query = {}) {
 export function getCloudDiscovery(projectId, id) {
   return api.get(`/api/v1/projects/${projectId}/cloud/cloud-discoveries/${id}`);
 }
+export function listCloudCheckCatalog(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/cloud/security-checks/catalog`);
+}
+export function runCloudSecurityChecks(projectId, payload = {}) {
+  return api.post(`/api/v1/projects/${projectId}/cloud/security-checks/run`, payload);
+}
+export function listCloudCheckRuns(projectId, query = {}) {
+  return api.get(`/api/v1/projects/${projectId}/cloud/security-checks/runs`, { query });
+}
+export function getCloudCheckRun(projectId, id) {
+  return api.get(`/api/v1/projects/${projectId}/cloud/security-checks/runs/${id}`);
+}

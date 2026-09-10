@@ -82,6 +82,9 @@ def _parse_dt(value: str | None, field: str):
 def _finding_org_project(finding_id: str, db: Session, current_user: User):
     finding, scan, target, project, asset = _require_finding_access(finding_id, db, current_user)
     project_id = target.project_id if target else (asset.project_id if asset else None)
+    # E2: asset-linked findings may have no scan/target; resolve project directly.
+    if project is None and project_id:
+        project = db.query(Project).filter(Project.id == project_id).first()
     if not project_id or not project:
         raise HTTPException(status_code=404, detail="Finding not found")
     return finding, project_id, project.organization_id

@@ -289,6 +289,114 @@ def test_e1_relationships_evidence_backed_taxonomy():
     assert all(v in values or "cloud_account" in v for v, _, _ in kinds)
 
 
+def test_e2_evidence_ec2_metadata_options():
+    from app.aws_discovery import discover_ec2_instances
+    client = FakeClient(ops=_pages({
+        "describe_instances": {"Reservations": [{"Instances": [
+            {"InstanceId": "i-1", "MetadataOptions": {"HttpTokens": "optional", "HttpEndpoint": "enabled"}},
+            {"InstanceId": "i-2", "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled"}},
+            {"InstanceId": "i-3"},
+        ]}]},
+    }))
+    resources, warning = discover_ec2_instances(client, "us-east-1", "123456789012")
+    assert warning is None
+    by_id = {r["resource_id"]: r["extra"] for r in resources}
+    assert by_id["i-1"]["imds_v2_enforced"] is False
+    assert by_id["i-2"]["imds_v2_enforced"] is True
+    assert by_id["i-3"]["imds_v2_enforced"] is None
+
+
+def test_e2_evidence_rds_public_encrypted():
+    from app.aws_discovery import discover_rds_instances
+    client = FakeClient(ops=_pages({
+        "describe_db_instances": {"DBInstances": [
+            {"DBInstanceIdentifier": "db-1", "PubliclyAccessible": True, "StorageEncrypted": False}]},
+    }))
+    resources, warning = discover_rds_instances(client, "us-east-1", "123456789012")
+    assert warning is None
+    assert resources[0]["extra"]["publicly_accessible"] is True
+    assert resources[0]["extra"]["storage_encrypted"] is False
+
+
+def test_e2_evidence_s3_pab_and_encryption():
+    from app.aws_discovery import discover_s3_buckets
+    client = FakeClient(
+        ops={"list_buckets": {"Buckets": [{"Name": "b1"}]},
+             "get_bucket_location": {"LocationConstraint": "us-east-1"},
+             "get_public_access_block": {"PublicAccessBlockConfiguration": {
+                 "BlockPublicAcls": True, "IgnorePublicAcls": False,
+                 "BlockPublicPolicy": True, "RestrictPublicBuckets": True}},
+             "get_bucket_encryption": {"ServerSideEncryptionConfiguration": {
+                 "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}}},
+    )
+    resources, warning = discover_s3_buckets(client, "123456789012")
+    assert warning is None
+    assert resources[0]["extra"]["pab_ignorepublicacls"] is False
+    assert resources[0]["extra"]["encryption"] == "AES256"
+
+
+def test_e2_evidence_s3_denied_is_error_not_absence():
+    from app.aws_discovery import discover_s3_buckets
+    denied = FakeError("AccessDenied")
+
+    class DenyClient(FakeClient):
+        def __getattr__(self, name):
+            if name.startswith("_"):
+                raise AttributeError(name)
+
+            def _op(**kwargs):
+                if name in ("get_public_access_block", "get_bucket_encryption"):
+                    raise denied
+                return FakeClient.__getattr__(self, name)(**kwargs)
+
+            return _op
+
+    client = DenyClient(ops={"list_buckets": {"Buckets": [{"Name": "b1"}]},
+                             "get_bucket_location": {"LocationConstraint": "us-east-1"}})
+    resources, warning = discover_s3_buckets(client, "123456789012")
+    assert warning is None  # bucket listed; per-bucket gaps are error fields
+    assert "pab_error" in resources[0]["extra"]
+    assert "encryption" not in resources[0]["extra"]
+
+
+def test_e2_evidence_elb_listeners_and_lambda_urls():
+    from app.aws_discovery import discover_load_balancers, discover_lambda_functions
+    lb = FakeClient(ops=_pages({
+        "describe_load_balancers": {"LoadBalancers": [
+            {"LoadBalancerArn": "arn:lb", "LoadBalancerName": "web", "Type": "application",
+             "Scheme": "internet-facing", "VpcId": "vpc-1"}]},
+        "describe_listeners": {"Listeners": [{"Protocol": "HTTP", "Port": 80}]},
+    }))
+    resources, warning = discover_load_balancers(lb, "us-east-1", "123456789012")
+    assert warning is None
+    assert resources[0]["extra"]["listeners"] == [{"protocol": "HTTP", "port": 80}]
+    fn = FakeClient(ops=_pages({
+        "list_functions": {"Functions": [{"FunctionName": "f1", "FunctionArn": "arn:fn"}]},
+        "list_function_url_configs": {"FunctionUrls": [
+            {"FunctionUrl": "https://x.lambda-url.us-east-1.on.aws/", "AuthType": "NONE"}]},
+    }))
+    resources, warning = discover_lambda_functions(fn, "us-east-1", "123456789012")
+    assert warning is None
+    assert resources[0]["extra"]["function_urls"] == [
+        {"url": "https://x.lambda-url.us-east-1.on.aws/", "auth": "NONE"}]
+
+
+def test_e2_evidence_survives_persistence_sanitizer():
+    # E2 evidence keys must survive worker/app/persistence.py sanitize_metadata
+    # (which drops secret-fragment keys like *token*).
+    from app.persistence import sanitize_metadata
+    meta = sanitize_metadata({"imds_v2_enforced": False, "http_endpoint": "enabled",
+                              "publicly_accessible": True, "storage_encrypted": False,
+                              "pab_blockpublicacls": False, "encryption": None,
+                              "listeners": [{"protocol": "HTTP", "port": 80}],
+                              "function_urls": [{"url": "https://x/", "auth": "NONE"}],
+                              "password": "shh"})
+    assert meta["imds_v2_enforced"] is False
+    assert meta["listeners"] == [{"protocol": "HTTP", "port": 80}]
+    assert meta["function_urls"] == [{"url": "https://x/", "auth": "NONE"}]
+    assert "password" not in meta
+
+
 def test_e1_ecs_service_needs_cluster_evidence():
     svc = {"service": "ecs", "resource_type": "aws_ecs_service", "resource_id": "arn:aws:ecs:r:a:service/c/s",
            "arn": "arn:aws:ecs:r:a:service/c/s", "region": "r", "account_id": "a",
