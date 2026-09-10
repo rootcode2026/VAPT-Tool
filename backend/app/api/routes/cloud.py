@@ -70,7 +70,7 @@ def list_cloud_accounts(
                 "id": a.id,
                 "value": a.value,
                 "asset_type": a.asset_type,
-                "metadata": a.asset_metadata if hasattr(a, "asset_metadata") else a.metadata if hasattr(a, "metadata") else {},
+                "metadata": a.extra_data if isinstance(a.extra_data, dict) else {},
                 "project_id": a.project_id,
             }
             for a in assets
@@ -107,7 +107,7 @@ def list_cloud_assets(
                 "id": a.id,
                 "value": a.value,
                 "asset_type": a.asset_type,
-                "metadata": getattr(a, "asset_metadata", getattr(a, "metadata", {})),
+                "metadata": a.extra_data if isinstance(a.extra_data, dict) else {},
                 "project_id": a.project_id,
             }
             for a in assets
@@ -132,7 +132,7 @@ def get_cloud_asset(
         "id": asset.id,
         "value": asset.value,
         "asset_type": asset.asset_type,
-        "metadata": getattr(asset, "asset_metadata", getattr(asset, "metadata", {})),
+        "metadata": asset.extra_data if isinstance(asset.extra_data, dict) else {},
         "project_id": asset.project_id,
     }
 

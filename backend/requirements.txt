@@ -16,3 +16,4 @@ reportlab
 python-multipart
 pyotp
 qrcode[pil]
+boto3>=1.34,<2

@@ -24,7 +24,7 @@ celery_app.conf.update(
     # The beat schedule references the monitoring tick by name, but nothing
     # imports app.monitoring_scheduler at worker startup (tasks.py imports it
     # lazily), so without this the worker rejects each tick as unregistered.
-    include=["app.monitoring_scheduler", "app.notifications"],
+    include=["app.monitoring_scheduler", "app.notifications", "app.cloud_discovery"],
     beat_schedule={
         "monitoring-tick": {
             "task": "app.monitoring_scheduler.monitoring_tick",
