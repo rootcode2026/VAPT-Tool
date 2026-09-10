@@ -3,8 +3,8 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, aliased
 
 from app.api.deps import (
     _effective_project_role,
@@ -70,7 +70,8 @@ def _ensure_finding_workflow_columns(db: Session) -> None:
 
 
 def _finding_context(finding: Finding, db: Session):
-    scan = db.query(Scan).filter(Scan.id == finding.scan_id).first()
+    # E2: asset-linked findings may carry NULL scan/target; skip those lookups.
+    scan = db.query(Scan).filter(Scan.id == finding.scan_id).first() if finding.scan_id else None
     target = db.query(Target).filter(Target.id == scan.target_id).first() if scan else None
     project = db.query(Project).filter(Project.id == target.project_id).first() if target else None
     asset = None
@@ -304,19 +305,28 @@ def get_findings(
     query = db.query(Finding)
 
     selected_project = (project_id or project or "").strip() or None
+    # E2: asset-linked findings may carry NULL scan/target (cloud findings).
+    # Outer joins + asset-side scoping keep them visible without changing
+    # scan-linked behavior (to-one joins never duplicate rows).
+    AssetProject = aliased(Project)
     if selected_project:
         require_project_access(selected_project, db, current_user)
-        query = query.join(Scan, Scan.id == Finding.scan_id).join(
+        query = query.outerjoin(Scan, Scan.id == Finding.scan_id).outerjoin(
             Target, Target.id == Scan.target_id
-        ).filter(Target.project_id == selected_project)
+        ).outerjoin(Asset, Asset.id == Finding.asset_id).filter(
+            or_(Target.project_id == selected_project, Asset.project_id == selected_project)
+        )
     else:
         if _is_super_admin(current_user):
             pass  # platform-wide
         else:
-            query = query.join(Scan, Scan.id == Finding.scan_id).join(
+            query = query.outerjoin(Scan, Scan.id == Finding.scan_id).outerjoin(
                 Target, Target.id == Scan.target_id
-            ).join(Project, Project.id == Target.project_id).filter(
-                Project.organization_id == current_user.organization_id
+            ).outerjoin(Project, Project.id == Target.project_id).outerjoin(
+                Asset, Asset.id == Finding.asset_id
+            ).outerjoin(AssetProject, AssetProject.id == Asset.project_id).filter(
+                or_(Project.organization_id == current_user.organization_id,
+                    AssetProject.organization_id == current_user.organization_id)
             )
 
     if scan_id:

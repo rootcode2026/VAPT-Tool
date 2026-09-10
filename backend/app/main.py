@@ -35,6 +35,7 @@ from app.api.routes.findings import router as findings_router
 from app.api.routes.ingestions import router as ingestions_router
 from app.api.routes.notifications import router as notifications_router
 from app.api.routes.project_audit import router as project_audit_router
+from app.api.routes.cloud_checks import router as cloud_checks_router
 from app.api.routes.organization_members import router as organization_members_router
 from app.api.routes.project_members import router as project_members_router
 from app.api.routes.projects import router as projects_router
@@ -108,6 +109,7 @@ app.include_router(attack_surface_router, dependencies=protected)
 app.include_router(alerts_router, dependencies=protected)
 app.include_router(notifications_router, dependencies=protected)
 app.include_router(project_audit_router, dependencies=protected)
+app.include_router(cloud_checks_router, dependencies=protected)
 app.include_router(project_dashboard_router, dependencies=protected)
 app.include_router(project_compliance_router, dependencies=protected)
 app.include_router(scanners_router, dependencies=protected)

@@ -11,8 +11,6 @@ from sqlalchemy.orm import Session
 from app.models.asset import Asset
 from app.models.asset_relationship import AssetRelationship
 from app.models.finding import Finding
-from app.models.scan import Scan
-from app.models.target import Target
 
 # provider-neutral checks — extended from worker/app/cloud/checks.py but safe
 PROVIDER_CHECKS = [
@@ -39,12 +37,11 @@ def get_cloud_summary(project_id: str, db: Session) -> dict:
         cnt = db.query(func.count(Asset.id)).filter(Asset.project_id == project_id, Asset.asset_type.in_(["cloud_account", "cloud_resource"]), Asset.value.like(f"%:{provider}:%")).scalar() or 0
         provider_counts[provider] = cnt
 
-    # findings: cloud scanner
+    # findings: cloud scanner (asset-scoped so scanless E2 findings count).
     cloud_findings_q = (
         db.query(Finding)
-        .join(Scan, Scan.id == Finding.scan_id)
-        .join(Target, Target.id == Scan.target_id)
-        .filter(Target.project_id == project_id, Finding.scanner == "cloud")
+        .join(Asset, Asset.id == Finding.asset_id)
+        .filter(Asset.project_id == project_id, Finding.scanner == "cloud")
     )
     total_findings = cloud_findings_q.count() or 0
     sev = {}
@@ -121,9 +118,8 @@ def list_cloud_resources(project_id: str, db: Session, provider: str | None = No
 def list_cloud_findings(project_id: str, db: Session, page: int = 1, page_size: int = 50, severity: str | None = None) -> dict:
     q = (
         db.query(Finding)
-        .join(Scan, Scan.id == Finding.scan_id)
-        .join(Target, Target.id == Scan.target_id)
-        .filter(Target.project_id == project_id, Finding.scanner == "cloud")
+        .join(Asset, Asset.id == Finding.asset_id)
+        .filter(Asset.project_id == project_id, Finding.scanner == "cloud")
     )
     if severity:
         q = q.filter(Finding.severity == severity.strip().lower())
