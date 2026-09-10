@@ -45,7 +45,7 @@ def _setup():
             """))
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS cloud_connections (
-                    id TEXT PRIMARY KEY, project_id TEXT, provider TEXT, account_id TEXT, credential_reference TEXT, credential_type TEXT, regions TEXT, status TEXT, last_validation_at DATETIME, last_discovery_at DATETIME, created_at DATETIME, updated_at DATETIME
+                    id TEXT PRIMARY KEY, project_id TEXT, provider TEXT, account_id TEXT, credential_reference TEXT, credential_type TEXT, regions TEXT, status TEXT, last_validation_at DATETIME, last_discovery_at DATETIME, created_at DATETIME, updated_at DATETIME, name TEXT, role_arn TEXT, external_id TEXT
                 )
             """))
             conn.execute(text("""

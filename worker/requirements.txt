@@ -6,3 +6,4 @@ SQLAlchemy
 psycopg2-binary
 requests
 pytest
+boto3>=1.34,<2

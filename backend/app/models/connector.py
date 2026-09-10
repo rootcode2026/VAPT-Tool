@@ -46,6 +46,11 @@ class CloudConnection(Base):
     last_discovery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=datetime.utcnow)
+    # E1 AWS cross-account role assumption. ARNs/account IDs are identifiers,
+    # not secrets; temporary credentials are never persisted.
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    role_arn: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
 
 class WebhookDelivery(Base):

@@ -25,3 +25,15 @@ export function validateCloudConnection(projectId, id) {
 export function discoverCloudResources(projectId, id) {
   return api.post(`/api/v1/projects/${projectId}/cloud/connections/${id}/discover`);
 }
+export function getCloudConnection(projectId, id) {
+  return api.get(`/api/v1/projects/${projectId}/cloud/connections/${id}`);
+}
+export function updateCloudConnection(projectId, id, payload) {
+  return api.patch(`/api/v1/projects/${projectId}/cloud/connections/${id}`, payload);
+}
+export function listCloudDiscoveries(projectId, query = {}) {
+  return api.get(`/api/v1/projects/${projectId}/cloud/cloud-discoveries`, { query });
+}
+export function getCloudDiscovery(projectId, id) {
+  return api.get(`/api/v1/projects/${projectId}/cloud/cloud-discoveries/${id}`);
+}
