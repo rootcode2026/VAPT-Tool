@@ -21,7 +21,7 @@ from app.models.scanner_fleet import (
     ScannerVersion,
     WorkerPool,
 )
-from app.services.audit import AuditService
+from app.services.audit import EVENT_SCANNER_CANARY_REQUESTED, AuditService
 from app.services.scanner_catalog import DOCUMENTED_STABLE_VERSIONS, SCANNER_CATALOG
 
 # ---------------------------------------------------------------------------
@@ -1123,8 +1123,8 @@ def create_canary_rollout(
     try:
         AuditService.record(
             db,
-            event_type="SCANNER_CANARY_REQUESTED",
-            action="SCANNER_CANARY_REQUESTED",
+            event_type=EVENT_SCANNER_CANARY_REQUESTED,
+            action=EVENT_SCANNER_CANARY_REQUESTED,
             result="SUCCESS",
             actor_user_id=getattr(actor, "id", None),
             resource_type="scanner",

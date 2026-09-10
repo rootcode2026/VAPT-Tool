@@ -112,7 +112,7 @@ def create_compliance_report(payload: dict, db: Session = Depends(get_db), curre
     import uuid
     from datetime import datetime, timezone
     from app.models.report import Report
-    from app.services.audit import AuditService
+    from app.services.audit import EVENT_COMPLIANCE_REPORT_GENERATED, AuditService
     report = Report(id=str(uuid.uuid4()), organization_id=organization_id, project_id=project_id, report_type="compliance", title=f"Compliance Report — {fw.display_name}", status="completed", generated_by=current_user.id, parameters={"framework": framework, "version": fw.version}, version="1.0", data_as_of=datetime.now(timezone.utc))
     metrics = collect_metrics(db, organization_id, project_id, {})
     from app.services.compliance_service import get_control_coverage
@@ -124,7 +124,7 @@ def create_compliance_report(payload: dict, db: Session = Depends(get_db), curre
     db.add(report)
     db.commit()
     try:
-        AuditService.record(db, event_type="COMPLIANCE_REPORT_GENERATED", action="COMPLIANCE_REPORT_GENERATED", result="SUCCESS", actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"framework": framework})
+        AuditService.record(db, event_type=EVENT_COMPLIANCE_REPORT_GENERATED, action=EVENT_COMPLIANCE_REPORT_GENERATED, result="SUCCESS", actor_user_id=current_user.id, organization_id=organization_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"framework": framework})
         db.commit()
     except Exception:
         pass

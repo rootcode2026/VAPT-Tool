@@ -17,6 +17,10 @@ class AuditLog(Base):
         Index("ix_audit_logs_event_type", "event_type"),
         Index("ix_audit_logs_resource_type_resource_id", "resource_type", "resource_id"),
         Index("ix_audit_logs_created_at", "created_at"),
+        # D10: scoped chain-tip lookup + correlation search (query-driven).
+        Index("ix_audit_logs_org_created", "organization_id", "created_at"),
+        Index("ix_audit_logs_event_hash", "event_hash"),
+        Index("ix_audit_logs_correlation_id", "correlation_id"),
     )
 
     id: Mapped[str] = mapped_column(
@@ -63,6 +67,18 @@ class AuditLog(Base):
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     extra_data: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True, default=dict)
+
+    # D10 tamper-evidence: hash chain per organization scope (nullable so
+    # historical rows and best-effort failures remain readable).
+    prev_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    event_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
