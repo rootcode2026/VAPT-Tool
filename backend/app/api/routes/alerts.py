@@ -189,6 +189,24 @@ def list_alerts(
     total = q.count()
     total_pages = (total + page_size - 1) // page_size if total else 0
     rows = q.offset((page - 1) * page_size).limit(page_size).all()
+    # D9: lazy notification evaluation for the returned page only (bounded,
+    # idempotent; D3 alert semantics untouched).
+    try:
+        from app.models.project import Project as _Project
+        from app.services.notifications import evaluate_alert_notifications as _evaluate
+
+        _project = db.query(_Project).filter(_Project.id == project_id).first()
+        if _project is not None:
+            for _alert in rows:
+                try:
+                    _evaluate(db, _alert, _project, actor_user_id=current_user.id, project_name=_project.name)
+                except Exception:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
     return {"items": [_alert_payload(r) for r in rows], "total": total, "page": page, "page_size": page_size, "total_pages": total_pages}
 
 
@@ -200,7 +218,23 @@ def get_alert(
     current_user: User = Depends(get_current_user),
 ):
     require_project_access(project_id, db, current_user)
-    return _alert_payload(_get_alert_or_404(project_id, alert_id, db))
+    alert = _get_alert_or_404(project_id, alert_id, db)
+    try:
+        from app.models.project import Project as _Project
+        from app.services.notifications import evaluate_alert_notifications as _evaluate
+
+        _project = db.query(_Project).filter(_Project.id == project_id).first()
+        if _project is not None:
+            try:
+                _evaluate(db, alert, _project, actor_user_id=current_user.id, project_name=_project.name)
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return _alert_payload(alert)
 
 
 @router.post("/projects/{project_id}/alerts/{alert_id}/acknowledge", status_code=200)

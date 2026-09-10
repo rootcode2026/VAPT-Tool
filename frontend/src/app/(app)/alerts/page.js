@@ -12,7 +12,7 @@ export default function AlertsPage() {
     <div className="space-y-4">
       <PageHeader
         title="Alerts"
-        description="Operational signals from monitored changes. Acknowledge or resolve alerts; notification delivery lives in a later phase."
+        description="Operational signals from monitored changes. Acknowledge or resolve alerts; notification delivery is configured per project."
         actions={<ProjectSelect />}
       />
       <AlertsPanel projectId={selectedProjectId} />
