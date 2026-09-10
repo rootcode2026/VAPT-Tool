@@ -8,7 +8,16 @@ from app.api.deps import get_current_user, require_project_access, _is_super_adm
 from app.db.database import get_db
 from app.models.report import Report, REPORT_TYPES
 from app.models.user import User
-from app.services.audit import AuditService
+from app.services.audit import (
+    EVENT_REPORT_CANCELLED,
+    EVENT_REPORT_CREATED,
+    EVENT_REPORT_DOWNLOADED,
+    EVENT_REPORT_GENERATION_COMPLETED,
+    EVENT_REPORT_GENERATION_FAILED,
+    EVENT_REPORT_GENERATION_STARTED,
+    EVENT_REPORT_VIEWED,
+    AuditService,
+)
 from app.services.report_service import (
     GENERATOR_VERSION,
     REPORT_FORMAT_VERSION,
@@ -107,14 +116,14 @@ def create_report(payload: dict, db: Session = Depends(get_db), current_user: Us
     db.flush()
     # audit created
     try:
-        AuditService.record(db, event_type="REPORT_CREATED", action="REPORT_CREATED", result="SUCCESS", actor_user_id=current_user.id, organization_id=org_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"report_type": report_type, "title": title[:100]})
+        AuditService.record(db, event_type=EVENT_REPORT_CREATED, action=EVENT_REPORT_CREATED, result="SUCCESS", actor_user_id=current_user.id, organization_id=org_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"report_type": report_type, "title": title[:100]})
     except Exception:
         pass
     # Generate synchronously for demo (would be Celery in production)
     report.status = "running"
     db.commit()
     try:
-        AuditService.record(db, event_type="REPORT_GENERATION_STARTED", action="REPORT_GENERATION_STARTED", result="SUCCESS", actor_user_id=current_user.id, organization_id=org_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"report_type": report_type})
+        AuditService.record(db, event_type=EVENT_REPORT_GENERATION_STARTED, action=EVENT_REPORT_GENERATION_STARTED, result="SUCCESS", actor_user_id=current_user.id, organization_id=org_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"report_type": report_type})
     except Exception:
         pass
     try:
@@ -133,7 +142,7 @@ def create_report(payload: dict, db: Session = Depends(get_db), current_user: Us
         report.status = "completed"
         report.completed_at = datetime.now(timezone.utc)
         try:
-            AuditService.record(db, event_type="REPORT_GENERATION_COMPLETED", action="REPORT_GENERATION_COMPLETED", result="SUCCESS", actor_user_id=current_user.id, organization_id=org_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"report_type": report_type})
+            AuditService.record(db, event_type=EVENT_REPORT_GENERATION_COMPLETED, action=EVENT_REPORT_GENERATION_COMPLETED, result="SUCCESS", actor_user_id=current_user.id, organization_id=org_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"report_type": report_type})
         except Exception:
             pass
         db.commit()
@@ -142,7 +151,7 @@ def create_report(payload: dict, db: Session = Depends(get_db), current_user: Us
         report.error = str(e)[:500]
         report.completed_at = datetime.now(timezone.utc)
         try:
-            AuditService.record(db, event_type="REPORT_GENERATION_FAILED", action="REPORT_GENERATION_FAILED", result="FAILURE", actor_user_id=current_user.id, organization_id=org_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"error": str(e)[:200]})
+            AuditService.record(db, event_type=EVENT_REPORT_GENERATION_FAILED, action=EVENT_REPORT_GENERATION_FAILED, result="FAILURE", actor_user_id=current_user.id, organization_id=org_id, project_id=project_id, resource_type="report", resource_id=report.id, metadata={"error": str(e)[:200]})
         except Exception:
             pass
         db.commit()
@@ -195,7 +204,7 @@ def get_report(report_id: str, db: Session = Depends(get_db), current_user: User
                 raise HTTPException(status_code=404, detail="Report not found")
     # audit viewed
     try:
-        AuditService.record(db, event_type="REPORT_VIEWED", action="REPORT_VIEWED", result="SUCCESS", actor_user_id=current_user.id, organization_id=r.organization_id, project_id=r.project_id, resource_type="report", resource_id=r.id, metadata={"report_type": r.report_type})
+        AuditService.record(db, event_type=EVENT_REPORT_VIEWED, action=EVENT_REPORT_VIEWED, result="SUCCESS", actor_user_id=current_user.id, organization_id=r.organization_id, project_id=r.project_id, resource_type="report", resource_id=r.id, metadata={"report_type": r.report_type})
         db.commit()
     except Exception:
         try:
@@ -225,7 +234,7 @@ def cancel_report(report_id: str, db: Session = Depends(get_db), current_user: U
     r.status = "cancelled"
     r.completed_at = datetime.now(timezone.utc)
     try:
-        AuditService.record(db, event_type="REPORT_CANCELLED", action="REPORT_CANCELLED", result="SUCCESS", actor_user_id=current_user.id, organization_id=r.organization_id, project_id=r.project_id, resource_type="report", resource_id=r.id)
+        AuditService.record(db, event_type=EVENT_REPORT_CANCELLED, action=EVENT_REPORT_CANCELLED, result="SUCCESS", actor_user_id=current_user.id, organization_id=r.organization_id, project_id=r.project_id, resource_type="report", resource_id=r.id)
     except Exception:
         pass
     db.commit()
@@ -250,7 +259,7 @@ def download_report(report_id: str, fmt: str, db: Session = Depends(get_db), cur
         raise HTTPException(status_code=400, detail="Invalid format")
     # audit
     try:
-        AuditService.record(db, event_type="REPORT_DOWNLOADED", action="REPORT_DOWNLOADED", result="SUCCESS", actor_user_id=current_user.id, organization_id=r.organization_id, project_id=r.project_id, resource_type="report", resource_id=r.id, metadata={"format": fmt})
+        AuditService.record(db, event_type=EVENT_REPORT_DOWNLOADED, action=EVENT_REPORT_DOWNLOADED, result="SUCCESS", actor_user_id=current_user.id, organization_id=r.organization_id, project_id=r.project_id, resource_type="report", resource_id=r.id, metadata={"format": fmt})
         db.commit()
     except Exception:
         try:

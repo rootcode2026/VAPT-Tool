@@ -137,6 +137,7 @@ EVENT_SCANNER_UPGRADE_FAILED = "SCANNER_UPGRADE_FAILED"
 EVENT_SCANNER_DOWNGRADE_REQUESTED = "SCANNER_DOWNGRADE_REQUESTED"
 EVENT_SCANNER_ROLLBACK_REQUESTED = "SCANNER_ROLLBACK_REQUESTED"
 EVENT_SCANNER_ROLLBACK_COMPLETED = "SCANNER_ROLLBACK_COMPLETED"
+EVENT_SCANNER_CANARY_REQUESTED = "SCANNER_CANARY_REQUESTED"
 EVENT_SCANNER_CANARY_STARTED = "SCANNER_CANARY_STARTED"
 EVENT_SCANNER_CANARY_PASSED = "SCANNER_CANARY_PASSED"
 EVENT_SCANNER_CANARY_FAILED = "SCANNER_CANARY_FAILED"
@@ -190,6 +191,20 @@ EVENT_ONBOARDING_SKIPPED = "ONBOARDING_SKIPPED"
 EVENT_ONBOARDING_COMPLETED = "ONBOARDING_COMPLETED"
 EVENT_ONBOARDING_RESTARTED = "ONBOARDING_RESTARTED"
 
+# D6 reporting events (centralized with identical historical string values).
+EVENT_REPORT_CREATED = "REPORT_CREATED"
+EVENT_REPORT_GENERATION_STARTED = "REPORT_GENERATION_STARTED"
+EVENT_REPORT_GENERATION_COMPLETED = "REPORT_GENERATION_COMPLETED"
+EVENT_REPORT_GENERATION_FAILED = "REPORT_GENERATION_FAILED"
+EVENT_REPORT_VIEWED = "REPORT_VIEWED"
+EVENT_REPORT_CANCELLED = "REPORT_CANCELLED"
+EVENT_REPORT_DOWNLOADED = "REPORT_DOWNLOADED"
+EVENT_COMPLIANCE_REPORT_GENERATED = "COMPLIANCE_REPORT_GENERATED"
+
+# D10 enterprise audit access events.
+EVENT_AUDIT_EXPORTED = "AUDIT_EXPORTED"
+EVENT_AUDIT_INTEGRITY_VERIFIED = "AUDIT_INTEGRITY_VERIFIED"
+
 # Results
 RESULT_SUCCESS = "SUCCESS"
 RESULT_FAILURE = "FAILURE"
@@ -223,6 +238,7 @@ RESOURCE_SCANNER = "scanner"
 RESOURCE_SCANNER_ROLLOUT = "scanner_rollout"
 RESOURCE_AUTHENTICATION = "authentication"
 RESOURCE_SECURITY_CONFIG = "security_configuration"
+RESOURCE_AUDIT = "audit"
 
 # ---------------------------------------------------------------------------
 # Redaction and limits
@@ -408,6 +424,18 @@ class AuditService:
             extra_data=safe_metadata,
             created_at=datetime.now(timezone.utc),
         )
+        # D10 tamper-evidence: chain this record best-effort. A lookup failure
+        # leaves NULL hashes (unchained) rather than breaking the caller.
+        try:
+            prev = chain_tip_hash(db, audit.organization_id) or GENESIS_PREV_HASH
+            audit.prev_hash = prev
+            audit.event_hash = compute_event_hash(canonical_audit_payload(audit), prev)
+        except Exception:
+            try:
+                audit.prev_hash = None
+                audit.event_hash = None
+            except Exception:
+                pass
         # Attempt to persist audit in a savepoint so that a missing audit_logs
         # table in ephemeral SQLite test fixtures (which define their own Base
         # without audit_logs) does not abort the outer business transaction.
@@ -458,3 +486,176 @@ class AuditService:
             db.rollback()
             raise
         return audit
+
+
+# ---------------------------------------------------------------------------
+# D10 tamper-evidence: per-organization hash chain (DAG-tolerant)
+# ---------------------------------------------------------------------------
+# Each record stores event_hash = SHA256(canonical_event || prev_hash), where
+# prev_hash is the previous record's event_hash in the same organization scope
+# (or GENESIS_PREV_HASH for the first chained record). Concurrent writers may
+# share a parent (fork); verification therefore checks recomputation plus
+# prev-link existence rather than strict linear sequencing. Historical rows and
+# worker direct-SQL inserts carry NULL hashes: readable, counted as unchained,
+# never reported as tampered. Tamper-evident, not immutable: a DB superuser
+# could rewrite history, but any modification breaks recomputation or linkage
+# and is detected by verify_audit_chain.
+
+GENESIS_PREV_HASH = "GENESIS"
+PLATFORM_SCOPE = "__platform__"
+AUDIT_CHAIN_FIELDS = (
+    "scope", "id", "organization_id", "project_id", "actor_user_id",
+    "target_user_id", "action", "event_type", "resource_type", "resource_id",
+    "result", "request_id", "correlation_id", "ip_address", "user_agent",
+    "created_at", "metadata",
+)
+
+
+def audit_scope_key(organization_id: str | None) -> str:
+    return str(organization_id) if organization_id else PLATFORM_SCOPE
+
+
+def canonical_audit_payload(audit) -> dict:
+    """Deterministic payload for hashing (fixed fields, canonical metadata)."""
+    if isinstance(audit, dict):
+        get = audit.get
+        meta = audit.get("metadata", audit.get("extra_data"))
+    else:
+        get = lambda k, d=None: getattr(audit, k, d)  # noqa: E731
+        meta = getattr(audit, "extra_data", None)
+    created = get("created_at")
+    try:
+        if hasattr(created, "isoformat"):
+            created_iso = created.isoformat()
+            # SQLite drops tzinfo on round-trip; stored instants are UTC.
+            if getattr(created, "tzinfo", None) is None:
+                created_iso += "+00:00"
+        else:
+            created_iso = str(created)
+    except Exception:
+        created_iso = str(created)
+    if isinstance(meta, dict):
+        try:
+            import json as _json
+
+            meta = _json.loads(_json.dumps(meta, sort_keys=True, ensure_ascii=False))
+        except Exception:
+            meta = {"unserializable": True}
+    elif meta is not None:
+        meta = {"value": str(meta)[:500]}
+    payload = {
+        "scope": audit_scope_key(get("organization_id")),
+        "id": get("id"),
+        "organization_id": get("organization_id"),
+        "project_id": get("project_id"),
+        "actor_user_id": get("actor_user_id"),
+        "target_user_id": get("target_user_id"),
+        "action": get("action"),
+        "event_type": get("event_type"),
+        "resource_type": get("resource_type"),
+        "resource_id": get("resource_id"),
+        "result": get("result"),
+        "request_id": get("request_id"),
+        "correlation_id": get("correlation_id"),
+        "ip_address": get("ip_address"),
+        "user_agent": get("user_agent"),
+        "created_at": created_iso,
+        "metadata": meta,
+    }
+    return {k: payload.get(k) for k in AUDIT_CHAIN_FIELDS}
+
+
+def compute_event_hash(canonical: dict, prev_hash: str) -> str:
+    import hashlib
+    import json as _json
+
+    serialized = _json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(f"{serialized}|{prev_hash}".encode("utf-8")).hexdigest()
+
+
+def chain_tip_hash(db: Session, organization_id: str | None) -> str | None:
+    """Newest event_hash in scope (indexed). None when scope has no chained rows."""
+    try:
+        q = db.query(AuditLog.event_hash).filter(AuditLog.event_hash.is_not(None))
+        if organization_id:
+            q = q.filter(AuditLog.organization_id == organization_id)
+        else:
+            q = q.filter(AuditLog.organization_id.is_(None))
+        row = q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).first()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def hash_exists_in_scope(db: Session, organization_id: str | None, event_hash: str) -> bool:
+    try:
+        q = db.query(AuditLog.id).filter(AuditLog.event_hash == event_hash)
+        if organization_id:
+            q = q.filter(AuditLog.organization_id == organization_id)
+        else:
+            q = q.filter(AuditLog.organization_id.is_(None))
+        return q.first() is not None
+    except Exception:
+        return False
+
+
+def verify_record_integrity(db: Session, audit) -> str:
+    """Single-record status: verified | mismatch | broken_link | unchained."""
+    stored = getattr(audit, "event_hash", None)
+    prev = getattr(audit, "prev_hash", None)
+    if not stored or not prev:
+        return "unchained"
+    try:
+        expected = compute_event_hash(canonical_audit_payload(audit), prev)
+    except Exception:
+        return "mismatch"
+    if expected != stored:
+        return "mismatch"
+    if prev != GENESIS_PREV_HASH and not hash_exists_in_scope(db, getattr(audit, "organization_id", None), prev):
+        return "broken_link"
+    return "verified"
+
+
+def verify_audit_chain(db: Session, organization_id: str | None, limit: int = 200) -> dict:
+    """Verify the newest `limit` chained rows in scope (bounded, oldest-first).
+
+    Returns counts plus failing IDs. Unchained rows (NULL hashes) are counted,
+    never failures. `truncated` is True when the scope holds more chained rows
+    than the window (continuity before the window is not asserted).
+    """
+    limit = max(1, min(int(limit or 200), 1000))
+    try:
+        q = db.query(AuditLog)
+        if organization_id:
+            q = q.filter(AuditLog.organization_id == organization_id)
+        else:
+            q = q.filter(AuditLog.organization_id.is_(None))
+        total_chained = q.filter(AuditLog.event_hash.is_not(None)).count()
+        rows = (
+            q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+            .limit(limit)
+            .all()
+        )
+    except Exception as exc:
+        return {"scope": audit_scope_key(organization_id), "checked": 0, "valid": False,
+                "failures": [], "unchained": 0, "truncated": False, "error": str(exc)[:200]}
+    failures: list[str] = []
+    unchained = 0
+    checked = 0
+    for audit in sorted(rows, key=lambda r: (r.created_at, r.id)):
+        status = verify_record_integrity(db, audit)
+        if status == "unchained":
+            unchained += 1
+            continue
+        checked += 1
+        if status != "verified":
+            failures.append(audit.id)
+    return {
+        "scope": audit_scope_key(organization_id),
+        "checked": checked,
+        "valid": not failures,
+        "failures": failures[:50],
+        "failure_count": len(failures),
+        "unchained": unchained,
+        "truncated": total_chained > len(rows),
+    }
