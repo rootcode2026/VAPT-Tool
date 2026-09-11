@@ -27,3 +27,15 @@ export function listCloudFindings(projectId, params = {}) {
 export function listCloudChecks(projectId, params = {}) {
   return api.get(`/api/v1/projects/${projectId}/cloud-security/checks`, { query: params });
 }
+export function getNetworkSummary(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/cloud-security/network`);
+}
+export function getStorageSummary(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/cloud-security/storage`);
+}
+export function getGcpSummary(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/cloud-security/gcp`);
+}
+export function getAzureSummary(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/cloud-security/azure`);
+}

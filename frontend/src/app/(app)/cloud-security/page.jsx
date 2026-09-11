@@ -8,7 +8,9 @@ import ErrorState from "@/components/ui/ErrorState";
 import EmptyState from "@/components/ui/EmptyState";
 import SeverityBadge from "@/components/ui/SeverityBadge";
 import { useProjectContext } from "@/lib/project-context";
-import { getCloudSecuritySummary, listCloudChecks } from "@/lib/api/codeSecurity";
+import { getAzureSummary, getCloudSecuritySummary, getGcpSummary, getNetworkSummary, getStorageSummary, listCloudChecks } from "@/lib/api/codeSecurity";
+import { getCspmSummary } from "@/lib/api/cspm";
+import { listCloudAttackPaths, getCloudAttackPath } from "@/lib/api/cloudAttackPaths";
 import { listCloudConnections, createCloudConnection, validateCloudConnection, discoverCloudResources, listCloudDiscoveries, listCloudCheckCatalog, runCloudSecurityChecks, listCloudCheckRuns } from "@/lib/api/connectors";
 import Link from "next/link";
 
@@ -25,6 +27,11 @@ function Stat({ label, value, hint }) {
 export default function CloudSecurityPage() {
   const { selectedProjectId, selectedProject, status } = useProjectContext();
   const [summary, setSummary] = useState(null);
+  const [network, setNetwork] = useState(null);
+  const [storage, setStorage] = useState(null);
+  const [gcp, setGcp] = useState(null);
+  const [azure, setAzure] = useState(null);
+  const [cspm, setCspm] = useState(null);
   const [checks, setChecks] = useState([]);
   const [conns, setConns] = useState([]);
   const [newConn, setNewConn] = useState({ provider: "aws", account_id: "", credential: "", role_arn: "", external_id: "", name: "" });
@@ -33,6 +40,9 @@ export default function CloudSecurityPage() {
   const [checkRuns, setCheckRuns] = useState([]);
   const [checkMsg, setCheckMsg] = useState("");
   const [connMsg, setConnMsg] = useState("");
+  const [attackPaths, setAttackPaths] = useState([]);
+  const [selectedPath, setSelectedPath] = useState(null);
+  const [pathDetail, setPathDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -41,13 +51,19 @@ export default function CloudSecurityPage() {
     setLoading(true);
     setError("");
     try {
-      const [s, c, cc, dd, cat, cr] = await Promise.all([
+      const [s, c, cc, dd, cat, cr, net, stor, gcpSummary, azureSummary, cspmSummary, ap] = await Promise.all([
         getCloudSecuritySummary(selectedProjectId),
         listCloudChecks(selectedProjectId).catch(() => ({ checks: [] })),
         listCloudConnections(selectedProjectId).catch(() => ({ connections: [] })),
         listCloudDiscoveries(selectedProjectId, { limit: 10 }).catch(() => ({ discoveries: [] })),
         listCloudCheckCatalog(selectedProjectId).catch(() => ({ checks: [], count: 0 })),
         listCloudCheckRuns(selectedProjectId, { limit: 5 }).catch(() => ({ runs: [] })),
+        getNetworkSummary(selectedProjectId).catch(() => null),
+        getStorageSummary(selectedProjectId).catch(() => null),
+        getGcpSummary(selectedProjectId).catch(() => null),
+        getAzureSummary(selectedProjectId).catch(() => null),
+        getCspmSummary(selectedProjectId).catch(() => null),
+        listCloudAttackPaths(selectedProjectId, { limit: 20 }).catch(() => ({ paths: [] })),
       ]);
       setSummary(s);
       setChecks(c.checks || c || []);
@@ -55,6 +71,12 @@ export default function CloudSecurityPage() {
       setDiscoveries(dd.discoveries || []);
       setCatalog(cat);
       setCheckRuns(cr.runs || []);
+      setNetwork(net);
+      setStorage(stor);
+      setGcp(gcpSummary);
+      setAzure(azureSummary);
+      setCspm(cspmSummary);
+      setAttackPaths(ap?.paths || ap?.data?.paths || []);
     } catch (e) {
       setError(e.message || "Unable to load cloud security.");
     } finally {
@@ -138,6 +160,141 @@ export default function CloudSecurityPage() {
           <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Exposed resources</p><p className="text-sm font-medium">{summary?.exposure?.exposed_resources ?? 0}</p></div>
           <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Relationships</p><p className="text-sm font-medium">{summary?.relationships ?? 0}</p></div>
         </div>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">Network Security (E4)</h3>
+        <p className="text-xs text-muted">VPC • subnet • SG ingress/egress • NACL • ENI • public exposure. Deterministic, bounded, read-only.</p>
+        <div className="mt-2 grid gap-2 sm:grid-cols-3">
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">VPCs</p><p className="text-sm font-medium">{network?.counts?.aws_vpc ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Subnets</p><p className="text-sm font-medium">{network?.counts?.aws_subnet ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Security Groups</p><p className="text-sm font-medium">{network?.counts?.aws_security_group ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Internet Gateways</p><p className="text-sm font-medium">{network?.internet_gateways ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Exposed SGs (0.0.0.0/0)</p><p className="text-sm font-medium">{network?.exposed_security_groups ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Network Findings</p><p className="text-sm font-medium">{network?.network_findings ?? 0}</p></div>
+        </div>
+        <p className="mt-2 text-xs text-muted">Not assessed: {network?.not_assessed ?? 0} • Pack E4 adds EC2-002 + NET-001..010.</p>
+        <Link href="/findings" className="mt-2 inline-block text-xs text-primary underline">View network findings</Link>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">Storage Security (E5)</h3>
+        <p className="text-xs text-muted">S3 • EBS • EFS • RDS storage. Deterministic exposure & encryption posture, bounded, read-only.</p>
+        <div className="mt-2 grid gap-2 sm:grid-cols-3">
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">S3 Buckets</p><p className="text-sm font-medium">{storage?.counts?.aws_s3_bucket ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Public S3</p><p className="text-sm font-medium">{storage?.public_s3_buckets ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">EBS Volumes</p><p className="text-sm font-medium">{storage?.counts?.aws_ebs_volume ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Unencrypted EBS</p><p className="text-sm font-medium">{storage?.unencrypted_ebs_volumes ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Public Snapshots</p><p className="text-sm font-medium">{storage?.public_snapshots ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Storage Findings</p><p className="text-sm font-medium">{storage?.storage_findings ?? 0}</p></div>
+        </div>
+        <p className="mt-2 text-xs text-muted">Not assessed: {storage?.not_assessed ?? 0} • Pack E5 adds S3-003..008, EBS-001/002, EFS-001.</p>
+        <Link href="/findings" className="mt-2 inline-block text-xs text-primary underline">View storage findings</Link>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">GCP Security (E6)</h3>
+        <p className="text-xs text-muted">GCP project • compute • network • storage • IAM. Provider-neutral, deterministic, read-only.</p>
+        <div className="mt-2 grid gap-2 sm:grid-cols-3">
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">GCP Projects</p><p className="text-sm font-medium">{gcp?.counts?.gcp_project ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">VMs</p><p className="text-sm font-medium">{gcp?.counts?.gcp_compute_instance ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Firewalls</p><p className="text-sm font-medium">{gcp?.counts?.gcp_firewall ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Public Buckets</p><p className="text-sm font-medium">{gcp?.public_buckets ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Public Firewalls</p><p className="text-sm font-medium">{gcp?.public_firewalls ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">GCP Findings</p><p className="text-sm font-medium">{gcp?.gcp_findings ?? 0}</p></div>
+        </div>
+        <p className="mt-2 text-xs text-muted">Not assessed: {gcp?.not_assessed ?? 0} • E6 adds GCP-IAM-001..004, GCP-NET-001..005, GCP-GCS-001..004, GCP-COMPUTE-001/002.</p>
+        <Link href="/findings" className="mt-2 inline-block text-xs text-primary underline">View GCP findings</Link>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">Azure Security (E7)</h3>
+        <p className="text-xs text-muted">Azure subscription • resource groups • VMs • NSGs • storage • RBAC. Deterministic, bounded, read-only.</p>
+        <div className="mt-2 grid gap-2 sm:grid-cols-3">
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Subscriptions</p><p className="text-sm font-medium">{azure?.counts?.azure_subscription ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">VMs</p><p className="text-sm font-medium">{azure?.counts?.azure_vm ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">NSGs</p><p className="text-sm font-medium">{azure?.counts?.azure_nsg ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Public Storage</p><p className="text-sm font-medium">{azure?.public_storage_accounts ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Public NSGs</p><p className="text-sm font-medium">{azure?.public_nsgs ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Azure Findings</p><p className="text-sm font-medium">{azure?.azure_findings ?? 0}</p></div>
+        </div>
+        <p className="mt-2 text-xs text-muted">Not assessed: {azure?.not_assessed ?? 0} • E7 adds AZURE-IAM-001..003, AZURE-NET-001..007, AZURE-STORAGE-001..004, AZURE-COMPUTE-001/002.</p>
+        <Link href="/findings" className="mt-2 inline-block text-xs text-primary underline">View Azure findings</Link>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">CSPM Overview (E8)</h3>
+        <p className="text-xs text-muted">Unified posture across AWS • GCP • Azure — provider-neutral controls, deterministic PASS/FAIL/NOT_ASSESSED.</p>
+        <div className="mt-2 grid gap-2 sm:grid-cols-4">
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Score</p><p className="text-sm font-medium">{cspm?.score ?? 0} <span className="text-xs">({cspm?.grade ?? "-"})</span></p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Compliance</p><p className="text-sm font-medium">{cspm?.compliance_percent ?? 0}%</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Coverage</p><p className="text-sm font-medium">{cspm?.coverage_percent ?? 0}%</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Controls</p><p className="text-sm font-medium">{cspm?.controls?.total ?? 0} ({cspm?.controls?.passed ?? 0} pass, {cspm?.controls?.failed ?? 0} fail)</p></div>
+        </div>
+        <div className="mt-2 grid gap-2 sm:grid-cols-3">
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">AWS</p><p className="text-xs">{cspm?.providers?.aws?.passed ?? 0} pass, {cspm?.providers?.aws?.failed ?? 0} fail</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">GCP</p><p className="text-xs">{cspm?.providers?.gcp?.passed ?? 0} pass, {cspm?.providers?.gcp?.failed ?? 0} fail</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Azure</p><p className="text-xs">{cspm?.providers?.azure?.passed ?? 0} pass, {cspm?.providers?.azure?.failed ?? 0} fail</p></div>
+        </div>
+        <p className="mt-2 text-xs text-muted">Top failures: {(cspm?.top_failures || []).slice(0,3).map(f => f.control_id).join(", ") || "none"}</p>
+        <Link href="/findings" className="mt-2 inline-block text-xs text-primary underline">View findings</Link>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">Cloud Attack Paths (E9)</h3>
+        <p className="text-xs text-muted">Evidence-backed exposure paths: EXPOSURE + IDENTITY + NETWORK + RESOURCE + FINDING. Potential paths, not confirmed exploitation.</p>
+        {attackPaths.length === 0 ? <p className="mt-2 text-xs text-muted">No attack paths detected — no evidence-backed internet → vulnerable path.</p> : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-left text-muted"><th className="p-1">Priority</th><th className="p-1">Severity</th><th className="p-1">Provider</th><th className="p-1">Path Type</th><th className="p-1">Entry</th><th className="p-1">Target</th><th className="p-1">Conf</th><th className="p-1">Findings</th><th className="p-1">Status</th></tr></thead>
+              <tbody>
+                {attackPaths.map((p) => (
+                  <tr key={p.id} className="cursor-pointer border-t hover:bg-canvas" onClick={async () => { setSelectedPath(p.id); try { const d = await getCloudAttackPath(selectedProjectId, p.id); setPathDetail(d); } catch (e) { setPathDetail(p); } }}>
+                    <td className="p-1 font-medium">{p.priority_score} </td>
+                    <td className="p-1"><SeverityBadge severity={p.severity} /></td>
+                    <td className="p-1">{p.provider}</td>
+                    <td className="p-1 font-mono">{p.path_type}</td>
+                    <td className="p-1 truncate max-w-[120px]">{p.entry_asset_id.slice(0,8)}</td>
+                    <td className="p-1 truncate max-w-[120px]">{p.target_asset_id.slice(0,8)}</td>
+                    <td className="p-1">{p.confidence}</td>
+                    <td className="p-1">{p.finding_count ?? p.findings?.length ?? 0}</td>
+                    <td className="p-1">{p.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {selectedPath && pathDetail && (
+              <div className="mt-3 rounded border bg-canvas p-3">
+                <p className="text-sm font-semibold">Path Detail: {pathDetail.id.slice(0,8)} — {pathDetail.path_type} ({pathDetail.severity} / {pathDetail.confidence})</p>
+                <p className="text-xs text-muted">Provider: {pathDetail.provider} • Score: {pathDetail.priority_score} • {pathDetail.explanation}</p>
+                <div className="mt-2 space-y-1">
+                  <p className="text-xs font-medium">Chain:</p>
+                  {(pathDetail.nodes || []).map((n, i) => (
+                    <div key={i} className="flex items-center gap-2 text-xs">
+                      <span className="font-mono">{n.asset_type}</span>
+                      <span className="text-muted">{n.value.slice(0,40)}</span>
+                      {i < (pathDetail.nodes.length -1) && <span className="text-muted">→</span>}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2">
+                  <p className="text-xs font-medium">Findings:</p>
+                  {(pathDetail.findings || []).slice(0,5).map((f) => (
+                    <p key={f.finding_id} className="text-xs text-muted font-mono">{f.rule_id} • {f.severity} • {f.title.slice(0,60)}</p>
+                  ))}
+                </div>
+                <div className="mt-2">
+                  <p className="text-xs font-medium">Relationships:</p>
+                  {(pathDetail.relationships || []).map((r) => (
+                    <p key={r.id} className="text-xs text-muted">{r.relationship_type}: {r.source_asset_id.slice(0,6)} → {r.target_asset_id.slice(0,6)}</p>
+                  ))}
+                </div>
+                <button type="button" onClick={() => { setSelectedPath(null); setPathDetail(null); }} className="mt-2 rounded border px-2 py-1 text-xs">Close</button>
+              </div>
+            )}
+          </div>
+        )}
+        <p className="mt-2 text-xs text-muted">Bounded: depth ≤6, ≤100 paths, evidence ≤20. Potential attack path, not confirmed exploitation.</p>
       </div>
 
       <div className="rounded-md border bg-surface p-4">

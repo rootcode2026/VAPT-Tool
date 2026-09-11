@@ -91,6 +91,34 @@ def create_connection(project_id: str, payload: dict, db: Session = Depends(get_
         except AWSConnectorError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         credential = None
+    elif provider == "gcp":
+        from app.services.gcp_connector import GCPConnectorError, validate_project_id, validate_service_account_json
+        try:
+            account_id = validate_project_id(account_id)
+            sa_json = payload.get("service_account_json") or payload.get("service_account") or payload.get("credential")
+            if sa_json and isinstance(sa_json, str) and sa_json.strip().startswith("{"):
+                validate_service_account_json(sa_json)
+                credential = sa_json
+            elif sa_json:
+                # workload or other
+                credential = str(sa_json)[:8192]
+                if len(credential) < 10:
+                    raise GCPConnectorError("Credential too short")
+            else:
+                # Allow mock without credential for tests
+                credential = None
+                # Check workload identity alternative
+                workload_provider = payload.get("workload_identity_provider")
+                workload_sa = payload.get("workload_service_account")
+                if workload_provider and workload_sa:
+                    from app.services.gcp_connector import validate_workload_identity
+                    validate_workload_identity(workload_provider, workload_sa)
+                    credential = json.dumps({"workload_provider": workload_provider, "service_account": workload_sa})
+        except GCPConnectorError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        # GCP does not use role_arn/external_id
+        role_arn = None
+        external_id = None
     else:
         credential = payload.get("credential") or payload.get("service_account") or payload.get("client_secret")
         if not credential or not isinstance(credential, str) or len(credential) < 10:
@@ -219,6 +247,8 @@ def validate_connection(project_id: str, connection_id: str, db: Session = Depen
     # E1 live path: cross-account role assumption + STS identity verification.
     if conn.provider == "aws" and getattr(conn, "role_arn", None):
         return _validate_aws_role_connection(project_id, conn, db, current_user)
+    if conn.provider == "gcp":
+        return _validate_gcp_connection(project_id, conn, db, current_user)
     store = get_secret_store(db)
     cred = store.get_secret(conn.credential_reference) if conn.credential_reference else None
     if not cred:
@@ -282,6 +312,46 @@ def _validate_aws_role_connection(project_id: str, conn, db: Session, current_us
     return {"id": conn.id, "valid": True, "status": conn.status, "provider": "aws",
             "account_id": identity["account_id"], "principal_arn": identity["arn"]}
 
+def _validate_gcp_connection(project_id: str, conn, db: Session, current_user: User):
+    from app.services.gcp_connector import GCPConnectorError, get_gcp_identity, validate_project_id
+    try:
+        validate_project_id(conn.account_id)
+        # Try to get identity via stored credential if any
+        sa_json = None
+        if conn.credential_reference:
+            try:
+                from app.services.secret_store import get_secret_store
+                sa_json = get_secret_store(db).get_secret(conn.credential_reference)
+            except Exception:
+                sa_json = None
+        identity = get_gcp_identity(conn.account_id, sa_json)
+    except GCPConnectorError as exc:
+        conn.status = "failed"
+        try:
+            from app.models.project import Project
+            proj = db.query(Project).filter(Project.id == project_id).first()
+            AuditService.record(db, event_type=EVENT_CLOUD_CONNECTION_FAILED, action=EVENT_CLOUD_CONNECTION_FAILED, result="FAILURE", actor_user_id=current_user.id, organization_id=proj.organization_id if proj else None, project_id=project_id, resource_type="cloud_connection", resource_id=conn.id, metadata={"provider": "gcp"})
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        raise HTTPException(status_code=400, detail=str(exc))
+    conn.last_validation_at = datetime.now(timezone.utc)
+    conn.status = "active"
+    try:
+        from app.models.project import Project
+        proj = db.query(Project).filter(Project.id == project_id).first()
+        AuditService.record(db, event_type=EVENT_CLOUD_CONNECTION_VALIDATED, action=EVENT_CLOUD_CONNECTION_VALIDATED, result="SUCCESS", actor_user_id=current_user.id, organization_id=proj.organization_id if proj else None, project_id=project_id, resource_type="cloud_connection", resource_id=conn.id, metadata={"provider": "gcp", "project_id": identity["project_id"]})
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return {"id": conn.id, "valid": True, "status": conn.status, "provider": "gcp", "project_id": identity["project_id"]}
+
 @router.post("/connections/{connection_id}/discover")
 def discover_resources(project_id: str, connection_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_project_access(project_id, db, current_user)
@@ -294,6 +364,10 @@ def discover_resources(project_id: str, connection_id: str, db: Session = Depend
     # E1 live path: tracked discovery run executed by the Celery worker.
     if conn.provider == "aws" and getattr(conn, "role_arn", None):
         return _start_aws_discovery_run(project_id, conn, db, current_user)
+    if conn.provider == "gcp":
+        return _start_gcp_discovery_run(project_id, conn, db, current_user)
+    if conn.provider == "azure":
+        return _start_azure_discovery_run(project_id, conn, db, current_user)
     # Async for real mode
     mode = os.getenv("CLOUD_PROVIDER_MODE", "").lower() or os.getenv("CLOUD_MODE", "").lower()
     if mode == "real":
@@ -417,6 +491,74 @@ def _start_aws_discovery_run(project_id: str, conn, db: Session, current_user: U
     db.commit()
     db.refresh(run)
     return {"discovery_id": run.id, "connection_id": conn.id, "status": "queued", "provider": "aws"}
+
+
+def _start_gcp_discovery_run(project_id: str, conn, db: Session, current_user: User):
+    from app.models.project import Project
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if proj is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    active = db.query(CloudDiscovery).filter(CloudDiscovery.connection_id == conn.id, CloudDiscovery.status.in_(["queued", "running"])).first()
+    if active:
+        raise HTTPException(status_code=409, detail="Discovery already running for this connection")
+    run = CloudDiscovery(id=str(uuid.uuid4()), organization_id=proj.organization_id, project_id=project_id, connection_id=conn.id, provider="gcp", status="queued", requested_by=current_user.id)
+    db.add(run)
+    db.flush()
+    try:
+        from app.core.celery import celery_app
+        celery_app.send_task("app.tasks.cloud_discovery.discover_cloud", args=[conn.id, project_id, run.id])
+    except Exception as exc:
+        run.status = "failed"
+        run.error = f"Discovery queue unavailable: {str(exc)[:200]}"
+        run.finished_at = datetime.now(timezone.utc)
+        try:
+            AuditService.record(db, event_type=EVENT_CLOUD_DISCOVERY_FAILED, action=EVENT_CLOUD_DISCOVERY_FAILED, result="FAILURE", actor_user_id=current_user.id, organization_id=proj.organization_id, project_id=project_id, resource_type="cloud_discovery", resource_id=run.id, metadata={"reason": "queue_failed"})
+        except Exception:
+            pass
+        db.commit()
+        db.refresh(run)
+        raise HTTPException(status_code=502, detail="Discovery queue unavailable")
+    try:
+        AuditService.record(db, event_type=EVENT_CLOUD_DISCOVERY_QUEUED, action=EVENT_CLOUD_DISCOVERY_QUEUED, result="SUCCESS", actor_user_id=current_user.id, organization_id=proj.organization_id, project_id=project_id, resource_type="cloud_discovery", resource_id=run.id, metadata={"provider": "gcp", "connection_id": conn.id})
+    except Exception:
+        pass
+    db.commit()
+    db.refresh(run)
+    return {"discovery_id": run.id, "connection_id": conn.id, "status": "queued", "provider": "gcp"}
+
+
+def _start_azure_discovery_run(project_id: str, conn, db: Session, current_user: User):
+    from app.models.project import Project
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if proj is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    active = db.query(CloudDiscovery).filter(CloudDiscovery.connection_id == conn.id, CloudDiscovery.status.in_(["queued", "running"])).first()
+    if active:
+        raise HTTPException(status_code=409, detail="Discovery already running for this connection")
+    run = CloudDiscovery(id=str(uuid.uuid4()), organization_id=proj.organization_id, project_id=project_id, connection_id=conn.id, provider="azure", status="queued", requested_by=current_user.id)
+    db.add(run)
+    db.flush()
+    try:
+        from app.core.celery import celery_app
+        celery_app.send_task("app.tasks.cloud_discovery.discover_cloud", args=[conn.id, project_id, run.id])
+    except Exception as exc:
+        run.status = "failed"
+        run.error = f"Discovery queue unavailable: {str(exc)[:200]}"
+        run.finished_at = datetime.now(timezone.utc)
+        try:
+            AuditService.record(db, event_type=EVENT_CLOUD_DISCOVERY_FAILED, action=EVENT_CLOUD_DISCOVERY_FAILED, result="FAILURE", actor_user_id=current_user.id, organization_id=proj.organization_id, project_id=project_id, resource_type="cloud_discovery", resource_id=run.id, metadata={"reason": "queue_failed"})
+        except Exception:
+            pass
+        db.commit()
+        db.refresh(run)
+        raise HTTPException(status_code=502, detail="Discovery queue unavailable")
+    try:
+        AuditService.record(db, event_type=EVENT_CLOUD_DISCOVERY_QUEUED, action=EVENT_CLOUD_DISCOVERY_QUEUED, result="SUCCESS", actor_user_id=current_user.id, organization_id=proj.organization_id, project_id=project_id, resource_type="cloud_discovery", resource_id=run.id, metadata={"provider": "azure", "connection_id": conn.id})
+    except Exception:
+        pass
+    db.commit()
+    db.refresh(run)
+    return {"discovery_id": run.id, "connection_id": conn.id, "status": "queued", "provider": "azure"}
 
 
 def _discovery_payload(run) -> dict:

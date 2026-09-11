@@ -167,3 +167,327 @@ def cross_domain_relationships(project_id: str, db: Session) -> list[dict]:
         if (src.asset_type in code_types and tgt.asset_type in cloud_types) or (src.asset_type in cloud_types and tgt.asset_type in code_types) or (src.asset_type in code_types and tgt.asset_type in code_types):
             out.append({"id": r.id, "source_type": src.asset_type, "target_type": tgt.asset_type, "relationship_type": r.relationship_type, "source_id": src.id, "target_id": tgt.id})
     return out
+
+
+def list_iam_identities(project_id: str, db: Session) -> list[dict]:
+    """E3 IAM identities: roles/users/groups with bounded metadata (no secrets)."""
+    iam_types = ("aws_iam_role", "aws_iam_user", "aws_iam_group")
+    rows = db.query(Asset).filter(Asset.project_id == project_id, Asset.asset_type == "cloud_resource").limit(500).all()
+    out: list[dict] = []
+    for a in rows:
+        meta = a.extra_data if isinstance(a.extra_data, dict) else {}
+        rtype = str(meta.get("resource_type") or "")
+        if rtype not in iam_types:
+            continue
+        # Sanitize: strip any secret-like keys, limit policies
+        safe_meta: dict = {}
+        for k in ("resource_type", "resource_id", "arn", "region", "account_id", "name", "path", "created"):
+            if k in meta:
+                safe_meta[k] = str(meta[k])[:500] if isinstance(meta[k], str) else meta[k]
+        # Bounded policy summary (counts only, not full documents for list)
+        policies = meta.get("iam_policies") or []
+        if isinstance(policies, list):
+            safe_meta["policy_count"] = len(policies)
+            safe_meta["policies"] = [
+                {"type": p.get("type"), "name": str(p.get("name") or p.get("arn") or "")[:200], "is_aws_managed": p.get("is_aws_managed"), "unavailable": bool(p.get("unavailable"))}
+                for p in policies[:10] if isinstance(p, dict)
+            ]
+        if "iam_trust_statements" in meta:
+            safe_meta["trust_statement_count"] = len(meta.get("iam_trust_statements") or [])
+        if "iam_mfa_device_count" in meta:
+            safe_meta["mfa_device_count"] = meta.get("iam_mfa_device_count")
+        if "iam_access_keys" in meta:
+            safe_meta["access_key_count"] = len(meta.get("iam_access_keys") or [])
+        if "iam_password_enabled" in meta:
+            safe_meta["password_enabled"] = meta.get("iam_password_enabled")
+        out.append({"id": a.id, "value": a.value, "asset_type": a.asset_type, "metadata": safe_meta})
+        if len(out) >= 200:
+            break
+    return out
+
+
+def get_network_summary(project_id: str, db: Session) -> dict:
+    """E4 network posture summary — bounded, deterministic, no secrets."""
+    NETWORK_TYPES = {
+        "aws_vpc": 0, "aws_subnet": 0, "aws_route_table": 0, "aws_internet_gateway": 0,
+        "aws_nat_gateway": 0, "aws_network_acl": 0, "aws_security_group": 0,
+        "aws_network_interface": 0, "aws_ec2_instance": 0, "aws_alb": 0, "aws_nlb": 0, "aws_elb": 0,
+    }
+    rows = db.query(Asset).filter(Asset.project_id == project_id, Asset.asset_type == "cloud_resource").limit(500).all()
+    counts = dict(NETWORK_TYPES)
+    public_subnets = 0
+    internet_gateways = 0
+    exposed_sgs = 0
+    # Pre-collect for public subnet detection (exposure, not vulnerability)
+    route_tables = [r for r in rows if str((r.extra_data or {}).get("resource_type") or "") == "aws_route_table"]
+    igws = [r for r in rows if str((r.extra_data or {}).get("resource_type") or "") == "aws_internet_gateway"]
+    def _is_public_subnet(meta: dict) -> bool:
+        vpc_id = str(meta.get("vpc_id") or "")
+        subnet_id = str(meta.get("resource_id") or meta.get("subnet_id") or "")
+        # VPC must have IGW
+        has_igw = False
+        for igw in igws:
+            ig_meta = igw.extra_data or {}
+            if str(ig_meta.get("vpc_id") or "") == vpc_id:
+                has_igw = True
+                break
+            for att in (ig_meta.get("attachments") or []):
+                if isinstance(att, dict) and str(att.get("vpc_id") or "") == vpc_id:
+                    has_igw = True
+                    break
+        if not has_igw:
+            return False
+        # Find associated or main route table with IGW route
+        candidate_rts = []
+        for rt in route_tables:
+            rt_meta = rt.extra_data or {}
+            if str(rt_meta.get("vpc_id") or "") != vpc_id:
+                continue
+            for assoc in (rt_meta.get("associations") or []):
+                if isinstance(assoc, dict) and str(assoc.get("subnet_id") or "") == subnet_id:
+                    candidate_rts.append(rt)
+            if not candidate_rts:
+                for assoc in (rt_meta.get("associations") or []):
+                    if isinstance(assoc, dict) and assoc.get("main"):
+                        if rt not in candidate_rts:
+                            candidate_rts.append(rt)
+        if not candidate_rts:
+            candidate_rts = [rt for rt in route_tables if str((rt.extra_data or {}).get("vpc_id") or "") == vpc_id]
+        for rt in candidate_rts:
+            for route in ((rt.extra_data or {}).get("routes") or []):
+                if not isinstance(route, dict):
+                    continue
+                dest = route.get("destination_cidr") or route.get("destination_ipv6")
+                gw = str(route.get("gateway_id") or "")
+                if str(dest or "").strip() in ("0.0.0.0/0", "::/0") and gw.startswith("igw-"):
+                    return True
+        return False
+    for a in rows:
+        meta = a.extra_data if isinstance(a.extra_data, dict) else {}
+        rtype = str(meta.get("resource_type") or "")
+        if rtype in counts:
+            counts[rtype] += 1
+        if rtype == "aws_internet_gateway":
+            internet_gateways += 1
+        if rtype == "aws_subnet" and _is_public_subnet(meta):
+            public_subnets += 1
+        if rtype == "aws_security_group":
+            for rule in (meta.get("ingress") or []):
+                if isinstance(rule, dict):
+                    for cidr in (rule.get("cidr_v4") or []) + (rule.get("cidr_v6") or []):
+                        if cidr.strip() in ("0.0.0.0/0", "::/0"):
+                            exposed_sgs += 1
+                            break
+                    else:
+                        continue
+                    break
+    # Network findings: scanner cloud + rule_id NET or EC2-002
+    net_findings = db.query(Finding).join(Asset, Asset.id == Finding.asset_id).filter(
+        Asset.project_id == project_id, Finding.scanner == "cloud",
+        Finding.extra_data["rule_id"].astext.in_(["AWS-EC2-002", "AWS-NET-001", "AWS-NET-002", "AWS-NET-003", "AWS-NET-004", "AWS-NET-005", "AWS-NET-006", "AWS-NET-007", "AWS-NET-008", "AWS-NET-009", "AWS-NET-010"])
+    ).count() if False else 0
+    # Fallback without JSONB intext for sqlite: count via python
+    try:
+        all_findings = db.query(Finding).join(Asset, Asset.id == Finding.asset_id).filter(Asset.project_id == project_id, Finding.scanner == "cloud").limit(500).all()
+        net_ids = {"AWS-EC2-002", "AWS-NET-001", "AWS-NET-002", "AWS-NET-003", "AWS-NET-004", "AWS-NET-005", "AWS-NET-006", "AWS-NET-007", "AWS-NET-008", "AWS-NET-009", "AWS-NET-010"}
+        net_findings = sum(1 for f in all_findings if str((f.extra_data or {}).get("rule_id") or "").upper() in net_ids)
+    except Exception:
+        net_findings = 0
+    # NOT_ASSESSED from last check run breakdown
+    not_assessed = 0
+    try:
+        from app.models.cloud_check import CloudCheckRun
+        last = db.query(CloudCheckRun).filter(CloudCheckRun.project_id == project_id).order_by(CloudCheckRun.created_at.desc()).first()
+        if last and isinstance(last.breakdown, dict):
+            for cid, vals in last.breakdown.items():
+                if cid.startswith("AWS-NET-") or cid == "AWS-EC2-002":
+                    not_assessed += int((vals or {}).get("not_assessed") or 0)
+    except Exception:
+        pass
+    return {
+        "project_id": project_id,
+        "counts": counts,
+        "public_subnets": public_subnets,
+        "internet_gateways": internet_gateways,
+        "exposed_security_groups": exposed_sgs,
+        "network_findings": net_findings,
+        "not_assessed": not_assessed,
+    }
+
+
+def get_storage_summary(project_id: str, db: Session) -> dict:
+    """E5 storage posture summary — bounded, no secrets, no object enumeration."""
+    STORAGE_TYPES = {
+        "aws_s3_bucket": 0, "aws_ebs_volume": 0, "aws_ebs_snapshot": 0,
+        "aws_efs_filesystem": 0, "aws_rds_instance": 0,
+    }
+    rows = db.query(Asset).filter(Asset.project_id == project_id, Asset.asset_type == "cloud_resource").limit(500).all()
+    counts = dict(STORAGE_TYPES)
+    public_s3 = 0
+    unencrypted_ebs = 0
+    public_snapshots = 0
+    unencrypted_efs = 0
+    for a in rows:
+        meta = a.extra_data if isinstance(a.extra_data, dict) else {}
+        rtype = str(meta.get("resource_type") or "")
+        if rtype in counts:
+            counts[rtype] += 1
+        if rtype == "aws_s3_bucket":
+            # Public via policy or ACL
+            stmts = meta.get("bucket_policy_statements") or []
+            is_public = False
+            for stmt in stmts:
+                if not isinstance(stmt, dict):
+                    continue
+                if str(stmt.get("effect") or "").lower() != "allow":
+                    continue
+                for p in (stmt.get("principals") or []):
+                    if str(p).strip() in ("*", "AWS:*"):
+                        for act in (stmt.get("actions") or []):
+                            if str(act).lower().startswith("s3:"):
+                                is_public = True
+                                break
+                if is_public:
+                    break
+            if not is_public:
+                for grant in (meta.get("acl_grants") or []):
+                    if isinstance(grant, dict) and grant.get("public"):
+                        is_public = True
+                        break
+            if is_public:
+                public_s3 += 1
+        if rtype == "aws_ebs_volume" and meta.get("encrypted") is False:
+            unencrypted_ebs += 1
+        if rtype == "aws_ebs_snapshot" and meta.get("is_public") is True:
+            public_snapshots += 1
+        if rtype == "aws_efs_filesystem" and meta.get("encrypted") is False:
+            unencrypted_efs += 1
+    try:
+        all_findings = db.query(Finding).join(Asset, Asset.id == Finding.asset_id).filter(Asset.project_id == project_id, Finding.scanner == "cloud").limit(500).all()
+        storage_ids = {"AWS-S3-001", "AWS-S3-002", "AWS-S3-003", "AWS-S3-004", "AWS-S3-005", "AWS-S3-006", "AWS-S3-007", "AWS-S3-008", "AWS-EBS-001", "AWS-EBS-002", "AWS-EFS-001", "AWS-RDS-002"}
+        storage_findings = sum(1 for f in all_findings if str((f.extra_data or {}).get("rule_id") or "").upper() in storage_ids)
+    except Exception:
+        storage_findings = 0
+    not_assessed = 0
+    try:
+        from app.models.cloud_check import CloudCheckRun
+        last = db.query(CloudCheckRun).filter(CloudCheckRun.project_id == project_id).order_by(CloudCheckRun.created_at.desc()).first()
+        if last and isinstance(last.breakdown, dict):
+            for cid, vals in last.breakdown.items():
+                if cid.startswith("AWS-S3-") or cid.startswith("AWS-EBS-") or cid.startswith("AWS-EFS-"):
+                    not_assessed += int((vals or {}).get("not_assessed") or 0)
+    except Exception:
+        pass
+    return {
+        "project_id": project_id,
+        "counts": counts,
+        "public_s3_buckets": public_s3,
+        "unencrypted_ebs_volumes": unencrypted_ebs,
+        "public_snapshots": public_snapshots,
+        "unencrypted_efs": unencrypted_efs,
+        "storage_findings": storage_findings,
+        "not_assessed": not_assessed,
+    }
+
+
+def get_gcp_summary(project_id: str, db: Session) -> dict:
+    """E6 GCP posture — bounded, no secrets."""
+    GCP_TYPES = {
+        "gcp_project": 0, "gcp_compute_instance": 0, "gcp_disk": 0, "gcp_vpc": 0, "gcp_subnet": 0,
+        "gcp_firewall": 0, "gcp_storage_bucket": 0, "gcp_service_account": 0, "gcp_iam_policy": 0,
+    }
+    rows = db.query(Asset).filter(Asset.project_id == project_id, Asset.asset_type == "cloud_resource").limit(500).all()
+    counts = dict(GCP_TYPES)
+    public_buckets = 0
+    public_firewalls = 0
+    for a in rows:
+        meta = a.extra_data if isinstance(a.extra_data, dict) else {}
+        rtype = str(meta.get("resource_type") or "")
+        if rtype in counts:
+            counts[rtype] += 1
+        if rtype == "gcp_storage_bucket":
+            for m in (meta.get("public_iam_members") or []):
+                if isinstance(m, dict) and str(m.get("member") or "") in ("allUsers", "allAuthenticatedUsers"):
+                    public_buckets += 1
+                    break
+        if rtype == "gcp_firewall":
+            for cidr in (meta.get("source_ranges") or []):
+                if str(cidr).strip() in ("0.0.0.0/0", "::/0"):
+                    public_firewalls += 1
+                    break
+    try:
+        all_findings = db.query(Finding).join(Asset, Asset.id == Finding.asset_id).filter(Asset.project_id == project_id, Finding.scanner == "cloud").limit(500).all()
+        gcp_ids = {c["check_id"] for c in __import__("app.services.cloud_checks", fromlist=["AWS_CHECKS"]).AWS_CHECKS if str(c.get("provider") or "").lower() == "gcp"}
+        gcp_findings = sum(1 for f in all_findings if str((f.extra_data or {}).get("rule_id") or "").upper() in gcp_ids)
+    except Exception:
+        gcp_findings = 0
+    not_assessed = 0
+    try:
+        from app.models.cloud_check import CloudCheckRun
+        last = db.query(CloudCheckRun).filter(CloudCheckRun.project_id == project_id).order_by(CloudCheckRun.created_at.desc()).first()
+        if last and isinstance(last.breakdown, dict):
+            for cid, vals in last.breakdown.items():
+                if cid.startswith("GCP-"):
+                    not_assessed += int((vals or {}).get("not_assessed") or 0)
+    except Exception:
+        pass
+    return {
+        "project_id": project_id,
+        "counts": counts,
+        "public_buckets": public_buckets,
+        "public_firewalls": public_firewalls,
+        "gcp_findings": gcp_findings,
+        "not_assessed": not_assessed,
+    }
+
+
+def get_azure_summary(project_id: str, db: Session) -> dict:
+    """E7 Azure posture — bounded, no secrets."""
+    AZURE_TYPES = {
+        "azure_subscription": 0, "azure_resource_group": 0, "azure_vm": 0, "azure_disk": 0, "azure_vnet": 0, "azure_subnet": 0,
+        "azure_nsg": 0, "azure_public_ip": 0, "azure_storage_account": 0, "azure_rbac_assignment": 0,
+    }
+    rows = db.query(Asset).filter(Asset.project_id == project_id, Asset.asset_type == "cloud_resource").limit(500).all()
+    counts = dict(AZURE_TYPES)
+    public_storage = 0
+    public_nsg = 0
+    for a in rows:
+        meta = a.extra_data if isinstance(a.extra_data, dict) else {}
+        rtype = str(meta.get("resource_type") or "")
+        if rtype in counts:
+            counts[rtype] += 1
+        if rtype == "azure_storage_account" and meta.get("allow_blob_public_access") is True:
+            public_storage += 1
+        if rtype == "azure_nsg":
+            for rule in (meta.get("rules") or []):
+                if isinstance(rule, dict) and str(rule.get("access") or "").lower() == "allow" and str(rule.get("direction") or "").lower() == "inbound":
+                    src = str(rule.get("source_prefix") or rule.get("sourceAddressPrefix") or "")
+                    if src.strip() in ("*", "0.0.0.0/0", "Internet", "::/0"):
+                        dest = str(rule.get("dest_port") or rule.get("destinationPortRange") or "")
+                        # Consider any allow from Internet as public
+                        public_nsg += 1
+                        break
+    try:
+        all_findings = db.query(Finding).join(Asset, Asset.id == Finding.asset_id).filter(Asset.project_id == project_id, Finding.scanner == "cloud").limit(500).all()
+        azure_ids = {c["check_id"] for c in __import__("app.services.cloud_checks", fromlist=["AWS_CHECKS"]).AWS_CHECKS if str(c.get("provider") or "").lower() == "azure"}
+        azure_findings = sum(1 for f in all_findings if str((f.extra_data or {}).get("rule_id") or "").upper() in azure_ids)
+    except Exception:
+        azure_findings = 0
+    not_assessed = 0
+    try:
+        from app.models.cloud_check import CloudCheckRun
+        last = db.query(CloudCheckRun).filter(CloudCheckRun.project_id == project_id).order_by(CloudCheckRun.created_at.desc()).first()
+        if last and isinstance(last.breakdown, dict):
+            for cid, vals in last.breakdown.items():
+                if cid.startswith("AZURE-"):
+                    not_assessed += int((vals or {}).get("not_assessed") or 0)
+    except Exception:
+        pass
+    return {
+        "project_id": project_id,
+        "counts": counts,
+        "public_storage_accounts": public_storage,
+        "public_nsgs": public_nsg,
+        "azure_findings": azure_findings,
+        "not_assessed": not_assessed,
+    }

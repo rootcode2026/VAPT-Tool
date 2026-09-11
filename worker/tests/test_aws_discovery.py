@@ -176,7 +176,8 @@ def test_e1_region_discovers_network_and_compute():
                         ("rds", "us-east-1"): FakeClient(ops=_pages({"describe_db_instances": {"DBInstances": []}})),
                         ("lambda", "us-east-1"): FakeClient(ops=_pages({"list_functions": {"Functions": []}})),
                         ("ecs", "us-east-1"): FakeClient(ops=_pages({"list_clusters": {"clusterArns": []}})),
-                        ("ecr", "us-east-1"): FakeClient(ops=_pages({"describe_repositories": {"repositories": []}}))})
+                        ("ecr", "us-east-1"): FakeClient(ops=_pages({"describe_repositories": {"repositories": []}})),
+                        ("efs", "us-east-1"): FakeClient(ops=_pages({"describe_file_systems": {"FileSystems": []}}))})
     outcome = discover_region(factory, "us-east-1", "123456789012", 500)
     types = {r["resource_type"] for r in outcome["resources"]}
     assert {"aws_vpc", "aws_subnet", "aws_route_table", "aws_security_group",
@@ -196,7 +197,8 @@ def test_e1_partial_regional_failure():
                         ("rds", "eu-west-1"): FakeClient(ops=_pages({"describe_db_instances": {"DBInstances": []}})),
                         ("lambda", "eu-west-1"): FakeClient(ops=_pages({"list_functions": {"Functions": []}})),
                         ("ecs", "eu-west-1"): FakeClient(ops=_pages({"list_clusters": {"clusterArns": []}})),
-                        ("ecr", "eu-west-1"): FakeClient(ops=_pages({"describe_repositories": {"repositories": []}}))})
+                        ("ecr", "eu-west-1"): FakeClient(ops=_pages({"describe_repositories": {"repositories": []}})),
+                        ("efs", "eu-west-1"): FakeClient(ops=_pages({"describe_file_systems": {"FileSystems": []}}))})
     outcome = discover_region(factory, "eu-west-1", "123456789012", 500)
     assert outcome["warnings"], "permission failures must surface as warnings"
     assert any("permission" in str(w.get("reason", "")) or "permission" in str(w.get("detail", "")).lower() for w in outcome["warnings"])
@@ -226,6 +228,7 @@ def test_e1_account_status_partial_and_counts():
                         ("lambda", "us-east-1"): FakeClient(ops=_pages({"list_functions": {"Functions": []}})),
                         ("ecs", "us-east-1"): FakeClient(ops=_pages({"list_clusters": {"clusterArns": []}})),
                         ("ecr", "us-east-1"): FakeClient(ops=_pages({"describe_repositories": {"repositories": []}})),
+                        ("efs", "us-east-1"): FakeClient(ops=_pages({"describe_file_systems": {"FileSystems": []}})),
                         ("s3", "us-east-1"): FakeClient(fail={"list_buckets": FakeError("AccessDenied")}),
                         ("iam", "us-east-1"): FakeClient(fail={"list_roles": FakeError("AccessDenied"),
                             "list_users": FakeError("AccessDenied"), "list_groups": FakeError("AccessDenied")})})

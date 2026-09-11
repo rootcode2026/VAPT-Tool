@@ -7,11 +7,16 @@ from app.db.database import get_db
 from app.models.user import User
 from app.services.cloud_security import (
     cross_domain_relationships,
+    get_azure_summary,
     get_cloud_summary,
+    get_gcp_summary,
+    get_network_summary,
+    get_storage_summary,
     list_cloud_accounts,
     list_cloud_checks,
     list_cloud_findings,
     list_cloud_resources,
+    list_iam_identities,
 )
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/cloud-security", tags=["Cloud Security"])
@@ -76,3 +81,53 @@ def cloud_security_relationships(
 ):
     require_project_access(project_id, db, current_user)
     return {"project_id": project_id, "relationships": cross_domain_relationships(project_id, db)}
+
+
+@router.get("/iam")
+def cloud_security_iam(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_project_access(project_id, db, current_user)
+    return {"project_id": project_id, "identities": list_iam_identities(project_id, db)}
+
+
+@router.get("/network")
+def cloud_security_network(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_project_access(project_id, db, current_user)
+    return get_network_summary(project_id, db)
+
+
+@router.get("/storage")
+def cloud_security_storage(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_project_access(project_id, db, current_user)
+    return get_storage_summary(project_id, db)
+
+
+@router.get("/gcp")
+def cloud_security_gcp(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_project_access(project_id, db, current_user)
+    return get_gcp_summary(project_id, db)
+
+
+@router.get("/azure")
+def cloud_security_azure(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_project_access(project_id, db, current_user)
+    return get_azure_summary(project_id, db)

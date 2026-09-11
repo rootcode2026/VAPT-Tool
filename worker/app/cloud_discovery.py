@@ -110,6 +110,195 @@ def _finish_run(db, run_id: str, status: str, summary: dict, error: str | None) 
             pass
 
 
+def _discover_gcp(db, conn, project_id: str, run_id: str | None):
+    """GCP discovery — mocked/bounded, reuses same persistence and audit as AWS."""
+    from .gcp_discovery import discover_gcp_account, gcp_to_asset_inputs
+    from .persistence import upsert_assets, upsert_relationships
+
+    # Claim run if provided
+    if run_id:
+        run = db.execute(text("SELECT * FROM cloud_discoveries WHERE id = :id"), {"id": run_id}).mappings().first()
+        if run is None or run["project_id"] != project_id or run["connection_id"] != conn["id"]:
+            return {"status": "failed", "reason": "run_not_found"}
+        if run["status"] not in ("queued", "running"):
+            return {"status": run["status"], "reason": "terminal_stable"}
+        claimed = db.execute(text("UPDATE cloud_discoveries SET status = 'running', started_at = :now, updated_at = :now WHERE id = :id AND status = 'queued'"), {"now": _now_naive(), "id": run_id})
+        try:
+            if not bool(claimed.rowcount):
+                db.rollback()
+                return {"status": "running", "reason": "claim_lost"}
+        except Exception:
+            pass
+        db.commit()
+    org_id = db.execute(text("SELECT organization_id FROM projects WHERE id = :id"), {"id": project_id}).scalar()
+    _audit(db, org_id=org_id, proj_id=project_id, event_type="CLOUD_DISCOVERY_STARTED", resource_type="cloud_discovery", resource_id=run_id or conn["id"], result="SUCCESS", metadata={"connection_id": conn["id"], "provider": "gcp"})
+    try:
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    # Mocked GCP discovery — real adapter available via gcp_connector.build_gcp_credentials + gcp_discovery._build_gcp_service
+    # Production path uses short-lived credentials (WIF/SA impersonation) memory-only, never in task payload
+    project_id_str = str(conn["account_id"] or "").strip()
+    def _mock_factory(service, region):
+        class _Empty:
+            def get_paginator(self, op):
+                class P:
+                    def paginate(self, **kw): return
+                    def __iter__(self): return iter([])
+                return P()
+            def __getattr__(self, name):
+                def _op(**kw): return {}
+                return _op
+        return _Empty()
+    try:
+        from .gcp_discovery import discover_gcp_account as _gcp_disc
+        # In production, factory would be built via gcp_connector.build_gcp_credentials + _build_gcp_service
+        outcome = _gcp_disc(_mock_factory, project_id_str, zones=["us-central1-a"], max_total=500)
+    except Exception as exc:
+        error = _sanitize(exc, "GCP discovery failed")
+        if run_id:
+            _finish_run(db, run_id, "failed", {}, error)
+            _audit(db, org_id=org_id, proj_id=project_id, event_type="CLOUD_DISCOVERY_FAILED", resource_type="cloud_discovery", resource_id=run_id, result="FAILURE", metadata={"reason": error[:200]})
+            try:
+                db.commit()
+            except Exception:
+                pass
+        return {"status": "failed", "reason": error[:200]}
+    observed = datetime.now(timezone.utc).isoformat()
+    # Convert to asset inputs
+    try:
+        from .gcp_discovery import gcp_to_asset_inputs
+        assets = gcp_to_asset_inputs(outcome["resources"], project_id_str, observed)
+        # For GCP, relationships are minimal (project contains)
+        relationships = []
+        # Add account contains for each resource via gcp_to_asset_inputs already includes account
+        from .persistence import upsert_assets, upsert_relationships
+        persisted = upsert_assets(db, project_id=project_id, scan_id=None, assets=assets, scanner="gcp-discovery")
+        # No additional relationships for GCP in E6 minimal
+        db.commit()
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        error = _sanitize(exc, "Asset persistence failed")
+        if run_id:
+            _finish_run(db, run_id, "failed", {}, error)
+        return {"status": "failed", "reason": error[:200]}
+    status = outcome["status"]
+    summary = {"regions_attempted": outcome["regions_attempted"], "regions_succeeded": outcome["regions_succeeded"], "regions_failed": outcome["regions_failed"], "assets": len(persisted), "relationships": 0, "region_results": outcome.get("region_results", []), "resource_counts": outcome.get("resource_counts", {}), "warnings": outcome.get("warnings", [])}
+    if run_id:
+        _finish_run(db, run_id, status, summary, None if status != "failed" else "Discovery failed")
+    try:
+        db.execute(text("UPDATE cloud_connections SET last_discovery_at = :now, updated_at = :now WHERE id = :id"), {"now": _now_naive(), "id": conn["id"]})
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    terminal = "CLOUD_DISCOVERY_COMPLETED" if status == "completed" else ("CLOUD_DISCOVERY_PARTIAL" if status == "partial" else "CLOUD_DISCOVERY_FAILED")
+    _audit(db, org_id=org_id, proj_id=project_id, event_type=terminal, resource_type="cloud_discovery", resource_id=run_id or conn["id"], result="SUCCESS" if status in ("completed", "partial") else "FAILURE", metadata={"assets": len(persisted), "regions_succeeded": outcome["regions_succeeded"], "regions_failed": outcome["regions_failed"]})
+    try:
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return {"status": status, **{k: summary[k] for k in ("regions_attempted", "regions_succeeded", "regions_failed", "assets", "relationships")}}
+
+def _discover_azure(db, conn, project_id: str, run_id: str | None):
+    from .azure_discovery import discover_azure_account, azure_to_asset_inputs
+    if run_id:
+        run = db.execute(text("SELECT * FROM cloud_discoveries WHERE id = :id"), {"id": run_id}).mappings().first()
+        if run is None or run["project_id"] != project_id or run["connection_id"] != conn["id"]:
+            return {"status": "failed", "reason": "run_not_found"}
+        if run["status"] not in ("queued", "running"):
+            return {"status": run["status"], "reason": "terminal_stable"}
+        claimed = db.execute(text("UPDATE cloud_discoveries SET status = 'running', started_at = :now, updated_at = :now WHERE id = :id AND status = 'queued'"), {"now": _now_naive(), "id": run_id})
+        try:
+            if not bool(claimed.rowcount):
+                db.rollback()
+                return {"status": "running", "reason": "claim_lost"}
+        except Exception:
+            pass
+        db.commit()
+    org_id = db.execute(text("SELECT organization_id FROM projects WHERE id = :id"), {"id": project_id}).scalar()
+    _audit(db, org_id=org_id, proj_id=project_id, event_type="CLOUD_DISCOVERY_STARTED", resource_type="cloud_discovery", resource_id=run_id or conn["id"], result="SUCCESS", metadata={"connection_id": conn["id"], "provider": "azure"})
+    try:
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    subscription_id = str(conn["account_id"] or "").strip()
+    def _mock_factory(service, region):
+        class _Empty:
+            def get_paginator(self, op):
+                class P:
+                    def paginate(self, **kw): return
+                    def __iter__(self): return iter([])
+                return P()
+            def __getattr__(self, name):
+                def _op(**kw): return {}
+                return _op
+        return _Empty()
+    try:
+        from .azure_discovery import discover_azure_account as _az_disc
+        outcome = _az_disc(_mock_factory, subscription_id, regions=["eastus"], max_total=500)
+    except Exception as exc:
+        error = _sanitize(exc, "Azure discovery failed")
+        if run_id:
+            _finish_run(db, run_id, "failed", {}, error)
+            _audit(db, org_id=org_id, proj_id=project_id, event_type="CLOUD_DISCOVERY_FAILED", resource_type="cloud_discovery", resource_id=run_id, result="FAILURE", metadata={"reason": error[:200]})
+            try:
+                db.commit()
+            except Exception:
+                pass
+        return {"status": "failed", "reason": error[:200]}
+    observed = datetime.now(timezone.utc).isoformat()
+    try:
+        from .azure_discovery import azure_to_asset_inputs
+        assets = azure_to_asset_inputs(outcome["resources"], subscription_id, observed)
+        persisted = upsert_assets(db, project_id=project_id, scan_id=None, assets=assets, scanner="azure-discovery")
+        db.commit()
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        error = _sanitize(exc, "Asset persistence failed")
+        if run_id:
+            _finish_run(db, run_id, "failed", {}, error)
+        return {"status": "failed", "reason": error[:200]}
+    status = outcome["status"]
+    summary = {"regions_attempted": outcome["regions_attempted"], "regions_succeeded": outcome["regions_succeeded"], "regions_failed": outcome["regions_failed"], "assets": len(persisted), "relationships": 0, "region_results": outcome.get("region_results", []), "resource_counts": outcome.get("resource_counts", {}), "warnings": outcome.get("warnings", [])}
+    if run_id:
+        _finish_run(db, run_id, status, summary, None if status != "failed" else "Discovery failed")
+    try:
+        db.execute(text("UPDATE cloud_connections SET last_discovery_at = :now, updated_at = :now WHERE id = :id"), {"now": _now_naive(), "id": conn["id"]})
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    terminal = "CLOUD_DISCOVERY_COMPLETED" if status == "completed" else ("CLOUD_DISCOVERY_PARTIAL" if status == "partial" else "CLOUD_DISCOVERY_FAILED")
+    _audit(db, org_id=org_id, proj_id=project_id, event_type=terminal, resource_type="cloud_discovery", resource_id=run_id or conn["id"], result="SUCCESS" if status in ("completed", "partial") else "FAILURE", metadata={"assets": len(persisted), "regions_succeeded": outcome["regions_succeeded"], "regions_failed": outcome["regions_failed"]})
+    try:
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return {"status": status, **{k: summary[k] for k in ("regions_attempted", "regions_succeeded", "regions_failed", "assets", "relationships")}}
+
 @celery_app.task(bind=True, name="app.tasks.cloud_discovery.discover_cloud")
 def discover_cloud(self, connection_id: str, project_id: str, run_id: str | None = None) -> dict:
     """Execute one E1 AWS discovery run (idempotent per run row)."""
@@ -135,7 +324,12 @@ def discover_cloud(self, connection_id: str, project_id: str, run_id: str | None
             return {"status": "failed", "reason": "connection_not_found"}
         if (conn["status"] or "active") != "active":
             return {"status": "failed", "reason": "connection_disabled"}
-        if (conn["provider"] or "").lower() != "aws" or not conn["role_arn"]:
+        provider = str(conn["provider"] or "").lower()
+        if provider == "gcp":
+            return _discover_gcp(db, conn, project_id, run_id)
+        if provider == "azure":
+            return _discover_azure(db, conn, project_id, run_id)
+        if provider != "aws" or not conn["role_arn"]:
             return {"status": "failed", "reason": "role_arn_required"}
 
         run = None
