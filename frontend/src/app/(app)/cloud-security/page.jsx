@@ -12,6 +12,7 @@ import { getAzureSummary, getCloudSecuritySummary, getGcpSummary, getNetworkSumm
 import { getCspmSummary } from "@/lib/api/cspm";
 import { listCloudAttackPaths, getCloudAttackPath, listAttackPathHistory, getAttackPathHistory, getAttackPathSummary, observeAttackPaths } from "@/lib/api/cloudAttackPaths";
 import { getExposureIntelligence, listTopExposures, getExposureDetail } from "@/lib/api/cloudExposure";
+import { listSecurityCorrelations, getSecurityCorrelation } from "@/lib/api/securityCorrelations";
 import { listCloudConnections, createCloudConnection, validateCloudConnection, discoverCloudResources, listCloudDiscoveries, listCloudCheckCatalog, runCloudSecurityChecks, listCloudCheckRuns } from "@/lib/api/connectors";
 import Link from "next/link";
 
@@ -51,6 +52,9 @@ export default function CloudSecurityPage() {
   const [topExposures, setTopExposures] = useState([]);
   const [selectedExposure, setSelectedExposure] = useState(null);
   const [exposureDetail, setExposureDetail] = useState(null);
+  const [correlations, setCorrelations] = useState([]);
+  const [selectedCorr, setSelectedCorr] = useState(null);
+  const [corrDetail, setCorrDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -59,7 +63,7 @@ export default function CloudSecurityPage() {
     setLoading(true);
     setError("");
     try {
-      const [s, c, cc, dd, cat, cr, net, stor, gcpSummary, azureSummary, cspmSummary, ap, hist, histSum, expInt, topExp] = await Promise.all([
+      const [s, c, cc, dd, cat, cr, net, stor, gcpSummary, azureSummary, cspmSummary, ap, hist, histSum, expInt, topExp, corrs] = await Promise.all([
         getCloudSecuritySummary(selectedProjectId),
         listCloudChecks(selectedProjectId).catch(() => ({ checks: [] })),
         listCloudConnections(selectedProjectId).catch(() => ({ connections: [] })),
@@ -76,6 +80,7 @@ export default function CloudSecurityPage() {
         getAttackPathSummary(selectedProjectId).catch(() => null),
         getExposureIntelligence(selectedProjectId).catch(() => null),
         listTopExposures(selectedProjectId, { limit: 10 }).catch(() => ({ top_exposures: [] })),
+        listSecurityCorrelations(selectedProjectId, { limit: 10 }).catch(() => ({ correlations: [] })),
       ]);
       setSummary(s);
       setChecks(c.checks || c || []);
@@ -93,6 +98,7 @@ export default function CloudSecurityPage() {
       setHistorySummary(histSum);
       setExposure(expInt);
       setTopExposures(topExp?.top_exposures || topExp?.data?.top_exposures || []);
+      setCorrelations(corrs?.correlations || corrs?.data?.correlations || []);
     } catch (e) {
       setError(e.message || "Unable to load cloud security.");
     } finally {
@@ -402,6 +408,40 @@ export default function CloudSecurityPage() {
           </div>
         )}
         <p className="mt-2 text-xs text-muted">Score: finding 20 + path 30 + exposure 15 + privilege 10 + sensitive 10 + persistence 5 + recurrence 5 + SLA 5 =100. Deterministic.</p>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">Security Correlations (E12)</h3>
+        <p className="text-xs text-muted">Many scanner results → fewer trustworthy issues + stronger evidence. Deterministic, no AI, no fuzzy matching.</p>
+        {correlations.length === 0 ? <p className="mt-2 text-xs text-muted">No correlations — not enough evidence to relate signals.</p> : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-left text-muted"><th className="p-1">Type</th><th className="p-1">Confidence</th><th className="p-1">Strength</th><th className="p-1">Asset</th><th className="p-1">Findings</th><th className="p-1">Scanners</th></tr></thead>
+              <tbody>
+                {correlations.map((g) => (
+                  <tr key={g.id} className="cursor-pointer border-t hover:bg-canvas" onClick={async () => { setSelectedCorr(g.id); try { const d = await getSecurityCorrelation(selectedProjectId, g.id); setCorrDetail(d); } catch (e) { setCorrDetail(g); } }}>
+                    <td className="p-1 font-mono">{g.correlation_type}</td>
+                    <td className="p-1">{g.confidence}</td>
+                    <td className="p-1">{g.score}</td>
+                    <td className="p-1 truncate max-w-[120px]">{g.asset_ids?.[0]?.slice(0,8) || "—"}</td>
+                    <td className="p-1">{g.finding_count}</td>
+                    <td className="p-1">{(g.scanners || []).join(" + ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {selectedCorr && corrDetail && (
+              <div className="mt-3 rounded border bg-canvas p-3">
+                <p className="text-sm font-semibold">WHY CORRELATED: {corrDetail.id.slice(0,8)} — {corrDetail.correlation_type} ({corrDetail.confidence}, {corrDetail.score})</p>
+                <p className="text-xs text-muted">{corrDetail.explanation}</p>
+                <div className="mt-2"><p className="text-xs font-medium">Members:</p>{(corrDetail.members || []).map((m) => (<p key={m.finding_id} className="text-xs text-muted">{m.scanner}: {m.title.slice(0,60)} ({m.severity})</p>))}</div>
+                <div className="mt-2"><p className="text-xs font-medium">Related:</p><p className="text-xs text-muted">Attack paths: {(corrDetail.attack_path_ids || []).length} • CSPM: {(corrDetail.cspm_control_ids || []).length}</p></div>
+                <button type="button" onClick={() => { setSelectedCorr(null); setCorrDetail(null); }} className="mt-2 rounded border px-2 py-1 text-xs">Close</button>
+              </div>
+            )}
+          </div>
+        )}
+        <p className="mt-2 text-xs text-muted">Exact fingerprint +40, same asset +20, same CVE +20, same location +10, compatible scanner +10 =100. Not vulnerability severity.</p>
       </div>
 
       <div className="rounded-md border bg-surface p-4">
