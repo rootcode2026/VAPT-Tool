@@ -19,6 +19,7 @@ from app.api.routes.cloud_security import router as cloud_security_router
 from app.api.routes.cspm import router as cspm_router
 from app.api.routes.security_correlations import router as security_correlations_router
 from app.api.routes.security_investigations import router as security_investigations_router
+from app.api.routes.security_validations import router as security_validations_router, finding_router as finding_validations_router
 from app.api.routes.code_security import router as code_security_router
 from app.api.routes.compliance import router as compliance_router
 from app.api.routes.dast import router as dast_router
@@ -109,6 +110,8 @@ app.include_router(cloud_attack_paths_router, dependencies=protected)
 app.include_router(cloud_exposure_router, dependencies=protected)
 app.include_router(security_correlations_router, dependencies=protected)
 app.include_router(security_investigations_router, dependencies=protected)
+app.include_router(security_validations_router, dependencies=protected)
+app.include_router(finding_validations_router, dependencies=protected)
 app.include_router(targets_router, dependencies=protected)
 app.include_router(projects_router, dependencies=protected)
 app.include_router(scans_router, dependencies=protected)

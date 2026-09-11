@@ -9,6 +9,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import SeverityBadge from "@/components/ui/SeverityBadge";
 import { useProjectContext } from "@/lib/project-context";
 import { listInvestigations, getInvestigation, createInvestigation, updateInvestigation, addInvestigationNote, getInvestigationTimeline, getInvestigationsSummary } from "@/lib/api/investigations";
+import { validateFinding } from "@/lib/api/validations";
 
 function Stat({ label, value }) {
   return (
@@ -140,6 +141,7 @@ export default function InvestigationsPage() {
           <div className="mt-2"><p className="text-xs font-medium">CSPM ({(detail.cspm_controls || []).length})</p>{(detail.cspm_controls || []).slice(0,3).map((c) => (<p key={c.control_id} className="text-xs text-muted">{c.control_id} • {c.severity}</p>))}</div>
           <div className="mt-2"><p className="text-xs font-medium">Exposure</p><p className="text-xs text-muted">{detail.exposure ? `${detail.exposure.exposure_type} • ${detail.exposure.severity} • ${detail.exposure.priority_score}` : "—"}</p></div>
           <div className="mt-2"><p className="text-xs font-medium">Remediation: {detail.remediation ? detail.remediation.status : "—"} • Retest: {detail.retest ? detail.retest.status : "—"} • SLA: {detail.sla ? detail.sla.status : "NOT CONFIGURED"}</p></div>
+          <div className="mt-2"><p className="text-xs font-medium">Security Validation</p>{(detail.validations || []).length === 0 ? <p className="text-xs text-muted">No validation yet.</p> : (detail.validations || []).slice(0,5).map((v) => (<p key={v.id} className="text-xs text-muted">{v.validation_type} • {v.verdict} • {v.confidence} • {v.scanner} {v.scanner_version} • {v.target?.slice(0,30)}</p>))}{detail.subject_type === "finding" && (<button type="button" onClick={async () => { try { await validateFinding(selectedProjectId, detail.subject_id, { validation_type: "SAFE_SCANNER_RECHECK" }); const d = await getInvestigation(selectedProjectId, detail.id); setDetail(d); } catch (e) { setError(e.message); } }} className="mt-1 rounded border px-2 py-1 text-xs">Validate Finding (bounded)</button>)}</div>
           <div className="mt-3">
             <p className="text-xs font-semibold">Timeline ({timeline.length})</p>
             {timeline.slice(0,20).map((e, i) => (<p key={i} className="text-xs text-muted">{e.timestamp?.slice(0,19)} • {e.source} • {e.type} • {e.detail.slice(0,80)}</p>))}

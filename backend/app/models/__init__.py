@@ -23,6 +23,7 @@ from app.models.recovery_code import MfaRecoveryCode
 from app.models.target import Target
 from app.models.cloud_attack_path import CloudAttackPath, CloudAttackPathObservation
 from app.models.security_investigation import InvestigationNote, SecurityInvestigation
+from app.models.security_validation import SecurityValidation
 from app.models.user import User
 from app.models.user_mfa import UserMfaCredential
 from app.models.user_onboarding import UserOnboarding
@@ -39,6 +40,7 @@ __all__ = [
     "Finding",
     "InvestigationNote",
     "SecurityInvestigation",
+    "SecurityValidation",
     "MfaRecoveryCode",
     "MonitoringChangeEvent",
     "MonitoringConfig",

@@ -13,6 +13,7 @@ from sqlalchemy import func
 from app.models.asset import Asset
 from app.models.finding import Finding, FindingHistory, FindingRemediation, FindingRetest, FindingSLA
 from app.models.security_investigation import SecurityInvestigation, InvestigationNote
+from app.models.security_validation import SecurityValidation
 from app.models.project import Project
 
 VALID_SUBJECT_TYPES = {"finding", "asset", "correlation", "attack_path", "exposure"}
@@ -246,11 +247,12 @@ def get_investigation_detail(project_id: str, db: Session, investigation_id: str
         pass
     # History / changes: collect bounded timeline events
     timeline = get_timeline(project_id, db, investigation_id)
-    # Remediation / Retest / SLA
+    # Remediation / Retest / SLA / Validation
     remediation = None
     retest = None
     sla = None
     ownership = None
+    validations = []
     try:
         if inv.subject_type == "finding" and subject and subject.get("finding"):
             f = subject["finding"]
@@ -258,6 +260,13 @@ def get_investigation_detail(project_id: str, db: Session, investigation_id: str
             retest = db.query(FindingRetest).filter(FindingRetest.finding_id == f.id).order_by(FindingRetest.created_at.desc()).first()
             sla = db.query(FindingSLA).filter(FindingSLA.finding_id == f.id).order_by(FindingSLA.created_at.desc()).first()
             ownership = {"assigned_to": f.assigned_to, "owner_user_id": f.owner_user_id}
+            validations = db.query(SecurityValidation).filter(SecurityValidation.finding_id == f.id, SecurityValidation.project_id == project_id).order_by(SecurityValidation.created_at.desc()).limit(5).all()
+        elif inv.subject_type == "asset":
+            # For asset, find validations for findings on that asset
+            findings_on_asset = db.query(Finding).filter(Finding.asset_id == inv.subject_id).limit(5).all()
+            for fo in findings_on_asset:
+                vals = db.query(SecurityValidation).filter(SecurityValidation.finding_id == fo.id, SecurityValidation.project_id == project_id).order_by(SecurityValidation.created_at.desc()).limit(2).all()
+                validations.extend(vals)
     except Exception:
         pass
     # Notes
@@ -295,6 +304,7 @@ def get_investigation_detail(project_id: str, db: Session, investigation_id: str
         "retest": {"status": retest.status if retest else None, "scanner": retest.scanner if retest else None, "result": retest.result if retest else None} if retest else None,
         "sla": {"status": sla.status if sla else None, "due_at": sla.due_at.isoformat() if sla and sla.due_at else None, "breached_at": sla.breached_at.isoformat() if sla and sla.breached_at else None} if sla else None,
         "ownership": ownership,
+        "validations": [{"id": v.id, "status": v.status, "verdict": v.verdict, "confidence": v.confidence, "scanner": v.scanner, "scanner_version": v.scanner_version, "scanner_digest": v.scanner_digest, "target": v.target, "created_at": v.created_at.isoformat() if v.created_at else None} for v in validations[:5]],
         "timeline": timeline[:20],
         "notes": [{"id": n.id, "author_id": n.author_id, "content": n.content[:500], "created_at": n.created_at.isoformat() if n.created_at else None} for n in notes],
     }
@@ -351,6 +361,10 @@ def get_timeline(project_id: str, db: Session, investigation_id: str) -> list[di
             retests = db.query(FindingRetest).filter(FindingRetest.finding_id == f.id).limit(5).all()
             for rt in retests:
                 events.append({"timestamp": rt.created_at, "source": "retest", "type": f"RETEST_{rt.status}", "detail": rt.scanner or "retest"})
+            # Validations
+            vals = db.query(SecurityValidation).filter(SecurityValidation.finding_id == f.id, SecurityValidation.project_id == project_id).limit(5).all()
+            for v in vals:
+                events.append({"timestamp": v.created_at, "source": "validation", "type": f"VALIDATION_{v.verdict or v.status}", "detail": f"{v.validation_type} {v.verdict or v.status}"})
     except Exception:
         pass
     # Attack path history
