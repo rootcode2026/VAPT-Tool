@@ -11,6 +11,7 @@ import { useProjectContext } from "@/lib/project-context";
 import { getAzureSummary, getCloudSecuritySummary, getGcpSummary, getNetworkSummary, getStorageSummary, listCloudChecks } from "@/lib/api/codeSecurity";
 import { getCspmSummary } from "@/lib/api/cspm";
 import { listCloudAttackPaths, getCloudAttackPath, listAttackPathHistory, getAttackPathHistory, getAttackPathSummary, observeAttackPaths } from "@/lib/api/cloudAttackPaths";
+import { getExposureIntelligence, listTopExposures, getExposureDetail } from "@/lib/api/cloudExposure";
 import { listCloudConnections, createCloudConnection, validateCloudConnection, discoverCloudResources, listCloudDiscoveries, listCloudCheckCatalog, runCloudSecurityChecks, listCloudCheckRuns } from "@/lib/api/connectors";
 import Link from "next/link";
 
@@ -46,6 +47,10 @@ export default function CloudSecurityPage() {
   const [history, setHistory] = useState([]);
   const [historyDetail, setHistoryDetail] = useState(null);
   const [historySummary, setHistorySummary] = useState(null);
+  const [exposure, setExposure] = useState(null);
+  const [topExposures, setTopExposures] = useState([]);
+  const [selectedExposure, setSelectedExposure] = useState(null);
+  const [exposureDetail, setExposureDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -54,7 +59,7 @@ export default function CloudSecurityPage() {
     setLoading(true);
     setError("");
     try {
-      const [s, c, cc, dd, cat, cr, net, stor, gcpSummary, azureSummary, cspmSummary, ap, hist, histSum] = await Promise.all([
+      const [s, c, cc, dd, cat, cr, net, stor, gcpSummary, azureSummary, cspmSummary, ap, hist, histSum, expInt, topExp] = await Promise.all([
         getCloudSecuritySummary(selectedProjectId),
         listCloudChecks(selectedProjectId).catch(() => ({ checks: [] })),
         listCloudConnections(selectedProjectId).catch(() => ({ connections: [] })),
@@ -69,6 +74,8 @@ export default function CloudSecurityPage() {
         listCloudAttackPaths(selectedProjectId, { limit: 20 }).catch(() => ({ paths: [] })),
         listAttackPathHistory(selectedProjectId, { limit: 20 }).catch(() => ({ paths: [] })),
         getAttackPathSummary(selectedProjectId).catch(() => null),
+        getExposureIntelligence(selectedProjectId).catch(() => null),
+        listTopExposures(selectedProjectId, { limit: 10 }).catch(() => ({ top_exposures: [] })),
       ]);
       setSummary(s);
       setChecks(c.checks || c || []);
@@ -84,6 +91,8 @@ export default function CloudSecurityPage() {
       setAttackPaths(ap?.paths || ap?.data?.paths || []);
       setHistory(hist?.paths || hist?.data?.paths || []);
       setHistorySummary(histSum);
+      setExposure(expInt);
+      setTopExposures(topExp?.top_exposures || topExp?.data?.top_exposures || []);
     } catch (e) {
       setError(e.message || "Unable to load cloud security.");
     } finally {
@@ -346,6 +355,53 @@ export default function CloudSecurityPage() {
           </div>
         )}
         <p className="mt-2 text-xs text-muted">ACTIVE when observed, RESOLVED when missing from valid completed observation. Failed/partial runs never resolve.</p>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">Cloud Exposure Intelligence (E11)</h3>
+        <p className="text-xs text-muted">WHAT SHOULD WE FIX FIRST? Correlates findings + CSPM + attack paths + history + asset context. Deterministic, explainable.</p>
+        <div className="mt-2 grid gap-2 sm:grid-cols-4">
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Exposure Score</p><p className="text-sm font-medium">{exposure?.score ?? 0} <span className="text-xs">({exposure?.grade ?? "-"})</span></p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Critical</p><p className="text-sm font-medium">{exposure?.critical ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">High</p><p className="text-sm font-medium">{exposure?.high ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Total Top</p><p className="text-sm font-medium">{exposure?.total ?? 0}</p></div>
+        </div>
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">By Provider</p><p className="text-xs">{exposure ? Object.entries(exposure.providers || {}).map(([k,v])=> `${k}:${v}`).join(", ") || "none" : "—"}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">By Type</p><p className="text-xs">{exposure ? Object.entries(exposure.exposure_types || {}).map(([k,v])=> `${k}:${v}`).join(", ") || "none" : "—"}</p></div>
+        </div>
+        {topExposures.length === 0 ? <p className="mt-2 text-xs text-muted">No exposures — no critical/high risk correlated.</p> : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-left text-muted"><th className="p-1">Priority</th><th className="p-1">Severity</th><th className="p-1">Provider</th><th className="p-1">Exposure</th><th className="p-1">Asset</th><th className="p-1">Status</th></tr></thead>
+              <tbody>
+                {topExposures.map((e) => (
+                  <tr key={e.exposure_id} className="cursor-pointer border-t hover:bg-canvas" onClick={async () => { setSelectedExposure(e.exposure_id); try { const d = await getExposureDetail(selectedProjectId, e.exposure_id); setExposureDetail(d); } catch (err) { setExposureDetail(e); } }}>
+                    <td className="p-1 font-medium">{e.priority_score}</td>
+                    <td className="p-1"><SeverityBadge severity={e.severity} /></td>
+                    <td className="p-1">{e.provider}</td>
+                    <td className="p-1 font-mono">{e.exposure_type}</td>
+                    <td className="p-1 truncate max-w-[120px]">{e.asset_id ? e.asset_id.slice(0,8) : "—"}</td>
+                    <td className="p-1">{e.severity}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {selectedExposure && exposureDetail && (
+              <div className="mt-3 rounded border bg-canvas p-3">
+                <p className="text-sm font-semibold">WHY THIS MATTERS: {exposureDetail.exposure_id.slice(0,8)} — {exposureDetail.severity} / {exposureDetail.confidence}</p>
+                <p className="text-xs text-muted">Score {exposureDetail.priority_score} • {exposureDetail.explanation}</p>
+                <div className="mt-2"><p className="text-xs font-medium">Risk Factors: {(exposureDetail.risk_factors || []).join(", ")}</p></div>
+                <div className="mt-2"><p className="text-xs font-medium">Findings: {(exposureDetail.finding_ids || []).slice(0,5).map((id)=> <span key={id} className="font-mono text-xs mr-1">{id.slice(0,6)}</span>)}</p></div>
+                <div className="mt-2"><p className="text-xs font-medium">Attack Paths: {(exposureDetail.attack_path_ids || []).slice(0,3).map((id)=> <span key={id} className="font-mono text-xs mr-1">{id.slice(0,6)}</span>)}</p></div>
+                <div className="mt-2"><p className="text-xs font-medium">Evidence: {(exposureDetail.evidence || []).slice(0,5).map((ev,i)=> <p key={i} className="text-xs text-muted">{ev.type}: {ev.rule_id || ev.control_id || ev.path_id}</p>)}</p></div>
+                {exposureDetail.history && <p className="text-xs text-muted">History: first {exposureDetail.history.first_seen_at?.slice(0,10)} last {exposureDetail.history.last_seen_at?.slice(0,10)} status {exposureDetail.history.status}</p>}
+                <button type="button" onClick={() => { setSelectedExposure(null); setExposureDetail(null); }} className="mt-2 rounded border px-2 py-1 text-xs">Close</button>
+              </div>
+            )}
+          </div>
+        )}
+        <p className="mt-2 text-xs text-muted">Score: finding 20 + path 30 + exposure 15 + privilege 10 + sensitive 10 + persistence 5 + recurrence 5 + SLA 5 =100. Deterministic.</p>
       </div>
 
       <div className="rounded-md border bg-surface p-4">

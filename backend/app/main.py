@@ -14,6 +14,7 @@ from app.api.routes.org_security import router as org_security_router
 from app.api.routes.ai import router as ai_router
 from app.api.routes.cloud_attack_paths import router as cloud_attack_paths_router
 from app.api.routes.cloud_connections import router as cloud_connections_router
+from app.api.routes.cloud_exposure import router as cloud_exposure_router
 from app.api.routes.cloud_security import router as cloud_security_router
 from app.api.routes.cspm import router as cspm_router
 from app.api.routes.code_security import router as code_security_router
@@ -103,6 +104,7 @@ protected = [Depends(get_current_user), Depends(set_rls_context)]
 app.include_router(auth_router)
 app.include_router(cspm_router, dependencies=protected)
 app.include_router(cloud_attack_paths_router, dependencies=protected)
+app.include_router(cloud_exposure_router, dependencies=protected)
 app.include_router(targets_router, dependencies=protected)
 app.include_router(projects_router, dependencies=protected)
 app.include_router(scans_router, dependencies=protected)
