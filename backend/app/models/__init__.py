@@ -21,6 +21,7 @@ from app.models.scanner_fleet import (
 from app.models.password_reset_token import PasswordResetToken
 from app.models.recovery_code import MfaRecoveryCode
 from app.models.target import Target
+from app.models.cloud_attack_path import CloudAttackPath, CloudAttackPathObservation
 from app.models.user import User
 from app.models.user_mfa import UserMfaCredential
 from app.models.user_onboarding import UserOnboarding
@@ -32,6 +33,8 @@ __all__ = [
     "AssetChangeEvent",
     "AssetRelationship",
     "AuditLog",
+    "CloudAttackPath",
+    "CloudAttackPathObservation",
     "Finding",
     "MfaRecoveryCode",
     "MonitoringChangeEvent",

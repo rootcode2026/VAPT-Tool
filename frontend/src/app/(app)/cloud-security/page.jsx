@@ -10,7 +10,7 @@ import SeverityBadge from "@/components/ui/SeverityBadge";
 import { useProjectContext } from "@/lib/project-context";
 import { getAzureSummary, getCloudSecuritySummary, getGcpSummary, getNetworkSummary, getStorageSummary, listCloudChecks } from "@/lib/api/codeSecurity";
 import { getCspmSummary } from "@/lib/api/cspm";
-import { listCloudAttackPaths, getCloudAttackPath } from "@/lib/api/cloudAttackPaths";
+import { listCloudAttackPaths, getCloudAttackPath, listAttackPathHistory, getAttackPathHistory, getAttackPathSummary, observeAttackPaths } from "@/lib/api/cloudAttackPaths";
 import { listCloudConnections, createCloudConnection, validateCloudConnection, discoverCloudResources, listCloudDiscoveries, listCloudCheckCatalog, runCloudSecurityChecks, listCloudCheckRuns } from "@/lib/api/connectors";
 import Link from "next/link";
 
@@ -43,6 +43,9 @@ export default function CloudSecurityPage() {
   const [attackPaths, setAttackPaths] = useState([]);
   const [selectedPath, setSelectedPath] = useState(null);
   const [pathDetail, setPathDetail] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyDetail, setHistoryDetail] = useState(null);
+  const [historySummary, setHistorySummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -51,7 +54,7 @@ export default function CloudSecurityPage() {
     setLoading(true);
     setError("");
     try {
-      const [s, c, cc, dd, cat, cr, net, stor, gcpSummary, azureSummary, cspmSummary, ap] = await Promise.all([
+      const [s, c, cc, dd, cat, cr, net, stor, gcpSummary, azureSummary, cspmSummary, ap, hist, histSum] = await Promise.all([
         getCloudSecuritySummary(selectedProjectId),
         listCloudChecks(selectedProjectId).catch(() => ({ checks: [] })),
         listCloudConnections(selectedProjectId).catch(() => ({ connections: [] })),
@@ -64,6 +67,8 @@ export default function CloudSecurityPage() {
         getAzureSummary(selectedProjectId).catch(() => null),
         getCspmSummary(selectedProjectId).catch(() => null),
         listCloudAttackPaths(selectedProjectId, { limit: 20 }).catch(() => ({ paths: [] })),
+        listAttackPathHistory(selectedProjectId, { limit: 20 }).catch(() => ({ paths: [] })),
+        getAttackPathSummary(selectedProjectId).catch(() => null),
       ]);
       setSummary(s);
       setChecks(c.checks || c || []);
@@ -77,6 +82,8 @@ export default function CloudSecurityPage() {
       setAzure(azureSummary);
       setCspm(cspmSummary);
       setAttackPaths(ap?.paths || ap?.data?.paths || []);
+      setHistory(hist?.paths || hist?.data?.paths || []);
+      setHistorySummary(histSum);
     } catch (e) {
       setError(e.message || "Unable to load cloud security.");
     } finally {
@@ -295,6 +302,50 @@ export default function CloudSecurityPage() {
           </div>
         )}
         <p className="mt-2 text-xs text-muted">Bounded: depth ≤6, ≤100 paths, evidence ≤20. Potential attack path, not confirmed exploitation.</p>
+      </div>
+
+      <div className="rounded-md border bg-surface p-4">
+        <h3 className="text-sm font-semibold">Attack Path History (E10)</h3>
+        <p className="text-xs text-muted">Historical intelligence: first seen / last seen / resolved, severity & priority changes, reopened paths. Evidence-backed, not exploitation.</p>
+        <div className="mt-2 grid gap-2 sm:grid-cols-4">
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Active</p><p className="text-sm font-medium">{historySummary?.active ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Resolved</p><p className="text-sm font-medium">{historySummary?.resolved ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Critical</p><p className="text-sm font-medium">{historySummary?.critical ?? 0}</p></div>
+          <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Highest Priority</p><p className="text-sm font-medium">{historySummary?.highest_priority ?? 0}</p></div>
+        </div>
+        <div className="mt-2 flex gap-2">
+          <button type="button" onClick={async () => { try { await observeAttackPaths(selectedProjectId, { run_status: "completed" }); load(); } catch (e) { /* ignore */ } }} className="rounded border px-2 py-1 text-xs">Observe now</button>
+          <span className="text-xs text-muted">Providers: {historySummary ? Object.entries(historySummary.providers || {}).map(([k,v])=> `${k}:${v}`).join(", ") || "none" : "—"} • Types: {historySummary ? Object.entries(historySummary.path_types || {}).map(([k,v])=> `${k}:${v}`).join(", ") || "none" : "—"}</span>
+        </div>
+        {history.length === 0 ? <p className="mt-2 text-xs text-muted">No historical paths yet — run observe or wait for monitoring.</p> : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-left text-muted"><th className="p-1">First Seen</th><th className="p-1">Last Seen</th><th className="p-1">Provider</th><th className="p-1">Type</th><th className="p-1">Severity</th><th className="p-1">Priority</th><th className="p-1">Status</th></tr></thead>
+              <tbody>
+                {history.map((p) => (
+                  <tr key={p.id} className="cursor-pointer border-t hover:bg-canvas" onClick={async () => { try { const d = await getAttackPathHistory(selectedProjectId, p.id); setHistoryDetail(d); } catch (e) { setHistoryDetail(p); } }}>
+                    <td className="p-1">{p.first_seen_at ? new Date(p.first_seen_at).toLocaleDateString() : "—"}</td>
+                    <td className="p-1">{p.last_seen_at ? new Date(p.last_seen_at).toLocaleDateString() : "—"}</td>
+                    <td className="p-1">{p.provider}</td>
+                    <td className="p-1 font-mono">{p.path_type}</td>
+                    <td className="p-1"><SeverityBadge severity={p.severity} /></td>
+                    <td className="p-1">{p.priority_score}</td>
+                    <td className="p-1">{p.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {historyDetail && (
+              <div className="mt-3 rounded border bg-canvas p-3">
+                <p className="text-sm font-semibold">History Detail: {historyDetail.id.slice(0,8)} — {historyDetail.path_type} ({historyDetail.severity})</p>
+                <p className="text-xs text-muted">First: {historyDetail.first_seen_at} • Last: {historyDetail.last_seen_at} • Resolved: {historyDetail.resolved_at || "—"} • Confidence: {historyDetail.confidence}</p>
+                <div className="mt-2"><p className="text-xs font-medium">Observations: {historyDetail.observations?.length ?? 0}</p>{(historyDetail.observations || []).slice(0,5).map((o) => (<p key={o.id} className="text-xs text-muted">{o.observed_at?.slice(0,10)} • {o.severity} • {o.priority_score} • {o.status}</p>))}</div>
+                <button type="button" onClick={() => setHistoryDetail(null)} className="mt-2 rounded border px-2 py-1 text-xs">Close</button>
+              </div>
+            )}
+          </div>
+        )}
+        <p className="mt-2 text-xs text-muted">ACTIVE when observed, RESOLVED when missing from valid completed observation. Failed/partial runs never resolve.</p>
       </div>
 
       <div className="rounded-md border bg-surface p-4">
