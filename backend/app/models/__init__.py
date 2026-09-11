@@ -22,6 +22,7 @@ from app.models.password_reset_token import PasswordResetToken
 from app.models.recovery_code import MfaRecoveryCode
 from app.models.target import Target
 from app.models.cloud_attack_path import CloudAttackPath, CloudAttackPathObservation
+from app.models.external_scope import ExternalDiscoveryRun, ExternalScope, ExternalScopeEntry
 from app.models.security_investigation import InvestigationNote, SecurityInvestigation
 from app.models.security_validation import SecurityValidation
 from app.models.user import User
@@ -37,6 +38,9 @@ __all__ = [
     "AuditLog",
     "CloudAttackPath",
     "CloudAttackPathObservation",
+    "ExternalDiscoveryRun",
+    "ExternalScope",
+    "ExternalScopeEntry",
     "Finding",
     "InvestigationNote",
     "SecurityInvestigation",
