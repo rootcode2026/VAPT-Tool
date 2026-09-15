@@ -23,3 +23,12 @@ export function getTopRisks(projectId) {
 export function getPrioritySummary(projectId) {
   return api.get(`/api/v1/projects/${projectId}/security-intelligence/priority-summary`);
 }
+export function getTrends(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/trends`, { query: params });
+}
+export function getTrendsSummary(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/trends/summary`, { query: params });
+}
+export function getSubjectTrends(projectId, subjectType, subjectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/trends/${subjectType}/${subjectId}`, { query: params });
+}
