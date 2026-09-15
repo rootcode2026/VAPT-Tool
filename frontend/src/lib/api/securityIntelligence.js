@@ -104,3 +104,21 @@ export function getRiskAcceptanceAging(projectId) {
 export function getImprovement(projectId, params = {}) {
   return api.get(`/api/v1/projects/${projectId}/security-intelligence/improvement`, { query: params });
 }
+export function getDecisionCenter(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/decision-center`);
+}
+export function getDecisions(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/decisions`, { query: params });
+}
+export function getAttentionQueue(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/attention-queue`, { query: params });
+}
+export function getExecutiveSummary(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/executive-summary`);
+}
+export function getSecuritySnapshot(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/security-snapshot`);
+}
+export function getRecentChanges(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/recent-changes`, { query: params });
+}

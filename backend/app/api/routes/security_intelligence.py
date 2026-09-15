@@ -446,6 +446,55 @@ def get_improvement_f6(project_id: str, window: str = Query("7d", regex="^(7d|30
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+# F7 Decision Center
+@router.get("/decision-center")
+def get_decision_center_f7(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_operations_center import get_decision_center
+    return get_decision_center(project_id, db)
+
+@router.get("/decisions")
+def get_decisions_f7(project_id: str, limit: int = Query(20, ge=1, le=20), category: str | None = Query(None), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_operations_center import get_decisions
+    return get_decisions(project_id, db, limit=limit, category=category)
+
+@router.get("/attention-queue")
+def get_attention_queue_f7(project_id: str, limit: int = Query(20, ge=1, le=20), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_operations_center import get_attention_queue
+    return get_attention_queue(project_id, db, limit=limit)
+
+@router.get("/executive-summary")
+def get_executive_summary_f7(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_operations_center import get_executive_summary
+    return get_executive_summary(project_id, db)
+
+@router.get("/security-snapshot")
+def get_snapshot_f7(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_operations_center import get_security_snapshot
+    return get_security_snapshot(project_id, db)
+
+@router.get("/recent-changes")
+def get_recent_changes_f7(project_id: str, limit: int = Query(20, ge=1, le=20), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_operations_center import get_recent_changes
+    return get_recent_changes(project_id, db, limit=limit)
+
 # F3 trends
 @router.get("/trends")
 def get_trends(project_id: str, window: str = Query("7d", regex="^(7d|30d|90d)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
