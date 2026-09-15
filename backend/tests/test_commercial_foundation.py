@@ -23,7 +23,7 @@ def _engine():
                     if "jsonb" in str(col.server_default.arg).lower(): col.server_default=None
                 except: pass
     eng=create_engine("sqlite://", connect_args={"check_same_thread":False}, poolclass=StaticPool)
-    needed=["organizations","users","projects","project_memberships","organization_memberships","plans","subscriptions","licenses","usage_events","audit_logs","assets","targets","scans"]
+    needed=["organizations","users","projects","project_memberships","organization_memberships","plans","subscriptions","licenses","usage_events","payment_webhook_events","audit_logs","assets","targets","scans"]
     tables=[ProdBase.metadata.tables[n] for n in needed if n in ProdBase.metadata.tables]
     ProdBase.metadata.create_all(bind=eng, tables=tables)
     # seed plans manually if not exists
