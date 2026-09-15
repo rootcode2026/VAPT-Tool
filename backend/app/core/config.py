@@ -218,6 +218,11 @@ class Settings:
         "",
     )
 
+    # NVIDIA Kimi K2 — OpenAI-compatible via NVIDIA API
+    NVIDIA_API_KEY: str = os.getenv("NVIDIA_API_KEY", "")
+    NVIDIA_API_BASE_URL: str = os.getenv("NVIDIA_API_BASE_URL", "")
+    NVIDIA_MODEL: str = os.getenv("NVIDIA_MODEL", "")
+
     # ---------------------------------------------------------
     # Scanner Control Plane
     # ---------------------------------------------------------
