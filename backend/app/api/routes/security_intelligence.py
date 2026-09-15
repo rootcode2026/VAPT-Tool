@@ -182,3 +182,41 @@ def get_priority_summary(project_id: str, db: Session = Depends(get_db), current
     _require_read(project_id, db, current_user)
     from app.services.security_prioritization import get_priority_summary as svc_sum
     return svc_sum(project_id, db)
+
+# F3 trends
+@router.get("/trends")
+def get_trends(project_id: str, window: str = Query("7d", regex="^(7d|30d|90d)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_trends import get_trends as svc_trends
+    try:
+        return svc_trends(project_id, db, window=window)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/trends/summary")
+def get_trends_summary(project_id: str, window: str = Query("7d", regex="^(7d|30d|90d)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_trends import get_trends_summary as svc_sum
+    try:
+        return svc_sum(project_id, db, window=window)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/trends/{subject_type}/{subject_id}")
+def get_subject_trends(project_id: str, subject_type: str, subject_id: str, window: str = Query("7d", regex="^(7d|30d|90d)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    _validate_subject(subject_type, subject_id)
+    from app.services.security_trends import get_subject_trends as svc_sub
+    try:
+        res = svc_sub(project_id, db, subject_type, subject_id, window=window)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not res:
+        raise HTTPException(status_code=404, detail="Subject not found")
+    return res

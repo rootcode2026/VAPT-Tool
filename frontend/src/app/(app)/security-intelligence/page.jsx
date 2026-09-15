@@ -7,7 +7,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import ErrorState from "@/components/ui/ErrorState";
 import { useProjectContext } from "@/lib/project-context";
 import { listApplications } from "@/lib/api/applications";
-import { getSecurityContext, getBlastRadius, getExposureChain, getImpact, getPriorities, getTopRisks, getPrioritySummary } from "@/lib/api/securityIntelligence";
+import { getSecurityContext, getBlastRadius, getExposureChain, getImpact, getPriorities, getTopRisks, getPrioritySummary, getTrends, getTrendsSummary } from "@/lib/api/securityIntelligence";
 
 export default function SecurityIntelligencePage() {
   const { selectedProjectId, status } = useProjectContext();
@@ -20,6 +20,8 @@ export default function SecurityIntelligencePage() {
   const [priorities, setPriorities] = useState([]);
   const [topRisks, setTopRisks] = useState(null);
   const [summary, setSummary] = useState(null);
+  const [trends, setTrends] = useState(null);
+  const [trendsWindow, setTrendsWindow] = useState("7d");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
@@ -28,19 +30,21 @@ export default function SecurityIntelligencePage() {
     if (!selectedProjectId) return;
     setLoading(true);
     try {
-      const [res, pri, top, sum] = await Promise.all([
+      const [res, pri, top, sum, tr] = await Promise.all([
         listApplications(selectedProjectId, { limit: 50 }).catch(() => ({ applications: [] })),
         getPriorities(selectedProjectId, { limit: 10 }).catch(() => ({ priorities: [] })),
         getTopRisks(selectedProjectId).catch(() => null),
         getPrioritySummary(selectedProjectId).catch(() => null),
+        getTrends(selectedProjectId, { window: trendsWindow }).catch(() => null),
       ]);
       setApps(res?.applications || res?.data?.applications || []);
       setPriorities(pri?.priorities || pri?.data?.priorities || []);
       setTopRisks(top);
       setSummary(sum);
+      setTrends(tr);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
-  }, [selectedProjectId]);
+  }, [selectedProjectId, trendsWindow]);
 
   useEffect(() => { if (status === "ready" && selectedProjectId) loadApps(); }, [status, selectedProjectId, loadApps]);
 
@@ -97,6 +101,33 @@ export default function SecurityIntelligencePage() {
             <p>Top attack paths: {(topRisks.top_attack_paths||[]).map(p=> p.path_type).join(", ") || "—"}</p>
             {topRisks.recently_worsened_exposure?.length >0 && <p>Recently worsened: {topRisks.recently_worsened_exposure.map(e=> e.value).join(", ")}</p>}
           </div>
+        </div>
+      )}
+
+      {trends && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Risk Evolution — {trendsWindow} <span className="text-muted">({trends.data_quality})</span></h3>
+          <div className="mt-2 flex gap-2">
+            <button type="button" onClick={()=>{ setTrendsWindow("7d"); }} className={`rounded border px-2 py-1 text-xs ${trendsWindow==="7d"?"bg-primary text-primary-foreground":""}`}>7d</button>
+            <button type="button" onClick={()=>{ setTrendsWindow("30d"); }} className={`rounded border px-2 py-1 text-xs ${trendsWindow==="30d"?"bg-primary text-primary-foreground":""}`}>30d</button>
+            <button type="button" onClick={()=>{ setTrendsWindow("90d"); }} className={`rounded border px-2 py-1 text-xs ${trendsWindow==="90d"?"bg-primary text-primary-foreground":""}`}>90d</button>
+            <button type="button" onClick={()=> loadApps()} className="rounded border px-2 py-1 text-xs">Refresh</button>
+          </div>
+          <div className="mt-3">
+            <p className="text-sm font-bold">Posture {trends.posture.tier} {trends.posture.score} (prev {trends.posture.previous_score}) Δ {trends.posture.delta} • {trends.posture.direction}</p>
+            <p className="text-xs text-muted">Confidence {trends.posture.confidence} • {trends.reasons.slice(0,2).join(" • ")}</p>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Critical</p><p className="text-xs">Current {trends.metrics.current.critical} Prev {trends.metrics.previous.critical} Δ {trends.trends.critical.delta} ({trends.trends.critical.direction})</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Attack Paths</p><p className="text-xs">Current {trends.metrics.current.attack_paths} Prev {trends.metrics.previous.attack_paths} Δ {trends.trends.attack_paths.delta}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Internet Exposure</p><p className="text-xs">Current {trends.metrics.current.externally_reachable} Prev {trends.metrics.previous.externally_reachable} Δ {trends.trends.externally_reachable.delta}</p></div>
+          </div>
+          <div className="mt-3">
+            <h4 className="text-xs font-semibold">Why Risk Changed</h4>
+            <ul className="list-disc pl-4 text-xs">{trends.reasons.map((r,i)=><li key={i}>{r}</li>)}</ul>
+          </div>
+          {trends.top_worsening?.length>0 && <div className="mt-3"><h4 className="text-xs font-semibold">Top Worsening</h4><div className="text-xs">{trends.top_worsening.slice(0,5).map(w=> <div key={w.id} className="rounded border bg-canvas p-1 mt-1">{w.type}:{w.id.slice(0,6)} — {w.reason}</div>)}</div></div>}
+          {trends.top_improving?.length>0 && <div className="mt-3"><h4 className="text-xs font-semibold">Top Improving</h4><div className="text-xs">{trends.top_improving.slice(0,5).map(w=> <div key={w.id} className="rounded border bg-canvas p-1 mt-1">{w.type}:{w.id.slice(0,6)} — {w.reason}</div>)}</div></div>}
         </div>
       )}
 
