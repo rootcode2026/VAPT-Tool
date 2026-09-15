@@ -7,7 +7,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import ErrorState from "@/components/ui/ErrorState";
 import { useProjectContext } from "@/lib/project-context";
 import { listApplications } from "@/lib/api/applications";
-import { getSecurityContext, getBlastRadius, getExposureChain, getImpact, getPriorities, getTopRisks, getPrioritySummary, getTrends, getAttackSurface, getAttackDistribution, getAttackHotspots, getAttackConcentration, getAttackCoverage, getAttackTechnology, getAttackCloud, getAttackApplications, getAttackTop, getExposureChains, getExposureDecision, getExposureConcentration, getChangeExposure, getCoverageF5, getRootCause, getScorecard, getHistoryF6, getRecurringExposure, getRemediationEffectiveness, getAttackPathHistory } from "@/lib/api/securityIntelligence";
+import { getSecurityContext, getBlastRadius, getExposureChain, getImpact, getPriorities, getTopRisks, getPrioritySummary, getTrends, getAttackSurface, getAttackDistribution, getAttackHotspots, getAttackConcentration, getAttackCoverage, getAttackTechnology, getAttackCloud, getAttackApplications, getAttackTop, getExposureChains, getExposureDecision, getExposureConcentration, getChangeExposure, getCoverageF5, getRootCause, getScorecard, getHistoryF6, getRecurringExposure, getRemediationEffectiveness, getAttackPathHistory, getDecisionCenter, getAttentionQueue, getExecutiveSummary, getSecuritySnapshot, getRecentChanges } from "@/lib/api/securityIntelligence";
 
 export default function SecurityIntelligencePage() {
   const { selectedProjectId, status } = useProjectContext();
@@ -42,6 +42,11 @@ export default function SecurityIntelligencePage() {
   const [recurring, setRecurring] = useState(null);
   const [remEff, setRemEff] = useState(null);
   const [aph, setAph] = useState(null);
+  const [decisionCenter, setDecisionCenter] = useState(null);
+  const [attentionQueue, setAttentionQueue] = useState(null);
+  const [execSummary, setExecSummary] = useState(null);
+  const [snapshot, setSnapshot] = useState(null);
+  const [recentChanges, setRecentChanges] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
@@ -50,7 +55,7 @@ export default function SecurityIntelligencePage() {
     if (!selectedProjectId) return;
     setLoading(true);
     try {
-      const [res, pri, topR, sum, tr, surf, dist, hs, conc, cov, tc, cl, ae, tp, ech, dec, econc, chExp, cov5d, rc, sc, hf6, rec, reff, aphd] = await Promise.all([
+      const [res, pri, topR, sum, tr, surf, dist, hs, conc, cov, tc, cl, ae, tp, ech, dec, econc, chExp, cov5d, rc, sc, hf6, rec, reff, aphd, dc, aq, es, snap, rch] = await Promise.all([
         listApplications(selectedProjectId, { limit: 50 }).catch(() => ({ applications: [] })),
         getPriorities(selectedProjectId, { limit: 10 }).catch(() => ({ priorities: [] })),
         getTopRisks(selectedProjectId).catch(() => null),
@@ -76,6 +81,11 @@ export default function SecurityIntelligencePage() {
         getRecurringExposure(selectedProjectId).catch(() => null),
         getRemediationEffectiveness(selectedProjectId).catch(() => null),
         getAttackPathHistory(selectedProjectId).catch(() => null),
+        getDecisionCenter(selectedProjectId).catch(() => null),
+        getAttentionQueue(selectedProjectId).catch(() => null),
+        getExecutiveSummary(selectedProjectId).catch(() => null),
+        getSecuritySnapshot(selectedProjectId).catch(() => null),
+        getRecentChanges(selectedProjectId).catch(() => null),
       ]);
       setApps(res?.applications || res?.data?.applications || []);
       setPriorities(pri?.priorities || pri?.data?.priorities || []);
@@ -102,6 +112,11 @@ export default function SecurityIntelligencePage() {
       setRecurring(rec?.data || rec);
       setRemEff(reff?.data || reff);
       setAph(aphd?.data || aphd);
+      setDecisionCenter(dc?.data || dc);
+      setAttentionQueue(aq?.data || aq);
+      setExecSummary(es?.data || es);
+      setSnapshot(snap?.data || snap);
+      setRecentChanges(rch?.data || rch);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }, [selectedProjectId, trendsWindow]);
@@ -417,6 +432,45 @@ export default function SecurityIntelligencePage() {
           <h3 className="text-sm font-semibold">Attack Path History</h3>
           <p className="text-xs text-muted">{aph.total} paths • {aph.recurring?.length || 0} recurring</p>
           <div className="mt-2 space-y-1">{(aph.recurring||[]).slice(0,5).map(p=> <div key={p.fingerprint} className="rounded border bg-canvas p-2 text-xs"><p>{p.path_type} {p.provider} {p.current_severity} [{p.severity_change}] ×{p.recurrence_count}</p></div>)}</div>
+        </div>
+      )}
+      {decisionCenter && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">F7 — Security Operations Decision Center</h3>
+          <p className="text-xs text-muted">{decisionCenter.total} decisions • deterministic priority</p>
+          <div className="mt-2 space-y-1">{(decisionCenter.decisions||[]).slice(0,5).map(d=> <div key={d.decision_id} className="rounded border bg-canvas p-2 text-xs"><p className="font-semibold">{d.title} P{d.priority} {d.severity} [{d.status}]</p><p className="text-muted">{d.why_it_matters.slice(0,80)} → {d.recommended_action}</p></div>)}</div>
+        </div>
+      )}
+      {execSummary && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Executive Summary</h3>
+          <p className="text-xs text-muted">Overall {execSummary.overall_direction} • Critical {execSummary.critical_active} High {execSummary.high_active} • Worsening {execSummary.worsening_count} Recurring {execSummary.recurring_count}</p>
+          <div className="mt-2 text-xs">Unresolved {execSummary.unresolved_remediation} • Failed validation {execSummary.failed_validation} • Attack paths {execSummary.active_attack_paths} • Gaps {execSummary.major_coverage_gaps}</div>
+        </div>
+      )}
+      {snapshot && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Security Snapshot</h3>
+          <div className="mt-2 grid gap-2 sm:grid-cols-4 text-xs">
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Assets</p><p className="font-bold">{snapshot.assets}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Findings</p><p className="font-bold">{snapshot.findings}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Critical</p><p className="font-bold">{snapshot.critical_findings}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Internet</p><p className="font-bold">{snapshot.internet_facing_assets}</p></div>
+          </div>
+          <p className="mt-2 text-xs text-muted">Cloud {snapshot.cloud_exposures} • Paths {snapshot.active_attack_paths} • Open rem {snapshot.open_remediation} • Coverage gaps {snapshot.coverage_gaps}</p>
+        </div>
+      )}
+      {attentionQueue && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Attention Queue</h3>
+          <p className="text-xs text-muted">IMMEDIATE / HIGH / NORMAL / WATCH</p>
+          <div className="mt-2 space-y-1">{(attentionQueue.queue||[]).slice(0,5).map(q=> <div key={q.decision_id} className="rounded border bg-canvas p-2 text-xs"><p>{q.queue} — {q.title} P{q.priority}</p><p className="text-muted">{q.reason.slice(0,80)} → {q.suggested_next_step}</p></div>)}</div>
+        </div>
+      )}
+      {recentChanges && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Recent Security Changes</h3>
+          <div className="mt-2 space-y-1">{(recentChanges.changes||[]).slice(0,5).map(c=> <div key={c.id} className="rounded border bg-canvas p-2 text-xs"><p>{c.change_type || c.type} — {c.asset_id || c.id.slice(0,6)}</p><p className="text-muted">{c.detected_at || c.created_at}</p></div>)}</div>
         </div>
       )}
 
