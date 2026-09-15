@@ -1,8 +1,8 @@
 """Report services — deterministic metrics, snapshot, export.
-Authoritative customer-facing VAPT report template is VAPT_Final_Report (1).docx (WEB APPLICATION & NETWORK INFRASTRUCTURE, 23 sections).
+Authoritative customer-facing VAPT report template is VAPT_Final_Report.docx (WEB APPLICATION & NETWORK INFRASTRUCTURE, 23 sections).
 This module is the delivery mechanism, not the authoritative template. It maps persisted platform data
 (findings, assets, scans, remediation/retest/validation, evidence) into the template structure without inventing data.
-See docs/CUSTOMER_VAPT_REPORT_TEMPLATE.md for template mapping and limitations (full DOCX 23-section generation not yet implemented).
+See docs/CUSTOMER_VAPT_REPORT_TEMPLATE.md for template mapping. DOCX generation via python-docx populates the actual template.
 """
 from __future__ import annotations
 
@@ -653,6 +653,18 @@ def export_pdf(report: dict) -> bytes:
         return buffer.getvalue()
     except Exception:
         return _minimal_pdf(title, sections)
+
+
+def export_docx(report: dict, customer_name: str | None = None) -> bytes:
+    """Populate authoritative DOCX template with real VAPT data."""
+    try:
+        from app.services.report_docx import export_docx as _export_docx
+        return _export_docx(report, customer_name=customer_name)
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        # bubble as is to let caller handle 500
+        raise RuntimeError(f"DOCX generation failed: {str(e)[:200]}") from e
 
 def build_report_content(report_type: str, metrics: dict, db: Session, organization_id: str, project_id: str | None, snapshot: dict | None = None) -> dict:
     # Build content per report type, reusing existing data

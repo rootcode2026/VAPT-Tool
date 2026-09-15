@@ -13,6 +13,7 @@ bcrypt
 argon2-cffi
 cryptography
 reportlab
+python-docx
 python-multipart
 pyotp
 qrcode[pil]

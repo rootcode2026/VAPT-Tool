@@ -25,6 +25,7 @@ from app.services.report_service import (
     collect_metrics,
     collect_report_snapshot,
     export_csv,
+    export_docx,
     export_pdf,
     parse_report_period,
 )
@@ -255,7 +256,7 @@ def download_report(report_id: str, fmt: str, db: Session = Depends(get_db), cur
     if r.status != "completed":
         raise HTTPException(status_code=400, detail="Report not completed")
     fmt = fmt.strip().lower()
-    if fmt not in ("json", "csv", "pdf"):
+    if fmt not in ("json", "csv", "pdf", "docx"):
         raise HTTPException(status_code=400, detail="Invalid format")
     # audit
     try:
@@ -284,6 +285,23 @@ def download_report(report_id: str, fmt: str, db: Session = Depends(get_db), cur
             findings = [{"id": r.id, "title": r.title, "severity": "info", "status": r.status, "scanner": r.report_type, "asset_id": "", "evidence": ""}]
         csv_bytes = export_csv(findings)
         return Response(content=csv_bytes, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{r.report_type}-{r.id}.csv"'})
+    elif fmt == "docx":
+        # resolve customer name from organization if available
+        customer_name = None
+        try:
+            from app.models.organization import Organization as _Org
+            org = db.query(_Org).filter(_Org.id == r.organization_id).first()
+            if org:
+                customer_name = org.name
+        except Exception:
+            pass
+        try:
+            docx_bytes = export_docx({"title": r.title, "report_type": r.report_type, "organization_id": r.organization_id, "project_id": r.project_id, "version": r.version, "data_as_of": r.data_as_of.isoformat() if r.data_as_of else "", "summary": r.summary or {}, "content": r.content or {}}, customer_name=customer_name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=500, detail="Report template not found")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)[:200])
+        return Response(content=docx_bytes, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Content-Disposition": f'attachment; filename="{r.report_type}-{r.id}.docx"'})
     else:  # pdf
         pdf_bytes = export_pdf({"title": r.title, "report_type": r.report_type, "organization_id": r.organization_id, "project_id": r.project_id, "version": r.version, "data_as_of": r.data_as_of.isoformat() if r.data_as_of else "", "summary": r.summary or {}, "content": r.content or {}})
         return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{r.report_type}-{r.id}.pdf"'})
