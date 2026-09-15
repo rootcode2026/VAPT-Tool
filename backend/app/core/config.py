@@ -35,16 +35,21 @@ class Settings:
         "postgresql://security:security_password@postgres:5432/security_saas",
     )
 
-    # Row-Level Security (RLS) — defense-in-depth, preparation only.
-    # When false (default), the RLS helper is a no-op and application
-    # authorization remains authoritative. No table has RLS enabled yet.
-    RLS_ENABLED: bool = os.getenv("RLS_ENABLED", "false").lower() == "true"
+    # Row-Level Security (RLS) — defense-in-depth, production default enabled.
+    # When true (production default), the RLS helper enforces transaction-local
+    # organization/project isolation via set_config; application RBAC remains authoritative.
+    # Existing migration i9a0b1c2d3e4 enables RLS on 9 tenant tables; FORCE RLS ensures
+    # even table owners cannot bypass policies. Development may still set RLS_ENABLED=false
+    # explicitly for SQLite-only tests, but production must use true.
+    RLS_ENABLED: bool = os.getenv("RLS_ENABLED", "true").lower() == "true"
 
-    # RBAC strict mode — when true, missing project membership is DENIED for all projects.
-    # When false (default, transitional), projects without explicit memberships use org fallback
+    # RBAC strict mode — production default enabled.
+    # When true (production default), missing project membership is DENIED for all projects.
+    # When false (transitional), projects without explicit memberships use org fallback
     # (member → analyst, org_admin → project_admin) for backward compat. New projects always
     # get explicit membership for creator and are strict when they have at least one explicit row.
-    RBAC_STRICT_MODE: bool = os.getenv("RBAC_STRICT_MODE", "false").lower() == "true"
+    # Hardened to true by default for MMP-1; set RBAC_STRICT_MODE=false only for legacy dev if needed.
+    RBAC_STRICT_MODE: bool = os.getenv("RBAC_STRICT_MODE", "true").lower() == "true"
 
     # Audit logging — metadata size limit to prevent storage DoS
     AUDIT_METADATA_MAX_BYTES: int = int(os.getenv("AUDIT_METADATA_MAX_BYTES", "4096"))

@@ -252,12 +252,17 @@ class KMSVaultSecretStore(SecretStore):
 
 def get_secret_store(db=None) -> SecretStore:
     mode = os.getenv("SECRET_STORE_MODE", "").lower() or os.getenv("SECRET_STORE", "").lower()
-    if mode == "production" or os.getenv("CONNECTOR_ENCRYPTION_KEY", ""):
-        # If production key configured, use AES-256-GCM
+    # Production must never silently fall back to development.
+    if mode == "production":
+        if os.getenv("KMS_ENABLED", "").lower() == "true":
+            return KMSVaultSecretStore()
+        # Require explicit 32-byte key for production AES-256-GCM
+        return ProductionAESGCMStore(db=db)
+    if os.getenv("KMS_ENABLED", "").lower() == "true":
+        return KMSVaultSecretStore()
+    if os.getenv("CONNECTOR_ENCRYPTION_KEY", ""):
         try:
             return ProductionAESGCMStore(db=db)
         except Exception:
             pass
-    if os.getenv("KMS_ENABLED", "").lower() == "true":
-        return KMSVaultSecretStore()
     return DevelopmentSecretStore(db=db)
