@@ -31,7 +31,8 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint("pool_id", "worker_key", name="uq_workers_pool_key"),
     )
-    op.create_index("ix_workers_status", "workers", ["status"])
+    # ix_workers_status already created via column index=True; skip explicit create to avoid DuplicateTable on PostgreSQL
+    pass
 
 
 def downgrade() -> None:

@@ -23,6 +23,8 @@ export const PRIMARY_NAV = [
   { name: "Cloud Security", href: "/cloud-security", icon: IconScans },
   { name: "DAST", href: "/dast", icon: IconScans },
   { name: "API Security", href: "/api-security", icon: IconShield },
+  { name: "Applications", href: "/applications", icon: IconShield },
+  { name: "Security Intelligence", href: "/security-intelligence", icon: IconShield },
   { name: "Reports", href: "/reports", icon: IconAudit },
   { name: "Compliance", href: "/compliance", icon: IconShield },
   { name: "AI Analyst", href: "/ai", icon: IconShield },

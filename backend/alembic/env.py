@@ -14,6 +14,8 @@ from app.models import (
     AssetChangeEvent,
     AssetRelationship,
     AuditLog,
+    Application,
+    ApplicationAsset,
     Finding,
     MfaRecoveryCode,
     Organization,
