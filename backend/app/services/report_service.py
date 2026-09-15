@@ -1,4 +1,9 @@
-"""Report services — deterministic metrics, snapshot, export."""
+"""Report services — deterministic metrics, snapshot, export.
+Authoritative customer-facing VAPT report template is VAPT_Final_Report (1).docx (WEB APPLICATION & NETWORK INFRASTRUCTURE, 23 sections).
+This module is the delivery mechanism, not the authoritative template. It maps persisted platform data
+(findings, assets, scans, remediation/retest/validation, evidence) into the template structure without inventing data.
+See docs/CUSTOMER_VAPT_REPORT_TEMPLATE.md for template mapping and limitations (full DOCX 23-section generation not yet implemented).
+"""
 from __future__ import annotations
 
 import csv
