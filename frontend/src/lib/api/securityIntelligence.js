@@ -62,3 +62,45 @@ export function getAttackTop(projectId) {
 export function getAttackHistorical(projectId, window = "7d") {
   return api.get(`/api/v1/projects/${projectId}/security-intelligence/attack-surface/historical`, { query: { window } });
 }
+export function getExposureChains(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/exposure-chains`, { query: params });
+}
+export function getExposureDecision(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/exposure-decision`);
+}
+export function getExposureConcentration(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/exposure-concentration`);
+}
+export function getChangeExposure(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/change-exposure`, { query: params });
+}
+export function getCoverageF5(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/coverage`);
+}
+export function getRootCause(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/root-cause`, { query: params });
+}
+export function getHistoryF6(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/history`, { query: params });
+}
+export function getScorecard(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/scorecard`, { query: params });
+}
+export function getRecurringExposure(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/recurring-exposure`, { query: params });
+}
+export function getRemediationEffectiveness(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/remediation-effectiveness`);
+}
+export function getAttackPathHistory(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/attack-path-history`, { query: params });
+}
+export function getSubjectHistory(projectId, subjectType, subjectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/subject-history/${subjectType}/${subjectId}`, { query: params });
+}
+export function getRiskAcceptanceAging(projectId) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/risk-acceptance-aging`);
+}
+export function getImprovement(projectId, params = {}) {
+  return api.get(`/api/v1/projects/${projectId}/security-intelligence/improvement`, { query: params });
+}

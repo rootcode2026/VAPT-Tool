@@ -7,7 +7,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import ErrorState from "@/components/ui/ErrorState";
 import { useProjectContext } from "@/lib/project-context";
 import { listApplications } from "@/lib/api/applications";
-import { getSecurityContext, getBlastRadius, getExposureChain, getImpact, getPriorities, getTopRisks, getPrioritySummary, getTrends, getAttackSurface, getAttackDistribution, getAttackHotspots, getAttackConcentration, getAttackCoverage, getAttackTechnology, getAttackCloud, getAttackApplications, getAttackTop } from "@/lib/api/securityIntelligence";
+import { getSecurityContext, getBlastRadius, getExposureChain, getImpact, getPriorities, getTopRisks, getPrioritySummary, getTrends, getAttackSurface, getAttackDistribution, getAttackHotspots, getAttackConcentration, getAttackCoverage, getAttackTechnology, getAttackCloud, getAttackApplications, getAttackTop, getExposureChains, getExposureDecision, getExposureConcentration, getChangeExposure, getCoverageF5, getRootCause, getScorecard, getHistoryF6, getRecurringExposure, getRemediationEffectiveness, getAttackPathHistory } from "@/lib/api/securityIntelligence";
 
 export default function SecurityIntelligencePage() {
   const { selectedProjectId, status } = useProjectContext();
@@ -31,6 +31,17 @@ export default function SecurityIntelligencePage() {
   const [cloud, setCloud] = useState(null);
   const [appExp, setAppExp] = useState(null);
   const [top, setTop] = useState(null);
+  const [exposureChains, setExposureChains] = useState(null);
+  const [decision, setDecision] = useState(null);
+  const [expConc, setExpConc] = useState(null);
+  const [changeExp, setChangeExp] = useState(null);
+  const [cov5, setCov5] = useState(null);
+  const [rootCause, setRootCause] = useState(null);
+  const [scorecard, setScorecard] = useState(null);
+  const [historyF6, setHistoryF6] = useState(null);
+  const [recurring, setRecurring] = useState(null);
+  const [remEff, setRemEff] = useState(null);
+  const [aph, setAph] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
@@ -39,7 +50,7 @@ export default function SecurityIntelligencePage() {
     if (!selectedProjectId) return;
     setLoading(true);
     try {
-      const [res, pri, topR, sum, tr, surf, dist, hs, conc, cov, tc, cl, ae, tp] = await Promise.all([
+      const [res, pri, topR, sum, tr, surf, dist, hs, conc, cov, tc, cl, ae, tp, ech, dec, econc, chExp, cov5d, rc, sc, hf6, rec, reff, aphd] = await Promise.all([
         listApplications(selectedProjectId, { limit: 50 }).catch(() => ({ applications: [] })),
         getPriorities(selectedProjectId, { limit: 10 }).catch(() => ({ priorities: [] })),
         getTopRisks(selectedProjectId).catch(() => null),
@@ -54,6 +65,17 @@ export default function SecurityIntelligencePage() {
         getAttackCloud(selectedProjectId).catch(() => null),
         getAttackApplications(selectedProjectId).catch(() => null),
         getAttackTop(selectedProjectId).catch(() => null),
+        getExposureChains(selectedProjectId).catch(() => null),
+        getExposureDecision(selectedProjectId).catch(() => null),
+        getExposureConcentration(selectedProjectId).catch(() => null),
+        getChangeExposure(selectedProjectId).catch(() => null),
+        getCoverageF5(selectedProjectId).catch(() => null),
+        getRootCause(selectedProjectId).catch(() => null),
+        getScorecard(selectedProjectId, { window: trendsWindow }).catch(() => null),
+        getHistoryF6(selectedProjectId, { window: trendsWindow }).catch(() => null),
+        getRecurringExposure(selectedProjectId).catch(() => null),
+        getRemediationEffectiveness(selectedProjectId).catch(() => null),
+        getAttackPathHistory(selectedProjectId).catch(() => null),
       ]);
       setApps(res?.applications || res?.data?.applications || []);
       setPriorities(pri?.priorities || pri?.data?.priorities || []);
@@ -69,6 +91,17 @@ export default function SecurityIntelligencePage() {
       setCloud(cl?.data || cl);
       setAppExp(ae?.data || ae);
       setTop(tp?.data || tp);
+      setExposureChains(ech?.data || ech);
+      setDecision(dec?.data || dec);
+      setExpConc(econc?.data || econc);
+      setChangeExp(chExp?.data || chExp);
+      setCov5(cov5d?.data || cov5d);
+      setRootCause(rc?.data || rc);
+      setScorecard(sc?.data || sc);
+      setHistoryF6(hf6?.data || hf6);
+      setRecurring(rec?.data || rec);
+      setRemEff(reff?.data || reff);
+      setAph(aphd?.data || aphd);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }, [selectedProjectId, trendsWindow]);
@@ -293,6 +326,97 @@ export default function SecurityIntelligencePage() {
           </div>
           {trends.top_worsening?.length>0 && <div className="mt-3"><h4 className="text-xs font-semibold">Top Worsening</h4><div className="text-xs">{trends.top_worsening.slice(0,5).map(w=> <div key={w.id} className="rounded border bg-canvas p-1 mt-1">{w.type}:{w.id.slice(0,6)} — {w.reason}</div>)}</div></div>}
           {trends.top_improving?.length>0 && <div className="mt-3"><h4 className="text-xs font-semibold">Top Improving</h4><div className="text-xs">{trends.top_improving.slice(0,5).map(w=> <div key={w.id} className="rounded border bg-canvas p-1 mt-1">{w.type}:{w.id.slice(0,6)} — {w.reason}</div>)}</div></div>}
+        </div>
+      )}
+
+      {/* F5 Security Exposure Decision */}
+      {decision && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Security Exposure Decision — What Needs Attention</h3>
+          <p className="text-xs text-muted">Top exposures • worsening • coverage gaps • validation failures — deterministic, F2 priority</p>
+          <div className="mt-2 text-xs">
+            <p><span className="font-semibold">Top exposures:</span> {(decision.top_exposures||[]).slice(0,3).map(e=> `${e.subject_type}:${e.subject_id.slice(0,6)} P${e.priority}`).join(", ") || "—"}</p>
+            <p><span className="font-semibold">Recent worsening:</span> {(decision.recent_worsening||[]).slice(0,3).map(w=> `${w.type}:${w.id.slice(0,6)}`).join(", ") || "—"}</p>
+            <p><span className="font-semibold">Coverage gaps:</span> {(decision.major_coverage_gaps||[]).slice(0,3).map(g=> g.gap_type).join(", ") || "—"} • Validation failures {decision.validation_failures} • Overdue {decision.overdue_remediation} • Reopened {decision.reopened_issues}</p>
+            {decision.why_it_matters?.length>0 && <ul className="list-disc pl-4 mt-1">{decision.why_it_matters.slice(0,3).map((w,i)=><li key={i}>{w}</li>)}</ul>}
+          </div>
+        </div>
+      )}
+      {exposureChains && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Exposure Chains</h3>
+          <p className="text-xs text-muted">Evidence-backed Internet → External → App → Finding → Cloud → Attack Path (MAX_CHAINS 100, MAX_DEPTH 6)</p>
+          <div className="mt-2 space-y-1">{(exposureChains.chains||[]).slice(0,5).map(c=> <div key={c.chain_id} className="rounded border bg-canvas p-2 text-xs"><p className="font-mono">P{c.priority} {c.severity} [{c.confidence}]</p><p>{c.explanation.slice(0,120)}</p><p className="text-muted">Entry {c.entry_asset?.value?.slice(0,20) || "—"} → Finding {c.finding?.title?.slice(0,30) || "—"} {c.attack_path ? `→ ${c.attack_path.path_type}` : ""}</p></div>)}</div>
+          {(!exposureChains.chains||exposureChains.chains.length===0) && <p className="text-xs text-muted">No exposure chains — insufficient evidence</p>}
+        </div>
+      )}
+      {expConc && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Exposure Concentration (F5)</h3>
+          <p className="text-xs text-muted">Tier {expConc.concentration_tier || "—"} • Top assets {expConc.concentration?.top_assets_critical_high_pct ?? 0}% • Details bounded</p>
+          <div className="mt-2 text-xs">{expConc.concentration_tier && <p>Concentration tier: {expConc.concentration_tier}</p>}</div>
+        </div>
+      )}
+      {changeExp && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Recent Change → Exposure</h3>
+          <p className="text-xs text-muted">TEMPORALLY_ASSOCIATED — change type + time relationship, not proven causality</p>
+          <div className="mt-2 space-y-1">{(changeExp.correlations||[]).slice(0,5).map(r=> <div key={r.change_event.id} className="rounded border bg-canvas p-2 text-xs"><p>{r.change_event.change_type} on {r.affected_asset.value} — {r.time_relationship} [{r.confidence}]</p><p className="text-muted">{r.explanation.slice(0,100)}</p></div>)}</div>
+          {(!changeExp.correlations||changeExp.correlations.length===0) && <p className="text-xs text-muted">No recent change→exposure correlations</p>}
+        </div>
+      )}
+      {cov5 && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Security Coverage (F5)</h3>
+          <p className="text-xs text-muted">Overall {cov5.overall_coverage} • {cov5.total_gaps} gaps — COVERAGE_GAP / NOT_ASSESSED / ASSESSED distinction</p>
+          <div className="mt-2 space-y-1">{(cov5.coverage_gaps||[]).slice(0,5).map(g=> <div key={g.subject_id+g.gap_type} className="rounded border bg-canvas p-2 text-xs"><span className="font-mono">{g.gap_type}</span> <span className="text-muted">{g.status}</span><p className="text-muted">{g.evidence?.slice(0,70)}</p></div>)}</div>
+        </div>
+      )}
+      {rootCause && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Root-Cause Context</h3>
+          <p className="text-xs text-muted">RELATED_ROOT_CAUSE_CANDIDATE from E12 correlations — same asset/CVE/CWE/package</p>
+          <div className="mt-2 space-y-1">{(rootCause.candidates||[]).slice(0,5).map(c=> <div key={c.canonical_key} className="rounded border bg-canvas p-2 text-xs"><p>{c.root_cause_candidate} [{c.confidence}] — {c.finding_count} findings</p><p className="text-muted">{c.explanation.slice(0,80)}</p></div>)}</div>
+          {(!rootCause.candidates||rootCause.candidates.length===0) && <p className="text-xs text-muted">No root-cause candidates</p>}
+        </div>
+      )}
+      {scorecard && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Security Decision History — Scorecard</h3>
+          <p className="text-xs text-muted">Overall {scorecard.overall_direction} • Strongest {scorecard.strongest_improvement} • Worst {scorecard.biggest_deterioration} • Confidence {scorecard.confidence}</p>
+          <div className="mt-2 text-xs">
+            <p>Highest recurring: {scorecard.highest_recurring?.subject_id?.slice(0,8) || "—"} ({scorecard.highest_recurring?.recurrence_count || 0})</p>
+            <p>Biggest unresolved: {scorecard.biggest_unresolved_exposure?.name?.slice(0,30) || scorecard.biggest_unresolved_exposure?.subject_id?.slice(0,8) || "—"}</p>
+            <p>Remediation failures: {scorecard.remediation_failure_area}</p>
+            <p>Evidence: {scorecard.evidence?.join(" • ")}</p>
+          </div>
+        </div>
+      )}
+      {historyF6 && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Exposure History — {historyF6.window}</h3>
+          <p className="text-xs text-muted">{historyF6.data_quality?.status} • Critical {historyF6.history?.current?.critical ?? "—"} → High {historyF6.history?.current?.high ?? "—"}</p>
+        </div>
+      )}
+      {recurring && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Recurring Exposure</h3>
+          <p className="text-xs text-muted">{recurring.total} recurring • bounded MAX_RESULTS 20</p>
+          <div className="mt-2 space-y-1">{(recurring.recurring||[]).slice(0,5).map(r=> <div key={r.subject_id} className="rounded border bg-canvas p-2 text-xs"><p>{r.recurrence_type} {r.subject_id.slice(0,8)} ×{r.recurrence_count}</p><p className="text-muted">{r.evidence?.slice(0,60)}</p></div>)}</div>
+        </div>
+      )}
+      {remEff && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Remediation Effectiveness</h3>
+          <p className="text-xs text-muted">Total {remEff.total} • Successful {remEff.successful} • Success {remEff.success_rate}% • Reopened {remEff.reopened}</p>
+          <div className="mt-2 text-xs">Partial {remEff.partial} • Failed {remEff.failed} • Not verified {remEff.not_verified}</div>
+        </div>
+      )}
+      {aph && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Attack Path History</h3>
+          <p className="text-xs text-muted">{aph.total} paths • {aph.recurring?.length || 0} recurring</p>
+          <div className="mt-2 space-y-1">{(aph.recurring||[]).slice(0,5).map(p=> <div key={p.fingerprint} className="rounded border bg-canvas p-2 text-xs"><p>{p.path_type} {p.provider} {p.current_severity} [{p.severity_change}] ×{p.recurrence_count}</p></div>)}</div>
         </div>
       )}
 

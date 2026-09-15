@@ -312,6 +312,140 @@ def get_priority_summary(project_id: str, db: Session = Depends(get_db), current
     from app.services.security_prioritization import get_priority_summary as svc_sum
     return svc_sum(project_id, db)
 
+# F5 Security Exposure Intelligence
+@router.get("/exposure-chains")
+def get_exposure_chains(project_id: str, limit: int = Query(20, ge=1, le=20), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_exposure_intelligence import get_exposure_chains as svc
+    return svc(project_id, db, limit=limit)
+
+@router.get("/exposure-decision")
+def get_exposure_decision(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_exposure_intelligence import get_exposure_decision as svc
+    return svc(project_id, db)
+
+@router.get("/exposure-concentration")
+def get_exposure_concentration_f5(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_exposure_intelligence import get_exposure_concentration_f5 as svc
+    return svc(project_id, db)
+
+@router.get("/change-exposure")
+def get_change_exposure(project_id: str, limit: int = Query(20, ge=1, le=20), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_exposure_intelligence import get_change_exposure as svc
+    return svc(project_id, db, limit=limit)
+
+@router.get("/coverage")
+def get_coverage_f5(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_exposure_intelligence import get_security_coverage as svc
+    return svc(project_id, db)
+
+@router.get("/root-cause")
+def get_root_cause(project_id: str, limit: int = Query(20, ge=1, le=20), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_exposure_intelligence import get_root_cause_context as svc
+    return svc(project_id, db, limit=limit)
+
+# F6 Security Decision History
+@router.get("/history")
+def get_history_f6(project_id: str, window: str = Query("7d", regex="^(7d|30d|90d)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_decision_history import get_exposure_history
+    try:
+        return get_exposure_history(project_id, db, window=window)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/scorecard")
+def get_scorecard_f6(project_id: str, window: str = Query("7d", regex="^(7d|30d|90d)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_decision_history import get_scorecard
+    try:
+        return get_scorecard(project_id, db, window=window)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/recurring-exposure")
+def get_recurring_f6(project_id: str, limit: int = Query(20, ge=1, le=20), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_decision_history import get_recurring_exposure
+    return get_recurring_exposure(project_id, db, limit=limit)
+
+@router.get("/remediation-effectiveness")
+def get_remediation_f6(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_decision_history import get_remediation_effectiveness
+    return get_remediation_effectiveness(project_id, db)
+
+@router.get("/attack-path-history")
+def get_attack_history_f6(project_id: str, limit: int = Query(20, ge=1, le=20), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_decision_history import get_attack_path_history_analytics
+    return get_attack_path_history_analytics(project_id, db, limit=limit)
+
+@router.get("/subject-history/{subject_type}/{subject_id}")
+def get_subject_history_f6(project_id: str, subject_type: str, subject_id: str, window: str = Query("7d", regex="^(7d|30d|90d)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    allowed={"finding","asset","application","attack_path","exposure","investigation"}
+    if subject_type.lower() not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid subject_type: {subject_type}")
+    if any(c in subject_id for c in [";", "'", "\"", "--"]):
+        raise HTTPException(status_code=400, detail="Invalid subject_id")
+    from app.services.security_decision_history import get_subject_history
+    try:
+        res=get_subject_history(project_id, db, subject_type, subject_id, window=window)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not res:
+        raise HTTPException(status_code=404, detail="Subject not found")
+    return res
+
+@router.get("/risk-acceptance-aging")
+def get_acceptance_aging_f6(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_decision_history import get_risk_acceptance_aging
+    return get_risk_acceptance_aging(project_id, db)
+
+@router.get("/improvement")
+def get_improvement_f6(project_id: str, window: str = Query("7d", regex="^(7d|30d|90d)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.security_decision_history import get_improvement
+    try:
+        return get_improvement(project_id, db, window=window)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 # F3 trends
 @router.get("/trends")
 def get_trends(project_id: str, window: str = Query("7d", regex="^(7d|30d|90d)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
