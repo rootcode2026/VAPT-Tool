@@ -55,11 +55,58 @@ Legacy non-workspace scanners (nmap, nuclei, zap, nikto, tls, dns, subdomain, ht
 7. **Do not silently change semantics.** If a fix requires changing normalization, fingerprinting, or risk scoring, call it out explicitly.
 8. **Test and verify.** Run the relevant tests. Distinguish new failures from pre-existing or environmental ones. Prefer live verification for Docker scanners where required by the stage (see Completion Rule).
 
-## Git Rule
+## Git Workflow
 
-**DO NOT CREATE GIT COMMITS.**
+The coding agent MAY manage Git for implementation phases.
 
-The human developer handles all Git commits. AI agents may inspect `git status`, `git diff`, `git log --oneline -N`, and `git diff -- <path>` to understand the working tree, but must not run `git commit`, `git amend`, `git push`, or create PRs unless the user explicitly instructs them to do so. Do not update `git config` or skip hooks.
+The agent MAY:
+
+- create feature branches
+- switch branches
+- create commits
+- push feature branches
+- create pull requests
+- merge pull requests when repository permissions and required checks allow
+- update local main after successful PR merge
+
+The agent MUST:
+
+- NEVER push directly to main
+- NEVER force-push main
+- NEVER bypass branch protection
+- NEVER rewrite or discard legitimate existing work
+- keep commits scoped to the current implementation phase
+- run focused tests before committing
+- run git diff --check before committing
+- inspect the staged diff before committing
+- verify no secrets or credentials are included
+- verify no unrelated changes are included
+- use the normal protected-branch PR workflow
+
+If the repository requires a pull request:
+
+feature branch
+    ↓
+commit
+    ↓
+push feature branch
+    ↓
+create PR
+    ↓
+required checks
+    ↓
+merge PR
+    ↓
+checkout main
+    ↓
+git pull --ff-only origin main
+
+If automatic PR creation or merge is unavailable because of missing permissions,
+missing GitHub tooling, required human approval, or repository policy:
+
+- do NOT bypass the restriction
+- stop at that Git step
+- report the exact action required from the human
 
 ## Token / Context Efficiency
 
