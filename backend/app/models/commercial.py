@@ -84,18 +84,3 @@ class UsageEvent(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
-
-class PaymentWebhookEvent(Base):
-    __tablename__ = "payment_webhook_events"
-    __table_args__ = (
-        UniqueConstraint("provider", "provider_event_id", name="uq_webhook_provider_event"),
-        Index("ix_webhook_provider_event", "provider", "provider_event_id"),
-        Index("ix_webhook_org", "organization_id"),
-    )
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="mock", server_default=text("'mock'"))
-    provider_event_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    organization_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
-    event_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

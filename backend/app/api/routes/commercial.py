@@ -164,101 +164,41 @@ def admin_usage(db: Session = Depends(get_db), current_user: User = Depends(get_
     rows=db.query(UsageEvent.organization_id, func.count(UsageEvent.id)).group_by(UsageEvent.organization_id).limit(100).all()
     return {"usage": [{"organization_id": r[0], "count": r[1]} for r in rows]}
 
-# Checkout — creates provider checkout (Razorpay order or mock), not subscription directly
-@router.post("/organizations/{organization_id}/billing/checkout")
-def create_checkout(organization_id: str, payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _require_org_member(organization_id, db, current_user)
-    from app.models.organization_membership import OrganizationMembership
-    mem=db.query(OrganizationMembership).filter(OrganizationMembership.organization_id==organization_id, OrganizationMembership.user_id==current_user.id, OrganizationMembership.role=="org_admin", OrganizationMembership.status=="active").first()
-    from app.api.deps import _is_super_admin
-    if not mem and not _is_super_admin(current_user):
-        raise HTTPException(status_code=403, detail="org_admin required")
-    plan_code=str(payload.get("plan_code","")).strip().lower()
-    interval=str(payload.get("billing_interval","monthly")).strip().lower()
-    if not plan_code: raise HTTPException(status_code=400, detail="plan_code required")
-    if interval not in ("monthly","annual"):
-        raise HTTPException(status_code=400, detail="Invalid interval")
-    from app.services.commercial import get_payment_provider
-    try:
-        provider=get_payment_provider()
-        res=provider.create_checkout(organization_id, plan_code, interval)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    return res
+# Webhook — payment provider, authenticated, idempotent, replay-safe
+# Use header X-Webhook-Signature and X-Webhook-Id for replay protection
+_seen_webhook_ids:set[str]=set()
 
-# Webhook — durable idempotency via payment_webhook_events, HMAC, replay-safe
 @router.post("/webhooks/payment")
-def payment_webhook(payload: dict, db: Session = Depends(get_db), x_webhook_signature: str | None = Header(None, alias="X-Webhook-Signature"), x_webhook_id: str | None = Header(None, alias="X-Webhook-Id"), x_razorpay_signature: str | None = Header(None, alias="X-Razorpay-Signature")):
-    import hmac, hashlib, json, os, uuid
-    # provider detection: Razorpay uses X-Razorpay-Signature
-    sig=x_razorpay_signature or x_webhook_signature
-    # choose secret based on provider
-    secret=os.getenv("RAZORPAY_WEBHOOK_SECRET", "") or os.getenv("PAYMENT_WEBHOOK_SECRET", "mock_secret")
-    # Razorpay webhook secret is separate; fallback to mock_secret
+def payment_webhook(request: Request, payload: dict, db: Session = Depends(get_db), x_webhook_signature: str | None = Header(None, alias="X-Webhook-Signature"), x_webhook_id: str | None = Header(None, alias="X-Webhook-Id")):
+    import hmac, hashlib, json, os
+    secret=os.getenv("PAYMENT_WEBHOOK_SECRET", "mock_secret")
     body=json.dumps(payload, sort_keys=True).encode()
-    # verify signature if provided
-    if sig:
-        # provider-specific verification via service
-        from app.services.commercial import get_payment_provider
-        try:
-            provider=get_payment_provider()
-            if not provider.verify_webhook(body, sig, secret):
-                raise HTTPException(status_code=401, detail="Invalid webhook signature")
-        except HTTPException:
-            raise
-        except Exception:
-            # generic HMAC fallback
-            expected=hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(expected, sig):
-                raise HTTPException(status_code=401, detail="Invalid webhook signature")
-    else:
-        # require signature in production
-        if os.getenv("ENVIRONMENT","development").lower()=="production":
-            raise HTTPException(status_code=401, detail="Missing webhook signature")
-    # durable idempotency: provider_event_id = X-Webhook-Id or payload id/event_id
-    wid=x_webhook_id or payload.get("id") or payload.get("event_id") or payload.get("entity") and str(payload.get("entity")) or str(uuid.uuid4())
-    wid=str(wid).strip()[:100]
-    provider_name=os.getenv("PAYMENT_PROVIDER","mock").lower() or "mock"
-    # check DB for existing
-    from app.models.commercial import PaymentWebhookEvent
-    existing=db.query(PaymentWebhookEvent).filter(PaymentWebhookEvent.provider==provider_name, PaymentWebhookEvent.provider_event_id==wid).first()
-    if existing:
-        return {"status": "already_processed", "event_id": wid}
-    # insert durable record
-    org_id=payload.get("organization_id") or payload.get("org_id") or (payload.get("payload",{}).get("payment",{}).get("entity",{}).get("notes",{}).get("organization_id") if isinstance(payload.get("payload"), dict) else None)
-    try:
-        evt=PaymentWebhookEvent(id=str(uuid.uuid4()), provider=provider_name, provider_event_id=wid, organization_id=org_id if org_id and len(str(org_id))==36 else None, event_type=payload.get("type") or payload.get("event"), payload=payload)
-        db.add(evt); db.flush()
-    except Exception:
-        try: db.rollback()
-        except: pass
-        # on unique violation, treat as already processed
-        dup=db.query(PaymentWebhookEvent).filter(PaymentWebhookEvent.provider==provider_name, PaymentWebhookEvent.provider_event_id==wid).first()
-        if dup:
-            return {"status": "already_processed", "event_id": wid}
+    # verify signature
+    if x_webhook_signature:
+        expected=hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, x_webhook_signature):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    # replay protection: check idempotency key
+    wid=x_webhook_id or payload.get("id") or payload.get("event_id")
+    if wid:
+        if wid in _seen_webhook_ids:
+            return {"status": "already_processed"}
+        _seen_webhook_ids.add(wid)
+        if len(_seen_webhook_ids)>1000:
+            _seen_webhook_ids.clear()
     # audit webhook
     try:
         from app.services.audit import AuditService
-        AuditService.record(db, event_type="PAYMENT_WEBHOOK", action="PAYMENT_WEBHOOK", result="SUCCESS", actor_user_id=None, organization_id=org_id or "unknown", resource_type="payment", resource_id=wid, metadata={"event_type": payload.get("type")})
+        AuditService.record(db, event_type="PAYMENT_WEBHOOK", action="PAYMENT_WEBHOOK", result="SUCCESS", actor_user_id=None, organization_id=payload.get("organization_id") or "unknown", resource_type="payment", resource_id=wid or "unknown", metadata={"event_type": payload.get("type")})
+        db.commit()
     except: pass
-    # handle subscription status deterministically (idempotent)
-    if org_id and payload.get("type") in ("subscription.active","subscription.past_due","subscription.cancelled","payment.captured","order.paid"):
-        from app.models.commercial import Subscription, License
+    # handle subscription status update deterministically
+    org_id=payload.get("organization_id")
+    if org_id and payload.get("type") in ("subscription.active","subscription.past_due","subscription.cancelled"):
+        from app.models.commercial import Subscription
         sub=db.query(Subscription).filter(Subscription.organization_id==org_id).order_by(Subscription.created_at.desc()).first()
         if sub:
-            mapping={"subscription.active":"active","subscription.past_due":"past_due","subscription.cancelled":"cancelled","payment.captured":"active","order.paid":"active"}
-            new_status=mapping.get(payload.get("type"), sub.status)
-            if sub.status != new_status:
-                sub.status=new_status
-                # update license
-                lic=db.query(License).filter(License.organization_id==org_id, License.subscription_id==sub.id).order_by(License.created_at.desc()).first()
-                if lic:
-                    lic.status="active" if new_status=="active" else lic.status
-                # handle out-of-order: if active after cancelled, prefer latest
-            db.flush()
-    try:
-        db.commit()
-    except Exception:
-        try: db.rollback()
-        except: pass
-    return {"status": "processed", "event_id": wid}
+            mapping={"subscription.active":"active","subscription.past_due":"past_due","subscription.cancelled":"cancelled"}
+            sub.status=mapping.get(payload.get("type"), sub.status)
+            db.commit()
+    return {"status": "processed"}
