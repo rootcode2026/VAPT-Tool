@@ -9,7 +9,11 @@ from app.db.database import get_db
 from app.models.ai import AIConversation, AIMessage
 from app.models.user import User
 from app.services.audit import AuditService
-from app.services.ai_service import query_ai, explain_finding, investigate_asset
+from app.services.ai_service import (
+    query_ai, explain_finding, investigate_asset,
+    investigate_project, explain_attack_path, explain_monitoring_change,
+    recommend_remediation, explain_retest, draft_report_section
+)
 
 router = APIRouter(prefix="/api/v1/ai", tags=["AI"])
 
@@ -139,8 +143,17 @@ def ai_query(payload: dict, db: Session = Depends(get_db), current_user: User = 
     proj = db.query(Project).filter(Project.id == project_id).first()
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
-    result = query_ai(db, current_user, proj.organization_id, project_id, prompt, filters=payload.get("filters"))
-    return result
+    try:
+        result = query_ai(db, current_user, proj.organization_id, project_id, prompt, filters=payload.get("filters"))
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)[:500])
+    except RuntimeError as e:
+        # Safe error — never leak key/headers
+        msg = str(e)[:500]
+        if "NVIDIA_API_KEY" in msg or "Authorization" in msg:
+            msg = "AI provider unavailable"
+        raise HTTPException(status_code=500, detail=msg)
 
 @router.post("/findings/{finding_id}/explain")
 def explain_finding_route(finding_id: str, payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -163,5 +176,136 @@ def investigate_asset_route(asset_id: str, payload: dict, db: Session = Depends(
     require_project_access(project_id, db, current_user)
     from app.models.project import Project
     proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
     result = investigate_asset(db, current_user, proj.organization_id, project_id, asset_id)
     return result
+
+@router.post("/investigate")
+def investigate_project_route(payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_ai_enabled()
+    project_id = str(payload.get("project_id", "")).strip()
+    question = str(payload.get("question", payload.get("prompt", ""))).strip()[:1000]
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    require_project_access(project_id, db, current_user)
+    from app.models.project import Project
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    # bound question
+    if question and len(question) > 1000:
+        question = question[:1000]
+    try:
+        result = investigate_project(db, current_user, proj.organization_id, project_id, question or None)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)[:500])
+
+@router.post("/attack-paths/{attack_path_id}/explain")
+def explain_attack_path_route(attack_path_id: str, payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_ai_enabled()
+    project_id = str(payload.get("project_id", "")).strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    require_project_access(project_id, db, current_user)
+    from app.models.project import Project
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        result = explain_attack_path(db, current_user, proj.organization_id, project_id, attack_path_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)[:500])
+
+@router.post("/monitoring/explain")
+def explain_monitoring_route(payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_ai_enabled()
+    project_id = str(payload.get("project_id", "")).strip()
+    run_id = str(payload.get("run_id", "")).strip() or None
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    require_project_access(project_id, db, current_user)
+    from app.models.project import Project
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        result = explain_monitoring_change(db, current_user, proj.organization_id, project_id, run_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)[:500])
+
+@router.post("/remediation/recommend")
+def recommend_remediation_route(payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_ai_enabled()
+    project_id = str(payload.get("project_id", "")).strip()
+    finding_id = str(payload.get("finding_id", "")).strip() or None
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    require_project_access(project_id, db, current_user)
+    from app.models.project import Project
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        result = recommend_remediation(db, current_user, proj.organization_id, project_id, finding_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)[:500])
+
+@router.post("/retest/{finding_id}/explain")
+def explain_retest_route(finding_id: str, payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_ai_enabled()
+    project_id = str(payload.get("project_id", "")).strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    require_project_access(project_id, db, current_user)
+    from app.models.project import Project
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        result = explain_retest(db, current_user, proj.organization_id, project_id, finding_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)[:500])
+
+@router.post("/reports/draft")
+def draft_report_route(payload: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_ai_enabled()
+    project_id = str(payload.get("project_id", "")).strip()
+    report_type = str(payload.get("report_type", "executive")).strip()[:20]
+    period_days = payload.get("period_days", 30)
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    require_project_access(project_id, db, current_user)
+    from app.models.project import Project
+    proj = db.query(Project).filter(Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        period_days = int(period_days) if period_days is not None else 30
+        period_days = max(1, min(period_days, 365))
+    except Exception:
+        raise HTTPException(status_code=400, detail="period_days must be 1-365")
+    if report_type.lower() not in ("executive","technical","remediation","monitoring","risk"):
+        raise HTTPException(status_code=400, detail="report_type must be executive/technical/remediation/monitoring/risk")
+    try:
+        result = draft_report_section(db, current_user, proj.organization_id, project_id, report_type, period_days)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)[:500])

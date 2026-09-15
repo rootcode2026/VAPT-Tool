@@ -6,7 +6,7 @@ import LoadingState from "@/components/ui/LoadingState";
 import ErrorState from "@/components/ui/ErrorState";
 import EmptyState from "@/components/ui/EmptyState";
 import { useProjectContext } from "@/lib/project-context";
-import { createConversation, listConversations, postMessage, getAIStatus, queryAI } from "@/lib/api/ai";
+import { createConversation, listConversations, postMessage, getAIStatus, queryAI, investigateProject, explainAttackPath, recommendRemediation, draftReport } from "@/lib/api/ai";
 
 export default function AIPage() {
   const { selectedProjectId, status } = useProjectContext();
@@ -60,7 +60,7 @@ export default function AIPage() {
     setMessages((prev) => [...prev, { role: "user", content: prompt }]);
     try {
       const res = await postMessage(selected.id, prompt);
-      setMessages((prev) => [...prev, { role: "assistant", content: res.content, confidence: res.confidence, evidence: res.evidence }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: res.content, confidence: res.confidence, evidence: res.evidence, recommendations: res.recommendations, limitations: res.limitations }]);
     } catch (e) {
       setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${e.message}`, confidence: "low" }]);
     } finally {
@@ -74,7 +74,7 @@ export default function AIPage() {
     setMessages((prev) => [...prev, { role: "user", content: q }]);
     try {
       const res = await queryAI(selectedProjectId, q);
-      setMessages((prev) => [...prev, { role: "assistant", content: res.answer, confidence: res.confidence, evidence: res.evidence }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: res.answer, confidence: res.confidence, evidence: res.evidence, recommendations: res.recommendations, limitations: res.limitations }]);
     } catch (e) {
       setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${e.message}` }]);
     } finally {
@@ -102,10 +102,18 @@ export default function AIPage() {
           <div className="mt-4">
             <h4 className="text-xs font-semibold">Quick Queries</h4>
             <div className="mt-1 space-y-1">
-              {["What are my most critical internet-exposed findings?", "Which findings are overdue?", "Show me SQL injection findings", "What changed this week?"].map((q) => (
+              {["What are my most critical internet-exposed findings?", "Why is this finding high priority?", "What changed since the last monitoring run?", "Which assets are related to this finding?", "What attack paths involve this asset?", "Which findings deserve investigation first?", "What has already been remediated?", "Summarize this project's current security posture."].map((q) => (
                 <button key={q} type="button" onClick={() => handleQuickQuery(q)} className="w-full rounded border bg-canvas px-2 py-1 text-left text-xs">{q}</button>
               ))}
             </div>
+          </div>
+          <div className="mt-4">
+            <h4 className="text-xs font-semibold">Report Draft (AI-assisted)</h4>
+            <button type="button" onClick={async () => {
+              setSending(true);
+              setMessages((prev)=>[...prev,{role:"user",content:"Draft executive summary"}]);
+              try{const r=await draftReport(selectedProjectId,"executive",30);setMessages((prev)=>[...prev,{role:"assistant",content:r.answer,confidence:r.confidence,evidence:r.evidence}]);}catch(e){setMessages((prev)=>[...prev,{role:"assistant",content:`Error: ${e.message}`}]);}finally{setSending(false);}
+            }} className="w-full rounded border bg-canvas px-2 py-1 text-left text-xs">Draft executive summary (30d)</button>
           </div>
         </div>
         <div className="lg:col-span-2 rounded-md border bg-surface p-4">
@@ -118,7 +126,9 @@ export default function AIPage() {
                     <p className="text-xs font-medium">{m.role === "user" ? "You" : `Analyst ${m.confidence ? `(${m.confidence})` : ""}`}</p>
                     <p className="mt-1 whitespace-pre-wrap">{m.content}</p>
                     {m.evidence && m.evidence.length > 0 ? <p className="mt-1 text-xs text-muted">Evidence: {m.evidence.join(", ")}</p> : null}
-                    {m.role === "assistant" ? <p className="mt-1 text-xs text-muted">FACT/ANALYSIS/RECOMMENDATION/UNKNOWN — verify via platform objects.</p> : null}
+                    {m.recommendations && m.recommendations.length>0 ? <p className="mt-1 text-xs text-muted">Advisory: {m.recommendations.slice(0,2).join("; ")}</p> : null}
+                    {m.limitations ? <p className="mt-1 text-xs text-muted">Limitations: {m.limitations.slice(0,200)}</p> : null}
+                    {m.role === "assistant" ? <p className="mt-1 text-xs text-muted">FACT (observed) / ANALYSIS (inferred) / RECOMMENDATION (advisory) / UNKNOWN (insufficient) — citations [FINDING:id] [ASSET:id] [SCAN:id] [ATTACK_PATH:id] [MONITORING_RUN:id] validated, deterministic engine authoritative.</p> : null}
                   </div>
                 ))}
                 {sending ? <p className="text-xs text-muted">Analyst thinking...</p> : null}

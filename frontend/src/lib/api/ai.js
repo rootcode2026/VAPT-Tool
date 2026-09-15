@@ -27,3 +27,21 @@ export function explainFinding(findingId, projectId) {
 export function investigateAsset(assetId, projectId) {
   return api.post(`/api/v1/ai/assets/${assetId}/investigate`, { project_id: projectId });
 }
+export function investigateProject(projectId, question) {
+  return api.post("/api/v1/ai/investigate", { project_id: projectId, question });
+}
+export function explainAttackPath(attackPathId, projectId) {
+  return api.post(`/api/v1/ai/attack-paths/${attackPathId}/explain`, { project_id: projectId });
+}
+export function explainMonitoring(projectId, runId) {
+  return api.post("/api/v1/ai/monitoring/explain", { project_id: projectId, run_id: runId });
+}
+export function recommendRemediation(projectId, findingId) {
+  return api.post("/api/v1/ai/remediation/recommend", { project_id: projectId, finding_id: findingId });
+}
+export function explainRetest(findingId, projectId) {
+  return api.post(`/api/v1/ai/retest/${findingId}/explain`, { project_id: projectId });
+}
+export function draftReport(projectId, reportType, periodDays) {
+  return api.post("/api/v1/ai/reports/draft", { project_id: projectId, report_type: reportType, period_days: periodDays });
+}
