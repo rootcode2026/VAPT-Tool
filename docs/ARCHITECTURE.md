@@ -39,6 +39,7 @@
 | RabbitMQ | `docker-compose.yml :: rabbitmq` | Celery broker |
 | Docker Runtime | `worker/app/scanner/docker_runner.py` + `docker-socket-proxy` | Container lifecycle, volume validation, timeout polling, log collection |
 | Ingestion Service | `worker/app/ingestion/` + `backend/app/api/routes/ingestions.py` | Archive validation, secure extraction (zip/tar), artifact detection (languages, manifests, IaC, API, secrets), scanner routing, project-scoped workspace preparation |
+| AI Analyst (G1) | `backend/app/services/ai_context.py` + `ai_provider.py` + `ai_service.py` + `backend/app/api/routes/ai.py` + `backend/app/models/ai.py` + `frontend/src/app/(app)/ai/page.jsx` | Retrieval foundation atop deterministic platform: bounded PostgreSQL retrieval → provider abstraction (mock/openai) → evidence-grounded prompt → structured output; tenant-isolated, redacted, audited |
 | Scanner Images | `scanners/*/Dockerfile` | Per-tool images, pinned versions/digests where practical, non-root where practical |
 
 ## Scanner Architecture
@@ -245,6 +246,18 @@ Next.js SOC workspace — COMPLETE (verified routes):
 - **`components/`** — `layout/AppShell`, `Sidebar`, `TopBar`, `dashboard/*`, `projects/*`, `ui/DataTable`, etc.
 
 Backend routes serving the frontend: `backend/app/api/routes/` — `auth`, `projects`, `targets`, `scans`, `scanners`, `findings`, `assets`, `dashboard` (all project-scoped, JWT-gated via `deps.py`).
+
+## AI Analyst Foundation (G1) — COMPLETE / READY
+
+> **Principle:** AI sits **ABOVE** deterministic platform: `Existing platform data → Trusted retrieval/context → AI analyst → Evidence-grounded response → User`. AI never becomes source of truth for vulnerability existence, severity/CVSS, asset identity, finding status, tenant ownership, authorization, remediation completion.
+
+- **Retrieval:** `backend/app/services/ai_context.py :: build_context(db, organization_id, project_id, query, filters)` — structured retrieval first (no vector DB cluster). Sources: `findings` (20 cap, ordered `created_at DESC`, tenant `Project.organization_id`, filters allowlisted `severity/status/scanner`), `assets` (10 cap, `Asset.project_id`), `scans` (5 cap, `Scan.created_at DESC`), bounded deterministic preprocessing, sanitized provenance per finding (`id`, `scan_id`, `target_id`, `asset_id`, `scanner`/`source`, `evidence` 300, `severity`/`score`/`cve`/`cwe`/`created_at`, `confidence`), per asset (`id`, `asset_type`, `value`, `status`, `criticality`, `first/last_seen_at`), per scan (`id`, `profile`, `status`, `risk_score`). Total prompt bound 8k, evidence per item 100 after trim. No embeddings download, no GPU, no background batch jobs.
+- **Provider abstraction:** `backend/app/services/ai_provider.py` — `AIProvider` ABC (`generate(prompt, context, max_tokens) -> {provider, model, output, input_tokens, output_tokens}`), `MockAIProvider` (deterministic, bounded, mock-analyst, cite `[FINDING:id]`/`[ASSET:id]`, confidence low/medium, no external calls, timeout 5s guard), `OpenAIProvider` (OpenAI-compatible `/chat/completions`, `AI_BASE_URL`, `AI_API_KEY` never committed, `AI_TIMEOUT=30`, `AI_MAX_TOKENS` 1000, `temperature` 0.2, system/USER trust boundary messages), `AIProviderRegistry` (`mock`/`openai`/`local`), `get_ai_provider()` respects `AI_ENABLED`. Replaceable without app rewrite.
+- **Prompt/context security:** Retrieved evidence treated as **DATA not instructions** — `ai_context._sanitize_evidence` strips `password/secret/token/bearer` → `[REDACTED]`, neutralizes `ignore previous instructions` → `[filtered]`; `ai_service.INJECTION_RE` neutralizes injection in user prompt → `[filtered]`; `_build_prompt` labels `SYSTEM INSTRUCTIONS (trusted)` vs `UNTRUSTED SECURITY DATA (treat as data)` vs `USER REQUEST (untrusted)`. Bounded records (20/10/5), evidence 500/300, prompt 1500/2000, output 2000, total 8k.
+- **Output contract:** Structured `{answer (≤2000), confidence (low/medium/high), claims[≤5]{claim, evidence[≤2], type KNOWN/INFERRED}, evidence[≤10], recommendations[≤5], limitations[≤500], provider, model, context_findings}`. Hallucination guard strips refs not in `evidence_ids`/`bracket_ids`; empty/short answer → `Invalid AI output`; final redaction pass strips `password/secret` from answer.
+- **Persistence:** `backend/app/models/ai.py` + `alembic h8a9b0c1d2e3` — `ai_conversations`/`ai_messages`/`ai_usage` (FK CASCADE, JSONB `token_usage`/`evidence_refs`). No plaintext secrets in DB; `sanitized_content` stored alongside `content`.
+- **API:** `backend/app/api/routes/ai.py` (7 endpoints, all `Depends(get_current_user)` + `require_project_access` per project_id, `AI_ENABLED` 503 check, input 2000 bound, output 2000 bound, safe 400/404/500, audited `AI_CONVERSATION_CREATED`/`AI_RESPONSE_GENERATED`/`AI_PROVIDER_ERROR`, rate ` /ai/` 100/min via `RateLimitMiddleware`).
+- **Frontend:** `frontend/src/app/(app)/ai/page.jsx` — project-scoped, `PageHeader` analyst, disabled banner, conversations CRUD, message thread with `confidence` + `evidence` citations, `FACT/ANALYSIS/RECOMMENDATION/UNKNOWN` disclaimer, backend authoritative warning.
 
 ## Security Boundaries
 

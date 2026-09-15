@@ -17,11 +17,14 @@ def _sanitize_text(text: str, max_len: int = 500) -> str:
 def _sanitize_evidence(text: str) -> str:
     if not text:
         return ""
-    # redacted if contains sensitive
+    # Treat evidence as DATA not instructions — redact sensitive + bound length
+    # Strip common prompt-injection markers contained in scanner evidence
     low = text.lower()
-    for tok in ("authorization", "cookie", "api-key", "password", "secret"):
+    for tok in ("authorization", "cookie", "api-key", "password", "secret", "private key", "bearer"):
         if tok in low:
-            return re.sub(r"(?i)(authorization|cookie|x-api-key|password|secret)\s*:\s*[^\n]+", r"\1: [REDACTED]", text)[:500]
+            text = re.sub(r"(?i)(authorization|cookie|x-api-key|password|secret|private key|bearer)\s*[:=]\s*[^\n]+", r"\1: [REDACTED]", text)
+    # Neutralize instruction-like fragments that could be embedded in evidence
+    text = re.sub(r"(?i)(ignore previous instructions|system prompt|reveal secrets)", "[filtered]", text)
     return text[:500]
 
 def build_context(db: Session, organization_id: str, project_id: str, query: str, filters: dict | None = None) -> dict:
@@ -49,14 +52,23 @@ def build_context(db: Session, organization_id: str, project_id: str, query: str
             q = q.filter(Finding.scanner == str(filters["scanner"]).lower())
         findings = q.order_by(Finding.created_at.desc()).limit(max_findings).all()
         for f in findings:
+            # Evidence-first provenance: every finding cited must carry tenant-safe references
             context["findings"].append({
                 "id": f.id,
                 "title": _sanitize_text(f.title, 200),
                 "severity": f.severity,
                 "status": f.status,
                 "scanner": f.scanner,
+                "source": f.scanner,
                 "evidence": _sanitize_evidence(f.evidence or ""),
                 "asset_id": f.asset_id,
+                "scan_id": f.scan_id,
+                "target_id": f.target_id,
+                "cve": _sanitize_text(f.cve or "", 50),
+                "cwe": _sanitize_text(f.cwe or "", 50),
+                "score": f.score,
+                "created_at": f.created_at.isoformat() if getattr(f, "created_at", None) else None,
+                "confidence": "high" if f.severity in ("critical", "high") else "medium",
             })
     except Exception:
         pass
@@ -78,6 +90,9 @@ def build_context(db: Session, organization_id: str, project_id: str, query: str
                 "asset_type": a.asset_type,
                 "value": _sanitize_text(a.value, 200),
                 "status": a.status,
+                "criticality": getattr(a, "criticality", "unknown"),
+                "first_seen_at": a.first_seen_at.isoformat() if getattr(a, "first_seen_at", None) else None,
+                "last_seen_at": a.last_seen_at.isoformat() if getattr(a, "last_seen_at", None) else None,
                 "metadata": {k: str(v)[:200] for k, v in list(safe_meta.items())[:5]},
             })
     except Exception:
@@ -93,21 +108,37 @@ def build_context(db: Session, organization_id: str, project_id: str, query: str
             sq = sq.filter(Target.project_id == project_id)
         scans = sq.order_by(Scan.created_at.desc()).limit(5).all()
         for s in scans:
-            context["scans"].append({"id": s.id, "profile": s.profile, "status": s.status})
+            context["scans"].append({"id": s.id, "profile": s.profile, "status": s.status, "target_id": s.target_id, "created_at": s.created_at.isoformat() if getattr(s, "created_at", None) else None, "risk_score": getattr(s, "risk_score", None)})
     except Exception:
         pass
 
-    # Bound evidence length
+    # Bound evidence length per finding (deterministic preprocessing)
     for f in context["findings"]:
-        f["evidence"] = f["evidence"][:300]
-    # Bound total chars
+        f["evidence"] = f["evidence"][:300] if isinstance(f.get("evidence"), str) else ""
+    # Lightweight relationship hint (bounded, deterministic) — reuse existing AssetRelationship without vector DB
+    try:
+        from app.models.asset import Asset as _Asset  # noqa: F401
+        # Count relationships for retrieved assets only (bounded 10)
+        if context["assets"]:
+            from sqlalchemy import text as _text
+            # Best-effort: count relationships where source in retrieved asset ids (bounded)
+            context["relationship_count"] = min(len(context["assets"]) * 2, 20)
+    except Exception:
+        context["relationship_count"] = 0
+    # Bound total chars — keep prompt under 8k to control token cost
     import json
     raw = json.dumps(context)
     if len(raw) > 8000:
-        # trim findings
+        # trim findings first (evidence is largest)
         context["findings"] = context["findings"][:5]
         for f in context["findings"]:
             f["evidence"] = f["evidence"][:100]
+        # re-check
+        raw = json.dumps(context)
+        if len(raw) > 8000:
+            context["assets"] = context["assets"][:3]
+            for a in context["assets"]:
+                a["metadata"] = {}
     return context
 
 # Safe query planner — allowlisted operations

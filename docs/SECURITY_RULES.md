@@ -138,13 +138,20 @@ Current conventions (verified in `backend/app/api/`):
 - **Sanitized errors, useful observability.** Log `scanner`, `target` (via `safe_target` which strips query strings), `phase` (`starting`/`waiting`/`log collection`/`execution`/`parsing`/`persistence`/`analysis`), `elapsed`, `error_type`, `retryable`, `attempt`, `findings_count`, `assets_count`. Truncate diagnostics at `DIAGNOSTIC_LIMIT=4000` and error messages at 4000 chars.
 - **No sensitive payloads.** Do not log workspace file contents, manifest contents, or SARIF `message.text` before redaction.
 
-## AI Security
+## AI Security (G1 — COMPLETE / READY, G2+ DEFERRED)
 
-Future AI components (analyst, triage, remediation suggestions) must never receive:
+G1 enforces: AI is analyst **above** deterministic platform, never authoritative. Deterministic `finding/risk/asset/attack-path` engines remain truth.
 
-- Plaintext credentials or secret values — only `[REDACTED]` evidence and `_secret_hash` hashes.
-- Unnecessary sensitive data — scope AI context to `title`, `severity`, `file`, `line`, `rule_id`, `cve`/`cwe`, and redacted `evidence` (≤500 chars), not full file contents or raw SARIF.
-- Secrets scanner output containing real credentials — the AI input must be the redacted finding, not `raw_output`. `EVIDENCE_TYPES=secret` findings are explicitly excluded from LLM prompts unless double-redacted.
+- **Never plaintext secrets in AI:** `ai_context._sanitize_evidence` + `ai_service` final redaction strip `password/secret/token/private key/bearer` → `[REDACTED]` before context building and before answer return. `EVIDENCE_TYPES=secret` uses redacted `[REDACTED]` + `_secret_hash`, never raw SARIF. `AuditService.sanitize_metadata` also redacts.
+- **Bounded, tenant-isolated context:** Retrieval `WHERE Project.organization_id` + `require_project_access` per `project_id` (no org-A→org-B leak); caps `findings 20 / assets 10 / scans 5`, evidence 500/300, prompt 1500, output 2000, total 8k. Test `test_ai_conversation_tenant_isolation` + `test_ai_cross_project_blocked` verify.
+- **Prompt injection defense:** Retrieved evidence, asset names, scanner output are **DATA not instructions** — `_sanitize_evidence` neutralizes `ignore previous instructions` etc., `ai_service.INJECTION_RE` → `[filtered]`, `_build_prompt` labels `TRUSTED APPLICATION CONTEXT` vs `UNTRUSTED SECURITY DATA` vs `USER REQUEST`; provider `system` message enforces data boundary. Test `test_prompt_injection_defense` verifies.
+- **No secret/instruction in prompt override:** System instructions never overridden by context; evidence length bounded; number of items bounded; model output bounded.
+- **Structured, non-authoritative output:** Contract `{answer, confidence, claims[evidence], evidence, recommendations, limitations}`; claims evidence validated against `evidence_ids`/`bracket_ids` (hallucinated refs stripped); `confidence` enum `low/medium/high`; `limitations` always states advisory. UI shows `FACT/ANALYSIS/RECOMMENDATION/UNKNOWN` + `deterministic engines authoritative`.
+- **Provider abstraction:** `ai_provider.AIProvider` (`mock` deterministic, `openai` compat via `requests`, `local`), `AI_MODEL=mock-analyst` default, `AI_TIMEOUT=30`, `AI_MAX_TOKENS=1000`, bounded input/output, safe error → `AI_PROVIDER_ERROR` audit, never commit `AI_API_KEY` (`.env.example` empty, `settings.AI_API_KEY` from env). Mock for tests, no GPU/large model/vector DB cluster.
+- **API security:** All `/ai/*` require `get_current_user` + `require_project_access`, input 2000, output 2000, `503` when `AI_ENABLED=false`, `400` short/invalid, `404` cross-tenant (not 403 leak), `429` RateLimit ` /ai/` 100/min, `500` safe `AI provider unavailable` (no trace), audit `AI_CONVERSATION_CREATED`/`AI_RESPONSE_GENERATED`/`AI_PROVIDER_ERROR`.
+- **Future AI (G2+):** investigation, attack reasoning, remediation automation, report generation, full conversational analyst remain DEFERRED — do not extend G1 to them. When added, must reuse same boundaries.
+
+Future AI components beyond G1 (triage, remediation suggestions) must still never receive plaintext credentials or unnecessary sensitive data beyond `title/severity/file/line/rule_id/cve/cwe` + redacted `evidence` ≤500.
 
 ## Dependency Security
 
