@@ -1,4 +1,4 @@
-"""MMP-1 hardening — RLS/RBAC defaults, secret store, TLS, rate limiting, worker."""
+﻿"""MMP-1 hardening ÔÇö RLS/RBAC defaults, secret store, TLS, rate limiting, worker."""
 import os, base64, uuid
 from datetime import datetime, timezone
 from sqlalchemy import create_engine, JSON, text

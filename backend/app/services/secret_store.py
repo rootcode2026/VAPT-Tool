@@ -1,8 +1,8 @@
-"""Provider-neutral SecretStore — Development adapter + KMS/Vault abstraction.
+﻿"""Provider-neutral SecretStore ÔÇö Development adapter + KMS/Vault abstraction.
 
 Production architecture must use KMS/Vault/HSM. This module implements:
 - SecretStore interface
-- DevelopmentSecretStore (Fernet — AES-128-CBC+HMAC, development-only)
+- DevelopmentSecretStore (Fernet ÔÇö AES-128-CBC+HMAC, development-only)
 - ProductionAESGCMStore (AES-256-GCM, external key)
 - KMS-backed stub for future HSM integration
 
@@ -53,7 +53,7 @@ def _get_fernet() -> Fernet:
 _MEMORY_VAULT: dict[str, str] = {}
 
 class DevelopmentSecretStore(SecretStore):
-    """Development adapter — Fernet (AES-128-CBC+HMAC), development-only. NOT AES-256-GCM. Do not use in production."""
+    """Development adapter ÔÇö Fernet (AES-128-CBC+HMAC), development-only. NOT AES-256-GCM. Do not use in production."""
 
     def __init__(self, db=None):
         self.db = db
@@ -120,7 +120,7 @@ class DevelopmentSecretStore(SecretStore):
 
 
 class ProductionAESGCMStore(SecretStore):
-    """Production AES-256-GCM store — key must be 32 bytes externalized via KMS/Vault/HSM.
+    """Production AES-256-GCM store ÔÇö key must be 32 bytes externalized via KMS/Vault/HSM.
 
     Ciphertext format: base64(nonce(12) + ciphertext + tag(16)). Key from CONNECTOR_ENCRYPTION_KEY (32 bytes) or KMS.
     Master key never stored beside ciphertext. Requires cryptography.
@@ -133,7 +133,7 @@ class ProductionAESGCMStore(SecretStore):
     def _load_key(self) -> bytes:
         raw = os.getenv("CONNECTOR_ENCRYPTION_KEY") or os.getenv("VAULT_ENCRYPTION_KEY") or ""
         if not raw:
-            raise RuntimeError("Production encryption key not configured — set CONNECTOR_ENCRYPTION_KEY (32 bytes base64 or hex)")
+            raise RuntimeError("Production encryption key not configured ÔÇö set CONNECTOR_ENCRYPTION_KEY (32 bytes base64 or hex)")
         # support base64 or hex or raw
         try:
             # try base64
@@ -149,7 +149,7 @@ class ProductionAESGCMStore(SecretStore):
                 return decoded
         except Exception:
             pass
-        # fallback derive? Not for production — require proper key
+        # fallback derive? Not for production ÔÇö require proper key
         if len(raw.encode()) == 32:
             return raw.encode()
         raise ValueError("CONNECTOR_ENCRYPTION_KEY must be 32 bytes (base64 or hex)")
@@ -232,13 +232,13 @@ class ProductionAESGCMStore(SecretStore):
 
 
 class KMSVaultSecretStore(SecretStore):
-    """Production stub — would call KMS/Vault/HSM. Not implemented in this environment.
+    """Production stub ÔÇö would call KMS/Vault/HSM. Not implemented in this environment.
 
     Documented as future production integration. Do not pretend it exists.
     """
 
     def put_secret(self, plaintext: str) -> str:
-        raise NotImplementedError("KMS/Vault integration requires production secret manager — use DevelopmentSecretStore or ProductionAESGCMStore")
+        raise NotImplementedError("KMS/Vault integration requires production secret manager ÔÇö use DevelopmentSecretStore or ProductionAESGCMStore")
 
     def get_secret(self, reference: str) -> Optional[str]:
         raise NotImplementedError

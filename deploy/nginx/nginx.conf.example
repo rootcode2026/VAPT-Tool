@@ -1,4 +1,4 @@
-# Minimal TLS 1.3 reverse proxy — production example.
+﻿# Minimal TLS 1.3 reverse proxy ÔÇö production example.
 # Do NOT expose FastAPI directly to Internet in prod.
 # Requires: nginx >=1.18, cert at /etc/nginx/certs/fullchain.pem + privkey.pem, ca.crt for mTLS.
 
