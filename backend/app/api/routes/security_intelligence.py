@@ -125,8 +125,137 @@ def get_impact(project_id: str, subject_type: str, subject_id: str, db: Session 
         raise HTTPException(status_code=404, detail="Subject not found")
     return imp
 
-# F2 prioritization endpoints
+# F4 Attack Surface Analytics endpoints
 from fastapi import Query
+from datetime import datetime, timezone
+
+# --- helpers for F4 ---
+def _validate_window(window: str):
+    if window not in ("7d", "30d", "90d"):
+        raise HTTPException(status_code=400, detail="Invalid window: use 7d|30d|90d")
+    return window
+
+def _f4_response(project_id: str, data: dict, data_quality: dict | None = None) -> dict:
+    return {
+        "project_id": project_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data_quality": data_quality or {"status": "SUFFICIENT", "limitations": []},
+        **data,
+    }
+
+# F4: attack surface overview
+@router.get("/attack-surface")
+def get_attack_surface(project_id: str, window: str | None = Query(None), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    if window:
+        _validate_window(window)
+    from app.services.attack_surface_analytics import get_attack_surface_overview
+    overview = get_attack_surface_overview(project_id, db)
+    # if window requested, include historical
+    if window:
+        try:
+            from app.services.attack_surface_analytics import get_historical_analytics
+            hist = get_historical_analytics(project_id, db, window=window)
+            overview["historical"] = hist
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+    return overview
+
+@router.get("/attack-surface/distribution")
+def get_attack_distribution(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_exposure_distribution
+    dist = get_exposure_distribution(project_id, db)
+    return _f4_response(project_id, {"distribution": dist})
+
+@router.get("/attack-surface/hotspots")
+def get_attack_hotspots(project_id: str, limit: int = Query(20, ge=1, le=20), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_hotspots
+    return get_hotspots(project_id, db, limit=limit)
+
+@router.get("/attack-surface/concentration")
+def get_attack_concentration(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_exposure_concentration, get_risk_concentration
+    conc = get_exposure_concentration(project_id, db)
+    risk = get_risk_concentration(project_id, db)
+    return {"project_id": project_id, "generated_at": datetime.now(timezone.utc).isoformat(), "concentration": conc.get("concentration", {}), "risk_concentration": risk, "details": conc.get("details", {})}
+
+@router.get("/attack-surface/coverage")
+def get_attack_coverage(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_coverage_gaps
+    return get_coverage_gaps(project_id, db)
+
+@router.get("/attack-surface/technology")
+def get_attack_technology(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_technology_concentration
+    return get_technology_concentration(project_id, db)
+
+@router.get("/attack-surface/cloud")
+def get_attack_cloud(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_cloud_exposure_analytics
+    return get_cloud_exposure_analytics(project_id, db)
+
+@router.get("/attack-surface/applications")
+def get_attack_applications(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_application_exposure_analytics
+    return get_application_exposure_analytics(project_id, db)
+
+@router.get("/attack-surface/finding-concentration")
+def get_attack_finding_concentration(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_finding_concentration
+    return get_finding_concentration(project_id, db)
+
+@router.get("/attack-surface/attack-paths")
+def get_attack_paths_analytics(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_attack_path_concentration
+    return get_attack_path_concentration(project_id, db)
+
+@router.get("/attack-surface/top")
+def get_attack_top(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    from app.services.attack_surface_analytics import get_top_risk_hotspots
+    return get_top_risk_hotspots(project_id, db)
+
+@router.get("/attack-surface/historical")
+def get_attack_historical(project_id: str, window: str = Query("7d"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_project_access(project_id, db, current_user)
+    _set_rls(db, project_id, current_user)
+    _require_read(project_id, db, current_user)
+    _validate_window(window)
+    from app.services.attack_surface_analytics import get_historical_analytics
+    return get_historical_analytics(project_id, db, window=window)
+
+# F2 prioritization endpoints
 
 @router.get("/priorities")
 def get_priorities(project_id: str, limit: int = Query(50, ge=1, le=100), severity: str | None = Query(None), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

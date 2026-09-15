@@ -7,7 +7,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import ErrorState from "@/components/ui/ErrorState";
 import { useProjectContext } from "@/lib/project-context";
 import { listApplications } from "@/lib/api/applications";
-import { getSecurityContext, getBlastRadius, getExposureChain, getImpact, getPriorities, getTopRisks, getPrioritySummary, getTrends, getTrendsSummary } from "@/lib/api/securityIntelligence";
+import { getSecurityContext, getBlastRadius, getExposureChain, getImpact, getPriorities, getTopRisks, getPrioritySummary, getTrends, getAttackSurface, getAttackDistribution, getAttackHotspots, getAttackConcentration, getAttackCoverage, getAttackTechnology, getAttackCloud, getAttackApplications, getAttackTop } from "@/lib/api/securityIntelligence";
 
 export default function SecurityIntelligencePage() {
   const { selectedProjectId, status } = useProjectContext();
@@ -22,6 +22,15 @@ export default function SecurityIntelligencePage() {
   const [summary, setSummary] = useState(null);
   const [trends, setTrends] = useState(null);
   const [trendsWindow, setTrendsWindow] = useState("7d");
+  const [attackSurface, setAttackSurface] = useState(null);
+  const [distribution, setDistribution] = useState(null);
+  const [hotspots, setHotspots] = useState(null);
+  const [concentration, setConcentration] = useState(null);
+  const [coverage, setCoverage] = useState(null);
+  const [tech, setTech] = useState(null);
+  const [cloud, setCloud] = useState(null);
+  const [appExp, setAppExp] = useState(null);
+  const [top, setTop] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
@@ -30,18 +39,36 @@ export default function SecurityIntelligencePage() {
     if (!selectedProjectId) return;
     setLoading(true);
     try {
-      const [res, pri, top, sum, tr] = await Promise.all([
+      const [res, pri, topR, sum, tr, surf, dist, hs, conc, cov, tc, cl, ae, tp] = await Promise.all([
         listApplications(selectedProjectId, { limit: 50 }).catch(() => ({ applications: [] })),
         getPriorities(selectedProjectId, { limit: 10 }).catch(() => ({ priorities: [] })),
         getTopRisks(selectedProjectId).catch(() => null),
         getPrioritySummary(selectedProjectId).catch(() => null),
         getTrends(selectedProjectId, { window: trendsWindow }).catch(() => null),
+        getAttackSurface(selectedProjectId).catch(() => null),
+        getAttackDistribution(selectedProjectId).catch(() => null),
+        getAttackHotspots(selectedProjectId).catch(() => null),
+        getAttackConcentration(selectedProjectId).catch(() => null),
+        getAttackCoverage(selectedProjectId).catch(() => null),
+        getAttackTechnology(selectedProjectId).catch(() => null),
+        getAttackCloud(selectedProjectId).catch(() => null),
+        getAttackApplications(selectedProjectId).catch(() => null),
+        getAttackTop(selectedProjectId).catch(() => null),
       ]);
       setApps(res?.applications || res?.data?.applications || []);
       setPriorities(pri?.priorities || pri?.data?.priorities || []);
-      setTopRisks(top);
-      setSummary(sum);
-      setTrends(tr);
+      setTopRisks(topR?.data || topR);
+      setSummary(sum?.data || sum);
+      setTrends(tr?.data || tr);
+      setAttackSurface(surf?.data || surf);
+      setDistribution(dist?.data || dist);
+      setHotspots(hs?.data || hs);
+      setConcentration(conc?.data || conc);
+      setCoverage(cov?.data || cov);
+      setTech(tc?.data || tc);
+      setCloud(cl?.data || cl);
+      setAppExp(ae?.data || ae);
+      setTop(tp?.data || tp);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }, [selectedProjectId, trendsWindow]);
@@ -58,7 +85,7 @@ export default function SecurityIntelligencePage() {
         getExposureChain(selectedProjectId, subject.type, subject.id).catch(() => null),
         getImpact(selectedProjectId, subject.type, subject.id).catch(() => null),
       ]);
-      setCtx(c); setBlast(b); setChain(ch); setImpact(im);
+      setCtx(c?.data || c); setBlast(b?.data || b); setChain(ch?.data || ch); setImpact(im?.data || im);
     } catch (e) { setMsg(e.message || "Failed to load"); }
   };
 
@@ -69,7 +96,145 @@ export default function SecurityIntelligencePage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Security Intelligence" description={`Project: ${selectedProjectId} — prioritization, exposure chains, blast radius, impact, evidence-backed relationships (no AI, no graph DB).`} />
+      <PageHeader title="Security Intelligence" description={`Project: ${selectedProjectId} — prioritization, exposure chains, blast radius, impact, risk evolution, attack surface analytics (no AI, no graph DB).`} />
+
+      {attackSurface && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Attack Surface Overview</h3>
+          <p className="text-xs text-muted">Deterministic • {attackSurface.data_quality?.status || "SUFFICIENT"} • generated {attackSurface.generated_at?.slice(0,19)}</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-4">
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Total Assets</p><p className="text-sm font-bold">{attackSurface.total_assets ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">External Assets</p><p className="text-sm font-bold">{attackSurface.externally_reachable_assets ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Applications</p><p className="text-sm font-bold">{attackSurface.applications ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Cloud Resources</p><p className="text-sm font-bold">{attackSurface.cloud_resources ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">APIs</p><p className="text-sm font-bold">{attackSurface.apis ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Attack Paths</p><p className="text-sm font-bold">{attackSurface.attack_paths ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">Critical Findings</p><p className="text-sm font-bold">{attackSurface.critical_findings ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-xs text-muted">High Findings</p><p className="text-sm font-bold">{attackSurface.high_findings ?? 0}</p></div>
+          </div>
+          <div className="mt-2 text-xs text-muted">Repositories {attackSurface.repositories ?? 0} • Source {attackSurface.source_files ?? 0} • Containers {attackSurface.containers ?? 0} • Dependencies {attackSurface.dependencies ?? 0} • Technologies {attackSurface.technologies ?? 0} • Services {attackSurface.services ?? 0}</div>
+        </div>
+      )}
+
+      {distribution && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Exposure Distribution</h3>
+          <p className="text-xs text-muted">External • Cloud • Application • API • Network • Container • Code • Dependency • Secrets • IaC</p>
+          <div className="mt-2 overflow-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-muted"><th className="p-1 text-left">Category</th><th className="p-1">Total</th><th className="p-1">Exposed</th><th className="p-1">Critical</th><th className="p-1">High</th><th className="p-1">%</th></tr></thead>
+              <tbody>
+                {(distribution.distribution || distribution || []).slice(0,10).map(d=> (
+                  <tr key={d.category} className="border-t"><td className="p-1 font-mono">{d.category}</td><td className="p-1 text-center">{d.total}</td><td className="p-1 text-center">{d.exposed}</td><td className="p-1 text-center">{d.critical}</td><td className="p-1 text-center">{d.high}</td><td className="p-1 text-center">{d.percentage}%</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {hotspots && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Security Hotspots</h3>
+          <p className="text-xs text-muted">Top hotspots — deterministic ranking by priority → severity → signal count → id</p>
+          <div className="mt-2 space-y-1">
+            {(hotspots.hotspots || []).slice(0,10).map(h=> (
+              <div key={h.subject_id} className="flex flex-wrap items-center justify-between rounded border bg-canvas p-2 text-xs">
+                <div><span className="font-mono">{h.subject_type}:{h.subject_id.slice(0,8)}</span> <span className="font-semibold">{h.name?.slice(0,40)}</span> <span className="text-muted">P{h.priority} {h.severity}</span></div>
+                <div className="text-muted">{h.exposure_signals?.slice(0,3).join(", ")}</div>
+                <div className="text-muted">{h.reasons?.[0]?.slice(0,60) || ""}</div>
+              </div>
+            ))}
+            {(!hotspots.hotspots || hotspots.hotspots.length===0) && <p className="text-xs text-muted">No hotspots — insufficient exposure signals</p>}
+          </div>
+        </div>
+      )}
+
+      {concentration && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Concentration</h3>
+          <p className="text-xs text-muted">Where exposure and risk are concentrated — top 10 share</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-3 text-xs">
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Critical/High in top 10 assets</p><p className="font-bold">{concentration.concentration?.top_assets_critical_high_pct ?? 0}%</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Attack paths in top 10 assets</p><p className="font-bold">{concentration.concentration?.top_assets_attack_path_pct ?? 0}%</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">External in top apps</p><p className="font-bold">{concentration.concentration?.top_applications_external_pct ?? 0}%</p></div>
+          </div>
+          {concentration.risk_concentration && (
+            <div className="mt-2 text-xs"><p>Total priority {concentration.risk_concentration.total_priority} • Avg {concentration.risk_concentration.average_priority} • Critical {concentration.risk_concentration.critical_priority_count}</p></div>
+          )}
+        </div>
+      )}
+
+      {coverage && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Coverage Gaps</h3>
+          <p className="text-xs text-muted">Evidence-backed gaps — NOT_ASSESSED vs vulnerable distinction</p>
+          <div className="mt-2 space-y-1">
+            {(coverage.coverage_gaps || []).slice(0,10).map(g=> (
+              <div key={g.subject_id + g.gap_type} className="rounded border bg-canvas p-2 text-xs">
+                <span className="font-mono">{g.gap_type}</span> <span className="font-semibold">{g.name?.slice(0,40)}</span> <span className="text-muted">{g.status}</span>
+                <p className="text-muted">{g.evidence?.slice(0,80)}</p>
+                <p className="text-muted">→ {g.recommendation?.slice(0,80)}</p>
+              </div>
+            ))}
+            {(!coverage.coverage_gaps || coverage.coverage_gaps.length===0) && <p className="text-xs text-muted">No coverage gaps</p>}
+          </div>
+        </div>
+      )}
+
+      {tech && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Technology & Service Concentration</h3>
+          <div className="mt-2 grid gap-4 sm:grid-cols-2 text-xs">
+            <div>
+              <p className="font-semibold">Top Technologies</p>
+              {(tech.technologies || []).slice(0,5).map(t=> <div key={t.technology} className="flex justify-between border-b py-1"><span>{t.technology}</span><span className="text-muted">{t.assets} assets • {t.critical} crit</span></div>)}
+              {(!tech.technologies || tech.technologies.length===0) && <p className="text-muted">No technology data</p>}
+            </div>
+            <div>
+              <p className="font-semibold">Top Services</p>
+              {(tech.services || []).slice(0,5).map(s=> <div key={s.service} className="flex justify-between border-b py-1"><span>{s.service}</span><span className="text-muted">{s.assets} assets • {s.critical} crit</span></div>)}
+              {(!tech.services || tech.services.length===0) && <p className="text-muted">No service data</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cloud && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Cloud Exposure Analytics</h3>
+          <div className="mt-2 grid gap-2 sm:grid-cols-4 text-xs">
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">AWS</p><p className="font-bold">{cloud.aws_resources ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">GCP</p><p className="font-bold">{cloud.gcp_resources ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Azure</p><p className="font-bold">{cloud.azure_resources ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Exposed Cloud</p><p className="font-bold">{cloud.externally_exposed_cloud_resources ?? 0}</p></div>
+          </div>
+          <p className="mt-2 text-xs text-muted">Attack paths {cloud.cloud_attack_paths ?? 0} • Critical {cloud.critical_attack_paths ?? 0} • IAM {cloud.privileged_iam_exposure ?? 0} • Storage {cloud.public_storage_exposure ?? 0}</p>
+        </div>
+      )}
+
+      {appExp && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Application Exposure Analytics</h3>
+          <div className="mt-2 grid gap-2 sm:grid-cols-4 text-xs">
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Total Apps</p><p className="font-bold">{appExp.total_applications ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Production</p><p className="font-bold">{appExp.production_applications ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Critical Apps</p><p className="font-bold">{appExp.critical_applications ?? 0}</p></div>
+            <div className="rounded border bg-canvas p-2"><p className="text-muted">Internet-Facing</p><p className="font-bold">{appExp.applications_with_internet_exposure ?? 0}</p></div>
+          </div>
+          <p className="mt-2 text-xs text-muted">Secrets {appExp.applications_with_secrets ?? 0} • Dependencies {appExp.applications_with_vulnerable_dependencies ?? 0} • Container {appExp.applications_with_container_findings ?? 0} • IaC {appExp.applications_with_iac_findings ?? 0}</p>
+        </div>
+      )}
+
+      {top && (
+        <div className="rounded-md border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Top Risk Hotspots</h3>
+          <div className="mt-2 grid gap-4 sm:grid-cols-2 text-xs">
+            <div><p className="font-semibold">Top Assets by Risk</p>{(top.top_assets || []).slice(0,5).map(a=> <div key={a.asset_id} className="flex justify-between border-b py-1"><span className="font-mono">{a.asset_id.slice(0,6)}</span><span>P{a.priority} {a.severity}</span></div>)}</div>
+            <div><p className="font-semibold">Top Applications</p>{(top.top_applications || []).slice(0,5).map(a=> <div key={a.application_id} className="flex justify-between border-b py-1"><span>{a.name?.slice(0,20)}</span><span>{a.score}</span></div>)}</div>
+          </div>
+        </div>
+      )}
 
       {summary && (
         <div className="rounded-md border bg-surface p-4">
@@ -208,7 +373,7 @@ export default function SecurityIntelligencePage() {
           </div>
         </div>
       )}
-      <p className="text-xs text-muted">Deterministic • SHA-256 fingerprints • bounded • tenant-isolated • no AI • no graph DB • evidence-first</p>
+      <p className="text-xs text-muted">Deterministic • SHA-256 fingerprints • bounded • tenant-isolated • no AI • no graph DB • evidence-first • F4 Attack Surface Analytics</p>
     </div>
   );
 }
