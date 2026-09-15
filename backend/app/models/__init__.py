@@ -25,6 +25,7 @@ from app.models.cloud_attack_path import CloudAttackPath, CloudAttackPathObserva
 from app.models.external_scope import ExternalDiscoveryRun, ExternalScope, ExternalScopeEntry
 from app.models.security_investigation import InvestigationNote, SecurityInvestigation
 from app.models.security_validation import SecurityValidation
+from app.models.application import Application, ApplicationAsset
 from app.models.user import User
 from app.models.user_mfa import UserMfaCredential
 from app.models.user_onboarding import UserOnboarding
@@ -38,6 +39,8 @@ __all__ = [
     "AuditLog",
     "CloudAttackPath",
     "CloudAttackPathObservation",
+    "Application",
+    "ApplicationAsset",
     "ExternalDiscoveryRun",
     "ExternalScope",
     "ExternalScopeEntry",

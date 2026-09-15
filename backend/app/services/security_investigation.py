@@ -16,7 +16,7 @@ from app.models.security_investigation import SecurityInvestigation, Investigati
 from app.models.security_validation import SecurityValidation
 from app.models.project import Project
 
-VALID_SUBJECT_TYPES = {"finding", "asset", "correlation", "attack_path", "exposure"}
+VALID_SUBJECT_TYPES = {"finding", "asset", "correlation", "attack_path", "exposure", "application"}
 VALID_STATUSES = {"OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"}
 VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 
@@ -101,6 +101,18 @@ def resolve_subject(project_id: str, db: Session, subject_type: str, subject_id:
             for e in exps:
                 if e["exposure_id"] == subject_id:
                     return {"type": "exposure", "exposure": e, "severity": e["severity"], "title": e["title"]}
+        except Exception:
+            pass
+        return None
+    elif subject_type == "application":
+        try:
+            from app.models.application import Application
+            a = db.query(Application).filter(Application.id == subject_id, Application.project_id == project_id).first()
+            if not a:
+                return None
+            # severity from application risk or criticality mapping
+            sev = "high" if a.criticality in ("critical","high") else "medium"
+            return {"type": "application", "application": a, "severity": sev, "title": f"Application {a.name}"}
         except Exception:
             pass
         return None

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.asset import Asset
 from app.models.external_scope import ExternalScope, ExternalScopeEntry, ExternalDiscoveryRun
@@ -25,6 +26,71 @@ MAX_CIDR_PREFIX = 24  # /24 max 256 IPs
 MAX_SUBDOMAINS = 100
 MAX_CIDR_IPS = 256
 MAX_RESPONSE_BYTES = 1024 * 1024
+
+# Redis rate limiting for external operations (distributed, tenant-aware)
+# Uses atomic INCR + EXPIRE via pipeline, tenant/project/actor key
+# Follows platform convention: Redis primary, memory fallback for tests/single-instance.
+# For security-sensitive discovery in production, prefer fail-closed if Redis expected but unavailable.
+_memory_rate_buckets: dict[str, list[float]] = {}
+
+def _check_external_rate_limit(
+    key_prefix: str,
+    organization_id: str,
+    project_id: str,
+    actor_id: str | None,
+    max_requests: int = 5,
+    window_seconds: int = 60,
+) -> tuple[bool, str]:
+    """Generic distributed rate limit. Returns (allowed, reason). Tenant/project/actor key, atomic Redis."""
+    import time
+
+    # Validate inputs are not user-controlled bypass vectors
+    # organization_id/project_id/actor_id are server-derived UUIDs, not raw query params
+    key = f"{key_prefix}:{organization_id}:{project_id}:{actor_id or 'anonymous'}"
+    try:
+        import redis
+        from app.core.config import settings
+
+        r = redis.from_url(settings.REDIS_URL, socket_connect_timeout=2, socket_timeout=2)
+        # Atomic: INCR returns new count; EXPIRE ensures window. Pipeline is not transactional but INCR is atomic.
+        pipe = r.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, window_seconds)
+        count, _ = pipe.execute()
+        if count is not None and int(count) > max_requests:
+            return False, f"Rate limit exceeded ({max_requests}/{window_seconds}s)"
+        return True, ""
+    except Exception:
+        # Follow platform fallback: memory for tests, but production prefers fail-closed
+        try:
+            from app.core.config import settings as _s
+
+            if getattr(_s, "ENVIRONMENT", "development").lower() == "production":
+                # Fail-closed in prod if Redis unavailable for discovery (do not silently disable)
+                if key_prefix == "external-discovery":
+                    return False, f"Rate limit exceeded ({max_requests}/{window_seconds}s) [redis unavailable - fail closed]"
+        except Exception:
+            pass
+        # Memory fallback (tenant-aware, window pruning) — deterministic for tests
+        now = time.time()
+        bucket = _memory_rate_buckets.get(key, [])
+        bucket = [t for t in bucket if now - t < window_seconds]
+        if len(bucket) >= max_requests:
+            _memory_rate_buckets[key] = bucket
+            return False, f"Rate limit exceeded ({max_requests}/{window_seconds}s) [memory]"
+        bucket.append(now)
+        _memory_rate_buckets[key] = bucket
+        return True, ""
+
+
+def _check_external_discovery_rate_limit(organization_id: str, project_id: str, actor_id: str | None, max_requests: int = 5, window_seconds: int = 60) -> tuple[bool, str]:
+    """Check distributed rate limit for external discovery. Returns (allowed, reason)."""
+    return _check_external_rate_limit("external-discovery", organization_id, project_id, actor_id, max_requests, window_seconds)
+
+
+def _check_external_mutation_rate_limit(organization_id: str, project_id: str, actor_id: str | None, operation: str = "mutation") -> tuple[bool, str]:
+    """Rate limit for scope/entry/candidate mutations (10/min)."""
+    return _check_external_rate_limit(f"external-{operation}", organization_id, project_id, actor_id, max_requests=10, window_seconds=60)
 
 VALID_ENTRY_TYPES = {"DOMAIN", "SUBDOMAIN", "IP", "CIDR", "URL"}
 VALID_AUTH = {"AUTHORIZED", "PENDING_REVIEW", "REJECTED"}
@@ -250,6 +316,10 @@ def create_discovery_run(project_id: str, db: Session, external_scope_id: str | 
         scope = db.query(ExternalScope).filter(ExternalScope.id == external_scope_id, ExternalScope.project_id == project_id).first()
         if not scope:
             raise ValueError("Scope not found or not in project")
+    # Distributed rate limiting (tenant/project/actor aware, 5 per minute for discovery)
+    allowed, reason = _check_external_discovery_rate_limit(organization_id, project_id, created_by, max_requests=5, window_seconds=60)
+    if not allowed:
+        raise ValueError(f"Rate limit exceeded: {reason}")
     run = ExternalDiscoveryRun(
         id=str(uuid.uuid4()),
         organization_id=organization_id,
@@ -364,9 +434,12 @@ def confirm_asset(asset_id: str, db: Session, project_id: str) -> Asset | None:
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.project_id == project_id).first()
     if not asset:
         return None
-    extra = asset.extra_data or {}
+    # PostgreSQL-safe JSONB mutation: copy, modify, reassign + flag_modified
+    extra = dict(asset.extra_data or {})
     extra["ownership_confidence"] = "CONFIRMED"
+    # Preserve all existing keys (scope_id, discovery_sources, first_seen, etc.)
     asset.extra_data = extra
+    flag_modified(asset, "extra_data")
     db.commit()
     db.refresh(asset)
     return asset
@@ -375,9 +448,10 @@ def reject_asset(asset_id: str, db: Session, project_id: str) -> Asset | None:
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.project_id == project_id).first()
     if not asset:
         return None
-    extra = asset.extra_data or {}
+    extra = dict(asset.extra_data or {})
     extra["ownership_confidence"] = "REJECTED"
     asset.extra_data = extra
+    flag_modified(asset, "extra_data")
     db.commit()
     db.refresh(asset)
     return asset

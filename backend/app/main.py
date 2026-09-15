@@ -21,6 +21,8 @@ from app.api.routes.security_correlations import router as security_correlations
 from app.api.routes.security_investigations import router as security_investigations_router
 from app.api.routes.security_validations import router as security_validations_router, finding_router as finding_validations_router
 from app.api.routes.external_attack_surface import router as external_attack_surface_router
+from app.api.routes.applications import router as applications_router
+from app.api.routes.security_intelligence import router as security_intelligence_router
 from app.api.routes.code_security import router as code_security_router
 from app.api.routes.compliance import router as compliance_router
 from app.api.routes.dast import router as dast_router
@@ -114,6 +116,8 @@ app.include_router(security_investigations_router, dependencies=protected)
 app.include_router(security_validations_router, dependencies=protected)
 app.include_router(finding_validations_router, dependencies=protected)
 app.include_router(external_attack_surface_router, dependencies=protected)
+app.include_router(applications_router, dependencies=protected)
+app.include_router(security_intelligence_router, dependencies=protected)
 app.include_router(targets_router, dependencies=protected)
 app.include_router(projects_router, dependencies=protected)
 app.include_router(scans_router, dependencies=protected)

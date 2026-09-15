@@ -1,5 +1,6 @@
 "use client";
 
+/* eslint-disable react-hooks/set-state-in-effect */
 import { useCallback, useEffect, useState } from "react";
 import PageHeader from "@/components/ui/PageHeader";
 import LoadingState from "@/components/ui/LoadingState";
@@ -54,8 +55,10 @@ export default function ExternalAttackSurfacePage() {
   }, [selectedProjectId, filter]);
 
   useEffect(() => {
-    if (status === "ready" && selectedProjectId) load();
-  }, [status, selectedProjectId, load]);
+    if (status === "ready" && selectedProjectId) {
+      load();
+    }
+  }, [status, selectedProjectId]);
 
   if (status === "loading") return <LoadingState message="Loading project..." />;
   if (!selectedProjectId) return <EmptyState title="No project selected" description="Select a project to view external attack surface." />;
@@ -174,7 +177,7 @@ export default function ExternalAttackSurfacePage() {
         )}
       </div>
 
-      <p className="text-xs text-muted">What's exposed and what changed? Prioritize: newly exposed, critical/high findings, unknown candidates, significant changes.</p>
+      <p className="text-xs text-muted">What&apos;s exposed and what changed? Prioritize: newly exposed, critical/high findings, unknown candidates, significant changes.</p>
     </div>
   );
 }
