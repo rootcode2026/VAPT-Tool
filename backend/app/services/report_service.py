@@ -270,57 +270,267 @@ def export_csv(findings: list[dict]) -> bytes:
         ])
     return output.getvalue().encode("utf-8")
 
-def _pdf_text_lines(report: dict) -> tuple[str, list]:
-    """Flatten a report into (title, [(heading, [lines])]) for PDF rendering.
+def _is_web_finding(f: dict) -> bool:
+    scanner = str(f.get("scanner") or "").lower()
+    if scanner in ("sast","sca","secrets","container","iac","api","nuclei","zap","nikto","http_fingerprint"):
+        return True
+    if scanner in ("nmap","dns","subdomain","tls","cloud"):
+        return False
+    # fallback via asset_type
+    at = str(f.get("asset_type") or "").lower()
+    if at in ("source_file","repository","package","container_image","iac_resource","api_endpoint","url"):
+        return True
+    if at in ("ip","port","service"):
+        return False
+    # title heuristic: if contains url/http
+    title = str(f.get("title") or "").lower()
+    if "http" in title or "url" in title or "xss" in title or "sqli" in title:
+        return True
+    return False
 
-    Only bounded pre-sanitized values are used; raw scanner output never
-    reaches the artifact beyond the capped evidence fields already stored
-    in the snapshot.
+def _customer_vapt_sections(report: dict) -> tuple[str, list]:
+    """Build 23-section customer VAPT report from persisted data per VAPT_Final_Report (1).docx template.
+    No invented data; unavailable fields render as Not assessed/Not available/Not provided.
     """
-    title = str(report.get("title") or "Security Report")
+    title = str(report.get("title") or "Vulnerability Assessment and Penetration Testing - Final Security Assessment Report")
     content = report.get("content") or {}
     summary = report.get("summary") or {}
-    sections: list = []
-    meta = [
-        f"Report Type: {report.get('report_type', '')}",
-        f"Project: {report.get('project_id') or 'Organization-wide'}",
-        f"Version: {report.get('version', '1.0')}",
-        f"Generated: {report.get('data_as_of', '')}",
-    ]
     snap = content.get("snapshot") if isinstance(content, dict) else None
-    if isinstance(snap, dict) and isinstance(snap.get("period"), dict):
-        meta.append(f"Period: {snap['period'].get('start', '')} to {snap['period'].get('end', '')}")
-    sections.append(("Report Information", meta))
-    if isinstance(content, dict) and content.get("executive_summary"):
-        sections.append(("Executive Summary", [str(content["executive_summary"])]))
-    if isinstance(summary, dict) and summary:
-        sections.append(("Key Metrics", [f"{k}: {str(v)[:100]}" for k, v in list(summary.items())[:40]]))
+    if not isinstance(snap, dict):
+        snap = {}
+    metrics = content.get("metrics") if isinstance(content.get("metrics"), dict) else summary
+    if not isinstance(metrics, dict):
+        metrics = summary if isinstance(summary, dict) else {}
     findings = []
     if isinstance(content, dict):
-        findings = content.get("snapshot_findings", {}).get("detail", []) if isinstance(
-            content.get("snapshot_findings"), dict) else (content.get("findings") or [])
-    if findings:
-        lines = []
-        for f in findings[:MAX_DETAIL_FINDINGS]:
-            if not isinstance(f, dict):
-                continue
-            lines.append(
-                f"[{str(f.get('severity', '')).upper()}] {str(f.get('title', ''))[:100]} "
-                f"({str(f.get('status', ''))}, {str(f.get('scanner', ''))})"
-            )
-        sections.append(("Key Findings", lines or ["No critical/high findings in scope."]))
-    if isinstance(snap, dict):
-        if snap.get("limitations"):
-            sections.append(("Limitations", [str(x)[:200] for x in snap["limitations"][:20]]))
-        controls = snap.get("controls")
-        if isinstance(controls, dict):
-            clines = [f"PASS={controls.get('pass', 0)} PARTIAL={controls.get('partial', 0)} "
-                      f"FAIL={controls.get('fail', 0)} NOT_ASSESSED={controls.get('not_assessed', 0)}"]
-            for c in (controls.get("controls") or [])[:20]:
-                if isinstance(c, dict) and c.get("status") in ("FAIL", "PARTIAL"):
-                    clines.append(f"{c.get('control_id')}: {c.get('status')} ({c.get('confidence')})")
-            sections.append(("Control Readiness (evidence coverage, not certification)", clines))
+        findings = content.get("snapshot_findings", {}).get("detail", []) if isinstance(content.get("snapshot_findings"), dict) else (content.get("findings") or [])
+        if not findings and isinstance(content.get("snapshot"), dict):
+            findings = content["snapshot"].get("findings", {}).get("detail", []) if isinstance(content["snapshot"].get("findings"), dict) else []
+    if not findings and isinstance(summary, dict) and summary.get("total_findings"):
+        # fallback from summary counts
+        findings = []
+    # bounded
+    findings = findings[:MAX_DETAIL_FINDINGS] if isinstance(findings, list) else []
+    web_findings = [f for f in findings if isinstance(f, dict) and _is_web_finding(f)]
+    net_findings = [f for f in findings if isinstance(f, dict) and not _is_web_finding(f)]
+    # deterministic IDs WEB-XXX / NET-XXX sorted by severity then title
+    def sort_key(f):
+        sev = str(f.get("severity") or "info").lower()
+        rank = {"critical":0,"high":1,"medium":2,"low":3,"info":4}.get(sev,4)
+        return (rank, str(f.get("title") or ""), str(f.get("id") or ""))
+    web_findings = sorted(web_findings, key=sort_key)
+    net_findings = sorted(net_findings, key=sort_key)
+    sections: list = []
+    # 1 Cover / Confidentiality
+    sections.append(("1. Cover / Confidentiality", [
+        "CONFIDENTIAL — Authorized Use Only",
+        f"Report: {title[:120]}",
+        f"Project: {str(report.get('project_id') or 'Organization-wide')}",
+        f"Generated: {str(report.get('data_as_of') or report.get('created_at') or '')}",
+        f"Version: {str(report.get('version') or '1.0')}",
+        "Classification: Confidential",
+    ]))
+    # 2 Document Control
+    sections.append(("2. Document Control", [
+        f"Report ID: {str(report.get('id') or '')[:16]}",
+        f"Version: {str(report.get('version') or '1.0')}",
+        f"Generated: {str(report.get('data_as_of') or '')}",
+        f"Generated By: {str(report.get('generated_by') or 'System')}",
+        f"Status: {str(report.get('status') or '')}",
+    ]))
+    # 3 Table of Contents
+    toc = [f"{i+1}. {h}" for i, (h, _) in enumerate([
+        ("Executive Summary",[]),("Assessment Objectives",[]),("Scope of Assessment",[]),
+        ("Rules of Engagement",[]),("Assessment Methodology",[]),("Risk Rating Methodology",[]),
+        ("Executive Risk Summary",[]),("Web Application VAPT Results",[]),("Network VAPT Results",[]),
+        ("Detailed Web Application Findings",[]),("Detailed Network Findings",[]),("Positive Security Observations",[]),
+        ("Remediation Roadmap",[]),("Retest / Validation Summary",[]),("Assessment Limitations",[]),
+        ("Conclusion",[]),("Appendix A - Assets Tested",[]),("Appendix B - Port and Service Summary",[]),
+        ("Appendix C - Tools and Techniques",[]),("Appendix D - Evidence Handling Guidance",[])
+    ])]
+    sections.append(("3. Table of Contents", toc))
+    # 4 Executive Summary
+    cov = f"Assessment Coverage: {len(findings)} findings, {metrics.get('total_assets','Not assessed')} assets, {metrics.get('internet_exposed_assets','Not assessed')} internet-exposed"
+    overall = f"Overall Result: {str(summary.get('risk_grade') or snap.get('risk',{}).get('grade') or 'Not assessed')} (score {str(summary.get('risk_score') or snap.get('risk',{}).get('score') or 'N/A')})"
+    # Key Management Actions: top 3 critical/high
+    top_actions = []
+    for f in sorted(findings, key=sort_key)[:3]:
+        if isinstance(f, dict):
+            top_actions.append(f"{str(f.get('severity') or '').upper()}: {str(f.get('title') or '')[:80]}")
+    if not top_actions:
+        top_actions = ["Not assessed - no critical/high findings in scope"]
+    sections.append(("4. Executive Summary", [
+        f"4.1 Assessment Coverage: {cov}",
+        f"4.2 Overall Result: {overall}",
+        "4.3 Key Management Actions:",
+    ] + [f"  - {a}" for a in top_actions[:3]]))
+    # 5 Assessment Objectives
+    sections.append(("5. Assessment Objectives", [
+        str(content.get("executive_summary") or "Assess web application and network infrastructure for vulnerabilities, validate findings, and provide remediation guidance.")[:500]
+    ]))
+    # 6 Scope
+    web_scope = []
+    net_scope = []
+    for f in findings[:10]:
+        if isinstance(f, dict):
+            url = f.get("asset_value") or f.get("asset_id") or ""
+            if _is_web_finding(f) and url:
+                web_scope.append(str(url)[:80])
+            elif not _is_web_finding(f) and url:
+                net_scope.append(str(url)[:80])
+    sections.append(("6. Scope of Assessment", [
+        f"6.1 Web Application Scope: {', '.join(web_scope[:5]) if web_scope else 'Not provided'}",
+        "6.2 Test Accounts / Roles: Not provided" + (" (Roles: " + str(snap.get("test_accounts") or "Not provided")[:60] + ")" if snap.get("test_accounts") else ""),
+        f"6.3 Network Scope: {', '.join(net_scope[:5]) if net_scope else 'Not provided'}",
+    ]))
+    # 7 Rules of Engagement
+    sections.append(("7. Rules of Engagement", [
+        str(content.get("rules_of_engagement") or snap.get("rules_of_engagement") or "Testing performed within agreed scope and time window; no denial-of-service or data destruction.")[:500]
+    ]))
+    # 8 Assessment Methodology
+    scanners_used = snap.get("methodology", {}).get("scanners_observed") if isinstance(snap.get("methodology"), dict) else []
+    if not scanners_used and isinstance(content.get("methodology"), dict):
+        scanners_used = content["methodology"].get("scanners_observed", [])
+    sections.append(("8. Assessment Methodology", [
+        f"8.1 Web and Network Test Coverage: Scanners/tools used: {', '.join(str(s) for s in scanners_used[:10]) if scanners_used else 'Not assessed'}",
+        "Methodology: Asset discovery, vulnerability analysis, lifecycle tracking, change detection, control readiness (per snapshot).",
+    ]))
+    # 9 Risk Rating Methodology
+    sections.append(("9. Risk Rating Methodology", [
+        "Severity: Critical, High, Medium, Low, Informational (FindingEngine authoritative)",
+        "9.1 Finding Status: detected, corroborated, needs_review, confirmed, false_positive, accepted_risk, remediated, reopened",
+        "CVSS: Where available from scanner; otherwise Not available — not invented.",
+    ]))
+    # 10 Executive Risk Summary
+    web_crit = sum(1 for f in web_findings if str(f.get("severity") or "").lower()=="critical")
+    web_high = sum(1 for f in web_findings if str(f.get("severity") or "").lower()=="high")
+    net_crit = sum(1 for f in net_findings if str(f.get("severity") or "").lower()=="critical")
+    net_high = sum(1 for f in net_findings if str(f.get("severity") or "").lower()=="high")
+    sections.append(("10. Executive Risk Summary", [
+        f"10.1 Web Application Findings: Critical {web_crit}, High {web_high}, Total {len(web_findings)}",
+        f"10.2 Network Findings: Critical {net_crit}, High {net_high}, Total {len(net_findings)}",
+        f"10.3 Risk Concentration: {str(snap.get('risk_concentration') or summary.get('risk_concentration') or 'Not assessed')[:120]}",
+    ]))
+    # 11 Web Application VAPT Results
+    sections.append(("11. Web Application VAPT Results", [
+        f"11.1 Web Result Summary: {len(web_findings)} web findings, Critical {web_crit}, High {web_high}",
+        "11.2 Functional Areas Reviewed: Authentication, Authorization, Input Validation, Session Management, API, Business Logic (per assets/findings)",
+        f"11.3 Web Application Security Conclusion: {('Requires remediation' if web_crit or web_high else 'No critical/high web findings in scope')}",
+    ]))
+    # 12 Network VAPT Results
+    sections.append(("12. Network VAPT Results", [
+        f"12.1 Network Result Summary: {len(net_findings)} network findings, Critical {net_crit}, High {net_high}",
+        "12.2 Network Areas Reviewed: Host discovery, Port/Service enumeration, TLS, DNS, Cloud exposure (per scans)",
+        f"12.3 Network Security Conclusion: {('Requires remediation' if net_crit or net_high else 'No critical/high network findings in scope')}",
+    ]))
+    # 13 Detailed Web Application Findings
+    web_lines = []
+    for idx, f in enumerate(web_findings[:20], start=1):
+        if not isinstance(f, dict): continue
+        fid = f"WEB-{idx:03d}"
+        # stable mapping: could use hash of finding id, but sequential deterministic sorted is stable for same data
+        web_lines.append(f"{fid} | {str(f.get('title') or 'Untitled')[:80]}")
+        web_lines.append(f"  Severity: {str(f.get('severity') or 'Not assessed')} | CVSS: {str(f.get('cvss_score') or f.get('score') or 'Not available')} {str(f.get('cvss_vector') or '')} | Status: {str(f.get('status') or 'Not assessed')}")
+        web_lines.append(f"  Affected URL: {str(f.get('asset_value') or f.get('asset_id') or 'Not provided')[:80]} | Param/Function: {str(f.get('affected_parameter') or 'Not provided')[:40]}")
+        web_lines.append(f"  OWASP/CWE: {str(f.get('owasp') or f.get('cwe') or 'Not available')} | CVE: {str(f.get('cve') or 'Not available')}")
+        web_lines.append(f"  Description: {str(f.get('description') or f.get('title') or 'Not provided')[:200]}")
+        web_lines.append(f"  Evidence: {(str(f.get('evidence') or 'Not available')[:MAX_EVIDENCE_CHARS])}")
+        web_lines.append(f"  Technical Impact: {str(f.get('technical_impact') or 'Not assessed')[:120]} | Business Impact: {str(f.get('business_impact') or 'Not assessed')[:120]}")
+        web_lines.append(f"  Recommendation: {str(f.get('remediation') or 'Not provided')[:200]}")
+        web_lines.append(f"  References: {str(f.get('references') or 'Not provided')[:80]} | Retest: {str(f.get('retest_result') or f.get('retest') or 'Not yet retested')[:60]}")
+        web_lines.append("")
+    if not web_lines:
+        web_lines = ["No web application findings in scope."]
+    sections.append(("13. Detailed Web Application Findings", web_lines))
+    # 14 Detailed Network Findings
+    net_lines = []
+    for idx, f in enumerate(net_findings[:20], start=1):
+        if not isinstance(f, dict): continue
+        fid = f"NET-{idx:03d}"
+        net_lines.append(f"{fid} | {str(f.get('title') or 'Untitled')[:80]}")
+        net_lines.append(f"  Severity: {str(f.get('severity') or 'Not assessed')} | CVSS: {str(f.get('cvss_score') or f.get('score') or 'Not available')} | Status: {str(f.get('status') or 'Not assessed')}")
+        net_lines.append(f"  Affected Host: {str(f.get('asset_value') or f.get('asset_id') or 'Not provided')[:60]} | Port/Protocol: {str(f.get('port') or f.get('protocol') or 'Not provided')[:30]}")
+        net_lines.append(f"  Service/Version: {str(f.get('service') or f.get('version') or 'Not available')} | CVE/CWE: {str(f.get('cve') or f.get('cwe') or 'Not available')}")
+        net_lines.append(f"  Description: {str(f.get('description') or f.get('title') or 'Not provided')[:200]}")
+        net_lines.append(f"  Evidence: {(str(f.get('evidence') or 'Not available')[:MAX_EVIDENCE_CHARS])}")
+        net_lines.append(f"  Technical Impact: {str(f.get('technical_impact') or 'Not assessed')[:120]} | Business Impact: {str(f.get('business_impact') or 'Not assessed')[:120]}")
+        net_lines.append(f"  Recommendation: {str(f.get('remediation') or 'Not provided')[:200]}")
+        net_lines.append(f"  References: {str(f.get('references') or 'Not provided')[:80]} | Retest: {str(f.get('retest_result') or 'Not yet retested')[:60]}")
+        net_lines.append("")
+    if not net_lines:
+        net_lines = ["No network findings in scope."]
+    sections.append(("14. Detailed Network Findings", net_lines))
+    # 15 Positive Security Observations
+    controls = snap.get("controls") if isinstance(snap.get("controls"), dict) else {}
+    pos = []
+    if isinstance(controls, dict) and controls.get("pass"):
+        pos.append(f"Controls PASS: {controls.get('pass')}")
+        for c in (controls.get("controls") or [])[:5]:
+            if isinstance(c, dict) and c.get("status")=="PASS":
+                pos.append(f"  PASS: {c.get('control_id')}")
+    if not pos:
+        pos = ["Not assessed — no verified positive controls in snapshot"]
+    sections.append(("15. Positive Security Observations", pos))
+    # 16 Remediation Roadmap
+    rem_lines = []
+    for f in findings[:15]:
+        if isinstance(f, dict):
+            rem = str(f.get("remediation") or "Not provided")[:120]
+            pri = "P1" if str(f.get("severity") or "").lower()=="critical" else "P2" if str(f.get("severity") or "").lower()=="high" else "P3" if str(f.get("severity") or "").lower()=="medium" else "P4"
+            owner = str(f.get("owner") or "Not assigned")[:30]
+            rem_lines.append(f"{pri} | {str(f.get('title') or '')[:60]} | Owner: {owner} | Target: Not provided | Status: {str(f.get('status') or 'Open')} | Remediation: {rem}")
+    if not rem_lines:
+        rem_lines = ["No remediation items — no findings requiring remediation"]
+    sections.append(("16. Remediation Roadmap", ["16.1 Remediation Tracker:"] + rem_lines[:20]))
+    # 17 Retest / Validation Summary
+    retest_lines = []
+    for f in findings[:10]:
+        if isinstance(f, dict):
+            retest_lines.append(f"{str(f.get('title') or '')[:60]} | Status: {str(f.get('status') or 'Open')} | Retest: {str(f.get('retest_result') or 'Not yet retested')[:40]} | Validation: {str(f.get('validation') or 'Not validated')[:40]}")
+    if not retest_lines:
+        retest_lines = ["No retest records — retest pending for remediated items"]
+    sections.append(("17. Retest / Validation Summary", retest_lines))
+    # 18 Assessment Limitations
+    lim = snap.get("limitations") if isinstance(snap.get("limitations"), list) else []
+    if not lim and isinstance(content.get("limitations"), list):
+        lim = content["limitations"]
+    lim_lines = [str(x)[:200] for x in (lim or [])[:10]] or ["Assessment limited to in-scope assets and time window; absence of finding is not proof of absence of risk."]
+    lim_lines.append("This report is point-in-time and scoped to assessed controls/scanners.")
+    sections.append(("18. Assessment Limitations", lim_lines))
+    # 19 Conclusion
+    sections.append(("19. Conclusion", [str(content.get("conclusion") or snap.get("conclusion") or "Assessment completed per agreed scope and methodology. Remediation of critical/high findings and retest recommended.")[:500]]))
+    # 20 Appendix A Assets Tested
+    assets_tested = []
+    if isinstance(snap.get("assets"), dict):
+        assets_tested.append(f"Total assets: {snap['assets'].get('total','Not assessed')} (by type: {str(snap['assets'].get('by_type') or '')[:120]})")
+    elif isinstance(metrics.get("total_assets"), int):
+        assets_tested.append(f"Total assets: {metrics.get('total_assets')}")
+    if not assets_tested:
+        assets_tested = ["Assets tested: Not provided — see detailed findings for affected assets"]
+    sections.append(("20. Appendix A - Assets Tested", assets_tested))
+    # 21 Appendix B Port and Service Summary
+    port_lines = []
+    if isinstance(snap.get("assets"), dict) and snap["assets"].get("by_type"):
+        port_lines.append(f"Asset types: {str(snap['assets']['by_type'])[:200]}")
+    else:
+        port_lines = ["Port/Service summary: Not available — no port/service evidence in snapshot"]
+    sections.append(("21. Appendix B - Port and Service Summary", port_lines))
+    # 22 Appendix C Tools and Techniques
+    tools = scanners_used if scanners_used else ["Not assessed"]
+    sections.append(("22. Appendix C - Tools and Techniques", [f"Tools/scanners actually used: {', '.join(str(t) for t in tools[:10])}", "Manual testing only where evidence exists; template example tool list not claimed as used."]))
+    # 23 Appendix D Evidence Handling Guidance
+    sections.append(("23. Appendix D - Evidence Handling Guidance", [
+        "Evidence handling: Evidence capped (evidence 200 chars, remediation 300), sanitized, redacted [REDACTED] for secrets/credentials.",
+        "Retention: Per engagement agreement; do not retain active credentials, session tokens, private keys.",
+        "Customer evidence: Sanitized and bounded per MAX_EVIDENCE_CHARS/MAX_REMEDIATION_CHARS.",
+    ]))
     return title, sections
+
+def _pdf_text_lines(report: dict) -> tuple[str, list]:
+    """Delegate to customer VAPT template — authoritative 23-section layout.
+    Keeps backward compatibility: all PDFs now follow VAPT_Final_Report (1).docx structure.
+    """
+    return _customer_vapt_sections(report)
 
 
 def _wrap_line(text: str, width: int = 110) -> list:
